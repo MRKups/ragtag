@@ -1,0 +1,49 @@
+# OS
+.DS_Store
+*.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Rust & Tauri
+target/
+/src-tauri/target/
+/src-tauri/Cargo.lock
+/src-tauri/binaries/
+debug/
+**/*.rs.bk
+*.pdb
+**/mutants.out*/
+
+# SvelteKit
+/frontend/build/
+/frontend/.svelte-kit/
+
+# Node
+node_modules/
+.npm
+
+# Logs
+*.log
+
+# Temporary Files
+*.tmp
+*~
+*.bak
+
+# Environment Files
+.env
+*.env
+.env.*
+
+# Local Configuration
+*.local
+
+# User Specified
+rag-demo2/
+
+# Opencode
+.opencode/
+opencode.jsonc
+opencode.json
