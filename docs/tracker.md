@@ -10,7 +10,7 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 - [x] 4. Scaffold SvelteKit app inside `frontend/`.
 - [x] 5. Configure `svelte.config.js` for `adapter-static` (SPA mode with `fallback: 'index.html'`).
 - [x] 6. Configure `vite.config.ts` (strict port `5173`, clear screen false).
-- [x] 7. Set up basic Tailwind CSS (or scoped Svelte CSS depending on final styling choice).
+- [x] 7. Use native Svelte 5 component-scoped CSS (no Tailwind).
 - [x] 8. Update `tauri.conf.json` with build commands and basic identifiers.
 - [x] 9. Configure IPC capabilities in Tauri (`core:allow-invoke` for testing).
 - [x] 10. Configure `assetProtocol` in Tauri to allow reading from `$APPLOCALDATA/**` (required for PDF rendering).
@@ -34,13 +34,13 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 - [x] 23. Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
 - [x] 24. Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue stale `queued` docs).
-- [x] 25. Spawn the main background worker task in `lib.rs` (now runs the full `rag_pipeline::process_document` pipeline and emits `document_indexed` / `document_failed` events).
-- [x] 26. Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, computes SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row with relative `storage_path`, pushes doc ID via `try_send()`.
+- [x] 25. Spawn the main background worker task in `lib.rs` (runs full `rag_pipeline::process_document` and emits `document_indexed` / `document_failed` events).
+- [x] 26. Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row, pushes doc ID via `try_send()`.
 - [x] 27. Implement Rust logic to safely copy raw bytes to the App Data directory (via `tokio::fs`).
 - [x] 28. Write initial SQLite `queued` row and push job to the MPSC channel.
 - [x] 29. Integrate `pdf-extract` into `crates/rag_pipeline`.
 - [x] 30. Write extraction loop (MUST be page-by-page to preserve citation boundaries).
-- [x] 31. Implement token chunking logic (512 size / 80 overlap).
+- [x] 31. Implement token chunking logic (512 size / 80 overlap, `"passage: "` prefix).
 - [x] 32. Integrate `fastembed-rs` (v5).
 - [x] 33. Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
 - [x] 34. Hook embedding generation into the chunking pipeline.
@@ -49,24 +49,48 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ## Phase 4: AI Execution & RAG (The Voice)
 
-- [ ] 37. Add `tauri-plugin-shell`, `command-group`, and `reqwest` to manage the sidecar.
-- [ ] 38. Generate ephemeral auth token using `getrandom` on startup.
-- [ ] 39. Implement dynamic ephemeral port binding for the LLM server.
-- [ ] 40. Spawn `llama.cpp` sidecar process, verify health-check endpoint, and manage `RunEvent` cleanup hooks.
-- [ ] 41. Implement LanceDB Hybrid search (Vector + BM25 via Reciprocal Rank Fusion).
-- [ ] 42. Add fallback logic to vector-only search if FTS fails.
-- [ ] 43. Build the RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
-- [ ] 44. Implement communication with the OpenAI-compatible endpoint (local sidecar or external).
-- [ ] 45. Implement Tauri v2 Channels (`Channel<TokenEvent>`) for streaming the response.
-- [ ] 46. Ensure `TokenEvent::Done` includes structured metadata (page numbers) for the UI citation engine (no LLM hallucination).
+### Backtracking — Remove Sidecar Artifacts
+
+- [ ] 37. Remove `tauri-plugin-shell` from `src-tauri/Cargo.toml` dependencies.
+- [ ] 38. Remove `shell:default` permission from `capabilities/default.json`.
+- [ ] 39. Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
+- [ ] 40. Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
+
+### New Dependencies & State
+
+- [ ] 41. Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
+- [ ] 42. Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"` to `src-tauri/Cargo.toml`.
+- [ ] 43. Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
+- [ ] 44. Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
+- [ ] 45. Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
+- [ ] 46. Emit `embedder_ready` event after `fastembed` init completes.
+
+### Vector Search Layer
+
+- [ ] 47. Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
+- [ ] 48. Add vector-only fallback search if FTS index is missing or throws.
+- [ ] 49. Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
+
+### RAG Query Pipeline
+
+- [ ] 50. Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
+- [ ] 51. Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
+- [ ] 52. Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
+- [ ] 53. Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
+
+### BYO Inference Mode
+
+- [ ] 54. Integrate `keyring` for secure storage of `external_api_key` (service=`"ragtag"`, username=`"external_api_key"`).
+- [ ] 55. Implement `reqwest`-based BYO inference path (POST to external OpenAI-compatible `/v1/chat/completions` with streaming).
+- [ ] 56. Unify local `mistralrs` and external `reqwest` paths behind shared prompt/citation logic (trait or enum dispatch).
+- [ ] 57. Wire up BYO routing: `execute_query` reads `inference_mode` from `app_settings`, routes accordingly.
 
 ## Phase 5: Polish, Security & UX
 
-- [ ] 47. Integrate `keyring` crate.
-- [ ] 48. Implement secure storage and retrieval of external API keys for BYO Inference mode.
-- [ ] 49. Wire up bypass logic so the app routes to the external URL instead of the local sidecar when configured.
-- [ ] 50. Integrate `hf-hub` for downloading model weights on first boot.
-- [ ] 51. Implement "Staged Availability" (unlock UI when embedder is ready, even if LLM is downloading).
-- [ ] 52. Build settings UI (managing models, BYO keys, chunk sizes).
-- [ ] 53. Build chat interface.
-- [ ] 54. Integrate `pdf.js` for reliable native-feeling PDF rendering across all platforms.
+- [ ] 58. Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
+- [ ] 59. Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
+- [ ] 60. Build chat interface in Svelte (query textarea + submit button, streaming token display).
+- [ ] 61. Build citation display component (show source page + filename when `TokenEvent::Done` fires).
+- [ ] 62. Build settings UI (inference mode toggle, BYO endpoint URL, chunk size, ISQ level).
+- [ ] 63. Integrate `pdf.js` for reliable cross-platform PDF rendering.
+- [ ] 64. Emit progress events via `Channel<T>` for model downloads (hf-hub progress → frontend progress bar).

@@ -13,7 +13,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 | **Vector DB** | LanceDB | Embedded semantic similarity search |
 | **Storage** | Local OS Filesystem | Raw PDF storage in AppData/Config directories |
 | **Local Embeddings** | `fastembed-rs` | In-process ONNX runtime for generating text embeddings locally |
-| **Local LLM** | `llama.cpp` Sidecar | Local text generation via an OpenAI-compatible local server |
+| **Local LLM** | `mistral.rs` | In-process, pure-Rust inference engine for text generation |
 
 ## 2. Component Responsibilities
 
@@ -24,17 +24,17 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 
 ### Rust Core (The Backend)
 - **Commands:** Thin `#[tauri::command]` functions acting as IPC handlers.
-- **State & Setup (`lib.rs`):** The `lib.rs` file acts as the primary orchestrator. It handles application state initialization, SQLite connection pooling, sidecar health checks, Tauri command registration, and spawning the background `tokio` channels. It also initializes the `fastembed` model inside a `spawn_blocking` task to prevent UI freezing, and runs an FTS index health check on LanceDB (rebuilding if missing).
+- **State & Setup (`lib.rs`):** The `lib.rs` file acts as the primary orchestrator. It handles application state initialization, SQLite connection pooling, Tauri command registration, and spawning the background `tokio` channels. It also initializes the `fastembed` model inside a `spawn_blocking` task to prevent UI freezing, asynchronously builds the `mistral.rs` `Model` (loading weights and running ISQ quantization), and runs an FTS index health check on LanceDB (rebuilding if missing). With no sidecar to babysit, `lib.rs` is meaningfully simpler — no port binding, no PID lockfiles, no health-check polling, no auth-token generation, no process-group setup.
 - **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). When documents are uploaded, messages are pushed here using `try_send()` at the Tauri IPC boundary (to prevent freezing the UI if the queue is full), returning a `QueueFull` error if rejected. Background tasks use `send().await` for backpressure.
 - **Crash Recovery:** On startup, `lib.rs` queries SQLite for any documents with `status IN ('queued', 'embedding')`. It resets any `'embedding'` rows back to `'queued'` and pushes all recovered IDs back into the `mpsc` channel before the background worker begins, ensuring no jobs are silently lost after an app crash.
-- **LLM Management:** Manages a `llama.cpp` server process via `tauri-plugin-shell` sidecars.
-- **RAG Pipeline:** Rust generates query embeddings locally via `fastembed`, searches the LanceDB vector database using Hybrid Search, builds the context prompt, and streams the response from the local `llama.cpp` server.
+- **LLM Management:** Holds an `Arc<mistralrs::Model>` in `AppState`, built once during the staged-availability boot sequence. There is no process to manage, no socket to monitor, no cleanup hook required on shutdown — when the app process exits, the model drops with it.
+- **RAG Pipeline:** Rust generates query embeddings locally via `fastembed`, searches the LanceDB vector database using Hybrid Search, builds the context prompt, and streams the response from the in-process `mistral.rs` model.
   - **Chunking Defaults:** Documents are chunked into **512 tokens per chunk, with an 80-token overlap**. This is configurable via `app_settings` keys `chunk_size` and `chunk_overlap`.
   - **Embedding Prefixes:** Chunks must be prefixed with `"passage: "` during ingest, and user queries with `"query: "` to maximize retrieval quality with Instruction-aware models like EmbeddingGemma.
 
 ### SQLite & Embedded Vectors
 - SQLite stores all document metadata (`filename`, `status`, `page_count`, etc.).
-- Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server. 
+- Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server.
 - **FTS Index Creation:** Must be created AFTER rows are inserted (empty table creation leads to a silently broken index). Always use `.replace(true)` and `wait_for_index()` to ensure idempotency and observation. Hybrid search without an index *hard fails* (there is no silent fallback to vector-only).
 
 ## 3. Data Flows
@@ -59,29 +59,30 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 3. Rust generates the query embedding locally via `fastembed` (with `"query: "` prefix).
 4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search combined using Reciprocal Rank Fusion) for the top-K matching chunks. If the FTS index is missing or throws an error, it must catch the error and gracefully fall back to a vector-only search (emitting a warning event to the UI).
 5. Rust retrieves associated document metadata from SQLite.
-6. Rust calls the text generation endpoint (either the local `llama.cpp` sidecar or an external BYO inference endpoint) to synthesize an answer based on the chunks.
-7. Rust parses the citations and streams the response to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
+6. Rust builds the chat messages and calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model (or, if `inference_mode = "external"`, POSTs to the user's OpenAI-compatible endpoint via `reqwest`) to synthesize an answer based on the chunks.
+7. Rust parses the citations and streams the response to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
 
 **Citation Engine (Retrieval-Grounded)**
 To eliminate hallucination risks, the application uses a retrieval-grounded citation approach (Option A). The LLM is *not* asked to generate page numbers. Instead, Rust attaches the top-K chunk metadata (which already contains the exact `page` integer) directly to the final `TokenEvent::Done` payload as structured citations. The UI then displays these precise sources (e.g., "Sources: page 4, page 11").
 
-### LLM Sidecar Lifecycle & Security
+### LLM Lifecycle
 
-If running in local inference mode, the application manages a `llama.cpp` server sidecar via `tauri-plugin-shell` mapped to a process group:
-- **Security:** On startup, Rust generates a 32-byte cryptographically random hex token (via the `getrandom` crate). This token is stored in `AppState` and never written to disk.
-- **Process Management:** The sidecar must be spawned into its own process group (`command-group` crate on Windows, `killpg` on macOS) to prevent orphan processes on hard crashes. 
-- **PID Lockfile:** A `llama.lock` file is used to detect orphaned sidecars on startup. If the PID exists, it is killed before spawning a new one.
-- **Startup & Dynamic Port:** `lib.rs` pre-binds to an ephemeral port from the IANA range to ensure it is free, closes the binding, and spawns the sidecar with `--port N`. It parses `stdout` for the ready signal.
-- **Health Check:** `reqwest` polls `GET /health` with a timeout (e.g., 20 retries × 500ms) before emitting an `llm_ready` event to the UI. All internal `reqwest` calls to the sidecar include the header `Authorization: Bearer <token>`.
-- **Cleanup hooks:** On app exit, the sidecar process is explicitly killed via both `RunEvent::WindowEvent` (`CloseRequested`) and `RunEvent::ExitRequested`.
+`mistral.rs` runs in-process inside the main Rust binary. There is no subprocess, no port, no auth token, no health check. The lifecycle is:
+- **Startup:** During `lib.rs` setup, build the model asynchronously (`TextModelBuilder::new(repo_id).with_isq(IsqType::Q4K).build().await`). This is the only slow step — it loads weights from `$APPLOCALDATA/models` and applies in-situ quantization. Wrap the result in `Arc<Model>` and stash it in `AppState`.
+- **Ready Signal:** Once `.build().await` resolves, emit `llm_ready` to the UI to unlock the query interface.
+- **Runtime:** Tauri commands clone the `Arc<Model>` and call `stream_chat_request`. `mistral.rs` handles continuous batching, KV cache, and worker threads internally.
+- **Shutdown:** Nothing to do. The `Model` drops when `AppState` drops at process exit.
+
+The previous machinery — ephemeral hex tokens, dynamic port binding, `--port N` arg parsing, `GET /health` polling, `Authorization: Bearer` headers, `command-group` process groups, `killpg`, `llama.lock` PID files, `RunEvent::CloseRequested` cleanup hooks — is all gone.
 
 ### BYO Inference Mode (External LLM)
 
-Users can opt to use an external OpenAI-compatible endpoint instead of the local sidecar:
+Users can opt to use an external OpenAI-compatible endpoint instead of the in-process `mistral.rs` model:
 - Managed via `inference_mode = "external"` in `app_settings`.
 - The `external_base_url` is stored in the local SQLite database.
 - The `external_api_key` is securely stored in the OS keychain using the `keyring` crate, not in SQLite. Specifically, the keyring namespace must be set to `service = "ragtag"` and `username = "external_api_key"` to prevent collisions if the user runs multiple profiles.
-- When configured, the RAG pipeline bypasses sidecar management and routes inference requests directly to the user's endpoint. Both the sidecar and external endpoints speak the OpenAI spec, ensuring prompt-building and response-parsing logic remains identical.
+- When configured, the RAG pipeline bypasses the local `mistral.rs` model entirely and routes inference requests to the user's endpoint via `reqwest`. The two paths share the same prompt-building logic and are unified behind a small `InferenceClient` trait so the streaming/citation glue is identical.
+- Selecting external mode also skips the LLM weight download on first run (see Staged Availability below).
 
 ### Authentication
 **Removed.** Since this is a local application running under the user's OS profile, cloud-style authentication (cookies, sessions, Postgres tables) is no longer required.
@@ -91,5 +92,5 @@ Users can opt to use an external OpenAI-compatible endpoint instead of the local
 ### Model Files and First-Run Staged Availability
 Instead of bundling massive AI model files into the application binary, model files are downloaded on first run. To ensure a good UX, the application uses **Staged Availability**:
 - **Embedding Models:** Downloaded via `fastembed` (or `hf-hub` with resume support). This is relatively small (~500MB). Once complete, the application emits an `embedder_ready` event, **unlocking the document ingestion UI** immediately.
-- **Text Generation:** Model weights for `llama.cpp` (e.g., Gemma 4 E2B GGUF files) are downloaded to the OS application data directory using the `hf-hub` crate in parallel with the embedding model. Because LLMs can be several gigabytes, the **query interface remains locked** until an `llm_ready` event fires.
-- **Rationale:** This prevents the user from waiting 10+ minutes on a slow connection before they can even upload a PDF. If BYO inference mode is active, the LLM download is skipped entirely and the query UI unlocks as soon as the embedder is ready.
+- **Text Generation:** Model weights for `mistral.rs` (e.g., Gemma 4 E2B GGUF or safetensors files) are downloaded to the OS application data directory using the `hf-hub` crate in parallel with the embedding model. Because LLMs can be several gigabytes, the **query interface remains locked** until `mistral.rs`'s `TextModelBuilder::build().await` completes and an `llm_ready` event fires.
+- **Rationale:** This prevents the user from waiting 10+ minutes on a slow connection before they can even upload a PDF. If BYO inference mode is active, the LLM download and in-process model build are skipped entirely and the query UI unlocks as soon as the embedder is ready.

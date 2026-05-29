@@ -80,6 +80,8 @@ Example keys:
 - `external_base_url`: URL for an OpenAI-compatible endpoint (used if mode is external).
 - `use_query_enhancement`: `"true"` or `"false"`
 - `embedding_model`: `"EmbeddingGemma-300M"`
+- `generation_model`: HF repo ID consumed by `mistral.rs` (e.g., `"google/gemma-4-E2B-it"`).
+- `isq_level`: In-situ quantization level for `mistral.rs` (e.g., `"Q4K"`, `"Q8_0"`).
 - `vector_dim`: `"768"`
 - `chunk_size`: `"512"`
 - `chunk_overlap`: `"80"`
