@@ -1,0 +1,23 @@
+{
+  "name": "mrk-ragtag",
+  "version": "1.0.0",
+  "description": "A localized, zero-configuration desktop application for querying technical manuals and other documents. It acts as an intelligent, personalized brain for technical manuals, allowing users to ask questions in natural language and receive synthesized answers with precise page citations.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MRKups/mrk-ragtag.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/MRKups/mrk-ragtag/issues"
+  },
+  "homepage": "https://github.com/MRKups/mrk-ragtag#readme"
+}

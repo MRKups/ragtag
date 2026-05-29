@@ -1,0 +1,30 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../frontend/build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Ragtag",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPLOCALDATA/**",
+          "$APPLOCALDATA/.**/**"
+        ]
+      }
+    }
+  },
+  "identifier": "com.ragtag.dev",
+  "version": "0.1.0",
+  "productName": "Ragtag"
+}
