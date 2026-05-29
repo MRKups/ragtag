@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO documents (\n                id, filename, file_type, file_size_bytes, file_hash, storage_path, \n                status, chunk_count, embedding_model, embedding_attempts, \n                created_at, processing_started_at, indexed_at, error_message, retry_count\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 15
+    },
+    "nullable": []
+  },
+  "hash": "b3f7f9cc09f1e99680f5358c2b4c8d5507e84ba27d2b01db937ffc8c90673bdb"
+}

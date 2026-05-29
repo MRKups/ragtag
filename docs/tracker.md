@@ -19,16 +19,16 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ## Phase 2: Data Layer & Persistence (The Brain)
 
-- [ ] 13. Define core data structures (`Document`, `AppState`, `AppError`) in `crates/domain`.
-- [ ] 14. Implement `serde::Serialize` for `AppError` to ensure safe, typed errors over IPC.
-- [ ] 15. Add `sqlx` (v0.8) with `sqlite`, `runtime-tokio`, and `migrate` features to `crates/persistence`.
-- [ ] 16. Write SQL migrations for `documents` and `app_settings` tables.
-- [ ] 17. Implement DB initialization logic (ensuring the `app_local_data_dir` exists before connecting).
-- [ ] 18. Implement CRUD repository functions for `documents` (insert, update status).
-- [ ] 19. Add `lancedb` (v0.26.2) and `arrow` crates to `crates/persistence`.
-- [ ] 20. Define the Arrow schema for chunks (`id`, `vector` [FixedSizeList 768], `page`, `chunk_index`, `content`).
-- [ ] 21. Implement LanceDB table creation and connection logic.
-- [ ] 22. Implement the LanceDB `merge_insert` pipeline to guarantee idempotency on crashes.
+- [x] 13. Define core data structures (`Document`, `DocumentStatus`, `AppError`, `TokenEvent`, `Citation`) in `crates/domain`.
+- [x] 14. Implement `serde::Serialize` for `AppError` to ensure safe, typed errors over IPC.
+- [x] 15. Add `sqlx` (v0.8.6) with `sqlite`, `runtime-tokio`, and `migrate` features to `crates/persistence`.
+- [x] 16. Write SQL migrations for `documents` and `app_settings` tables.
+- [x] 17. Implement DB initialization logic (ensuring the `app_local_data_dir` exists before connecting, running migrations).
+- [x] 18. Implement CRUD repository functions for `documents` (`insert`, `update_status`, `get_by_id`, `reset_embedding_to_queued`).
+- [x] 19. Add `lancedb` (v0.26.2) and `arrow` (57.2) crates to `crates/persistence`.
+- [x] 20. Define the Arrow schema for chunks (`document_id`, `vector` [FixedSizeList 768], `page`, `chunk_index`, `content`).
+- [x] 21. Implement LanceDB table creation and connection logic (`init`, `get_or_create_table`).
+- [x] 22. Implement the LanceDB `merge_insert` pipeline with write `Semaphore(1)`, FTS index rebuild guard, and idempotent upserts on `[document_id, page, chunk_index]`.
 
 ## Phase 3: Background Processing Pipeline (The Muscle)
 

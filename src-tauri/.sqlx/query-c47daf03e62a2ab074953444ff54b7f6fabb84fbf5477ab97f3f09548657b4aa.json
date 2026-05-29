@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE documents SET status = 'queued' WHERE status = 'embedding'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "c47daf03e62a2ab074953444ff54b7f6fabb84fbf5477ab97f3f09548657b4aa"
+}
