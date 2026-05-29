@@ -1,8 +1,11 @@
 use domain::AppError;
 use lancedb::connection::Connection;
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+use arrow_array::{Float32Array, StringArray, Int32Array};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use lancedb::query::{ExecutableQuery, QueryBase};
+use futures::stream::StreamExt;
 
 pub struct VectorDb {
     pub conn: Connection,
@@ -45,10 +48,6 @@ impl VectorDb {
             let table = self.conn.create_empty_table("chunks", schema).execute().await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
             
-            // FTS Index Creation MUST be created AFTER rows are inserted, but LanceDB 
-            // also supports creating an empty index if we use wait_for_index().
-            // However, per the architecture docs: empty table creation leads to a silently broken index.
-            // We will defer FTS creation until after the first insert in the pipeline.
             Ok(table)
         }
     }
@@ -61,8 +60,6 @@ impl VectorDb {
             return Ok(());
         }
 
-        // Use a static semaphore as required by the AGENTS.md document: 
-        // "Use a tokio::sync::Semaphore(1) for all writes to prevent Commit conflict for version N"
         use tokio::sync::Semaphore;
         use std::sync::OnceLock;
         
@@ -73,7 +70,6 @@ impl VectorDb {
 
         let schema = Self::schema();
 
-        // Merge insert ensures idempotency
         let mut merge_insert = table.merge_insert(&["document_id", "page", "chunk_index"]);
         merge_insert.when_matched_update_all(None);
         merge_insert.when_not_matched_insert_all();
@@ -82,7 +78,6 @@ impl VectorDb {
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        // Rebuild FTS index on first insert per session to ensure it's healthy
         if !self.fts_built.swap(true, Ordering::SeqCst) {
             let index_params = lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
             table.create_index(&["content"], index_params)
@@ -94,4 +89,71 @@ impl VectorDb {
 
         Ok(())
     }
+
+    pub async fn hybrid_search(&self, query_text: &str, query_vector: &[f32], limit: usize) -> Result<Vec<SearchResult>, AppError> {
+        let table = self.get_or_create_table().await?;
+        
+        let query_vector_f32: Vec<f32> = query_vector.to_vec();
+        let fts_query = lance_index::scalar::FullTextSearchQuery::new(query_text.to_string());
+
+        let mut stream = match table.query()
+            .full_text_search(fts_query)
+            .nearest_to(query_vector_f32.clone())
+            .map_err(|e| AppError::VectorDb(e.to_string()))?
+            .limit(limit)
+            .execute()
+            .await 
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[LanceDB] Hybrid search failed, falling back to vector-only: {}", e);
+                table.query()
+                    .nearest_to(query_vector_f32)
+                    .map_err(|e| AppError::VectorDb(e.to_string()))?
+                    .limit(limit)
+                    .execute()
+                    .await
+                    .map_err(|e| AppError::VectorDb(e.to_string()))?
+            }
+        };
+
+        let mut out = Vec::new();
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| AppError::VectorDb(e.to_string()))?;
+            
+            let docs_array = batch.column_by_name("document_id")
+                .and_then(|a| a.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| AppError::Internal("Missing document_id".into()))?;
+            let content_array = batch.column_by_name("content")
+                .and_then(|a| a.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| AppError::Internal("Missing content".into()))?;
+            let page_array = batch.column_by_name("page")
+                .and_then(|a| a.as_any().downcast_ref::<Int32Array>())
+                .ok_or_else(|| AppError::Internal("Missing page".into()))?;
+            let distance_array = batch.column_by_name("_distance")
+                .and_then(|a| a.as_any().downcast_ref::<Float32Array>());
+
+            for i in 0..batch.num_rows() {
+                out.push(SearchResult {
+                    document_id: docs_array.value(i).to_string(),
+                    content: content_array.value(i).to_string(),
+                    page: page_array.value(i) as u32,
+                    score: distance_array.map(|a| a.value(i)).unwrap_or(0.0),
+                });
+            }
+        }
+
+        out.dedup_by(|a, b| a.document_id == b.document_id && a.page == b.page && a.content == b.content);
+        out.truncate(limit);
+        
+        Ok(out)
+    }
+}
+
+pub struct SearchResult {
+    pub document_id: String,
+    pub content: String,
+    pub page: u32,
+    pub score: f32,
 }

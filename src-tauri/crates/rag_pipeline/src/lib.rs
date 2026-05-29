@@ -109,3 +109,43 @@ fn build_record_batch(
     )
     .map_err(|e| AppError::Internal(format!("Failed to build RecordBatch: {e}")))
 }
+
+pub fn embed_query(
+    embedder: &Arc<std::sync::Mutex<TextEmbedding>>,
+    query: &str,
+) -> Result<Vec<f32>, AppError> {
+    let query_text = format!("query: {}", query);
+    let mut model = embedder
+        .lock()
+        .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
+    let embeddings = model
+        .embed(vec![query_text.as_str()], None)
+        .map_err(|e| AppError::Internal(format!("Query embedding failed: {e}")))?;
+    embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("No embedding returned".into()))
+}
+
+pub fn build_rag_prompt(
+    query: &str,
+    chunks: &[persistence::SearchResult],
+) -> String {
+    let mut context = String::from(
+        "You are a helpful assistant for querying technical documents. \
+        Use ONLY the document excerpts below to answer the user's question. \
+        If the excerpts do not contain enough information, say so clearly. \
+        Cite sources by indicating the page number in brackets like [Page N].\n\n",
+    );
+
+    for chunk in chunks {
+        context.push_str(&format!(
+            "[Document: {}, Page: {}]\n{}\n\n",
+            chunk.document_id, chunk.page, chunk.content
+        ));
+    }
+
+    context.push_str(&format!("User question: {}", query));
+
+    context
+}

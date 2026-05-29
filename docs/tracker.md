@@ -51,32 +51,32 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ### Backtracking — Remove Sidecar Artifacts
 
-- [ ] 37. Remove `tauri-plugin-shell` from `src-tauri/Cargo.toml` dependencies.
-- [ ] 38. Remove `shell:default` permission from `capabilities/default.json`.
-- [ ] 39. Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
-- [ ] 40. Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
+- [x] 37. Remove `tauri-plugin-shell` from `src-tauri/Cargo.toml` dependencies.
+- [x] 38. Remove `shell:default` permission from `capabilities/default.json`.
+- [x] 39. Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
+- [x] 40. Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
 
 ### New Dependencies & State
 
-- [ ] 41. Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
-- [ ] 42. Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"` to `src-tauri/Cargo.toml`.
-- [ ] 43. Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
-- [ ] 44. Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
-- [ ] 45. Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
-- [ ] 46. Emit `embedder_ready` event after `fastembed` init completes.
+- [x] 41. Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
+- [x] 42. Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"`, `lance-index = "2.0.0"` to `src-tauri/Cargo.toml`.
+- [x] 43. Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
+- [x] 44. Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
+- [x] 45. Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
+- [x] 46. Emit `embedder_ready` event after `fastembed` init completes.
 
 ### Vector Search Layer
 
-- [ ] 47. Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
-- [ ] 48. Add vector-only fallback search if FTS index is missing or throws.
-- [ ] 49. Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
+- [x] 47. Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
+- [x] 48. Add vector-only fallback search if FTS index is missing or throws.
+- [x] 49. Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
 
 ### RAG Query Pipeline
 
-- [ ] 50. Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
-- [ ] 51. Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
-- [ ] 52. Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
-- [ ] 53. Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
+- [x] 50. Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
+- [x] 51. Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
+- [x] 52. Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
+- [x] 53. Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
 
 ### BYO Inference Mode
 
@@ -87,7 +87,7 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ## Phase 5: Polish, Security & UX
 
-- [ ] 58. Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
+- [x] 58. Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
 - [ ] 59. Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
 - [ ] 60. Build chat interface in Svelte (query textarea + submit button, streaming token display).
 - [ ] 61. Build citation display component (show source page + filename when `TokenEvent::Done` fires).

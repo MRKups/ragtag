@@ -1,7 +1,8 @@
 mod state;
 pub use state::AppState;
+mod model_download;
 
-use domain::{AppError, Document, DocumentStatus};
+use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent};
 use persistence::{init_pool, DocumentRepository, VectorDb};
 use sha2::{Digest, Sha512};
 use std::sync::Arc;
@@ -81,11 +82,99 @@ async fn upload_document(
     Ok(doc_id)
 }
 
+#[tauri::command]
+async fn execute_query(
+    _app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    query: String,
+    channel: tauri::ipc::Channel<TokenEvent>,
+) -> Result<(), AppError> {
+    let repo = DocumentRepository::new(state.db_pool.clone());
+    let embedder = state.embedder.clone();
+    let vector_db = state.vector_db.clone();
+    let local_llm = state.local_llm.clone();
+
+    let query_embedding = {
+        let embedder = embedder.clone();
+        let q = query.clone();
+        tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&embedder, &q))
+            .await
+            .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
+    }?;
+
+    let search_results = vector_db
+        .hybrid_search(&query, &query_embedding, 10)
+        .await?;
+
+    let mut citations: Vec<Citation> = Vec::new();
+    for result in &search_results {
+        if let Ok(Some(doc)) = repo.get_by_id(&result.document_id).await {
+            citations.push(Citation {
+                document_id: result.document_id.clone(),
+                filename: doc.filename.clone(),
+                page: result.page as i32,
+                chunk_content: result.content.clone(),
+            });
+        }
+    }
+
+    let context = rag_pipeline::build_rag_prompt(&query, &search_results);
+
+    let model = {
+        let guard = local_llm.read().await;
+        guard.clone()
+    };
+
+    if let Some(model) = model {
+        let request = mistralrs::RequestBuilder::new()
+            .add_message(mistralrs::TextMessageRole::System, 
+                "You are a helpful assistant that answers questions using document excerpts. Answer concisely using only the provided context. Do not use your own knowledge.".to_string())
+            .add_message(mistralrs::TextMessageRole::User, context);
+
+        let mut stream = model
+            .stream_chat_request(request)
+            .await
+            .map_err(|e| AppError::Inference(format!("LLM request failed: {e}")))?;
+
+        loop {
+            match stream.next().await {
+                Some(mistralrs::Response::Chunk(chunk)) => {
+                    if let Some(choice) = chunk.choices.first() {
+                        if let Some(token) = &choice.delta.content {
+                            if !token.is_empty() {
+                                let _ = channel.send(TokenEvent::Token { text: token.clone() });
+                            }
+                        }
+                    }
+                }
+                Some(mistralrs::Response::Done(_response)) => {
+                    let _ = channel.send(TokenEvent::Done { citations });
+                    break;
+                }
+                Some(mistralrs::Response::ModelError(msg, _)) => {
+                    let _ = channel.send(TokenEvent::Error { message: msg });
+                    break;
+                }
+                None => {
+                    let _ = channel.send(TokenEvent::Done { citations });
+                    break;
+                }
+                _ => {}
+            }
+        }
+    } else {
+        let _ = channel.send(TokenEvent::Error {
+            message: "No LLM model loaded. Is BYO inference configured?".into(),
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let app_local_data = app
                 .path()
@@ -139,16 +228,75 @@ pub fn run() {
 
             let embedder = Arc::new(std::sync::Mutex::new(embedder));
 
+            let local_llm = Arc::new(tokio::sync::RwLock::new(None));
+
             app.manage(AppState {
                 db_pool: pool.clone(),
                 job_queue: tx,
-                llm_token: tokio::sync::Mutex::new(String::new()),
                 embedder: embedder.clone(),
                 vector_db: vector_db.clone(),
+                local_llm: local_llm.clone(),
             });
 
             let docs_dir = app_local_data.clone();
             let app_handle = app.handle().clone();
+
+            // Background init for LLM
+            let llm_handle = app_handle.clone();
+            let llm_state = local_llm.clone();
+            let app_settings = persistence::AppSettingsRepository::new(pool.clone());
+            let models_dir_llm = models_dir.clone();
+            
+            tokio::spawn(async move {
+                let mode = app_settings.get("inference_mode").await
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "local".to_string());
+                
+                if mode == "local" {
+                    eprintln!("[Init] Starting model download via hf-hub...");
+                    
+                    let model_id = "mistralai/Mistral-7B-Instruct-v0.1"; // TODO: read from settings
+                    
+                    // Step 1: Download with progress
+                    if let Err(e) = model_download::download_model(
+                        model_id,
+                        &models_dir_llm,
+                        &llm_handle,
+                    ).await {
+                        eprintln!("[Init] Model download failed: {}", e);
+                        let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
+                            model_id: model_id.to_string(),
+                            current_file: String::new(),
+                            file_downloaded: 0,
+                            file_total: 0,
+                            files_completed: 0,
+                            total_files: 0,
+                            stage: model_download::DownloadStage::Error { message: e.to_string() },
+                        });
+                        return;
+                    }
+                    
+                    eprintln!("[Init] Model downloaded, building mistral.rs pipeline...");
+                    
+                    // Step 2: Build the model from cache
+                    let builder = mistralrs::TextModelBuilder::new(model_id)
+                        .with_isq(mistralrs::IsqType::Q4K)
+                        .from_hf_cache_path(models_dir_llm);
+                    
+                    match builder.build().await {
+                        Ok(model) => {
+                            *llm_state.write().await = Some(Arc::new(model));
+                            eprintln!("[Init] mistral.rs ready");
+                            let _ = llm_handle.emit("llm_ready", ());
+                        }
+                        Err(e) => {
+                            eprintln!("[Init] Failed to build mistral model: {}", e);
+                        }
+                    }
+                }
+            });
+
+            let _ = app_handle.emit("embedder_ready", ());
 
             // Background worker: processes documents from the channel
             tokio::spawn(async move {
@@ -199,7 +347,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ping, upload_document])
+        .invoke_handler(tauri::generate_handler![ping, upload_document, execute_query])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

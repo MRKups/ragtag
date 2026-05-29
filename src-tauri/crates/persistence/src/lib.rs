@@ -1,5 +1,5 @@
 pub mod sqlite;
 pub mod lancedb;
 
-pub use sqlite::{init_pool, DocumentRepository};
-pub use lancedb::VectorDb;
+pub use sqlite::{init_pool, DocumentRepository, AppSettingsRepository};
+pub use lancedb::{VectorDb, SearchResult};

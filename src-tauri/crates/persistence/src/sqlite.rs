@@ -208,3 +208,43 @@ impl DocumentRow {
         }
     }
 }
+
+pub struct AppSettingsRepository {
+    pool: SqlitePool,
+}
+
+impl AppSettingsRepository {
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn get(&self, key: &str) -> Result<Option<String>, AppError> {
+        let row = sqlx::query!(
+            r#"SELECT value FROM app_settings WHERE key = ?"#,
+            key
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(row.map(|r| r.value))
+    }
+
+    pub async fn set(&self, key: &str, value: &str) -> Result<(), AppError> {
+        sqlx::query!(
+            r#"
+            INSERT INTO app_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET 
+                value = excluded.value
+            "#,
+            key,
+            value
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(())
+    }
+}

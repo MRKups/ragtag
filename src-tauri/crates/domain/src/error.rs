@@ -14,6 +14,8 @@ pub enum AppError {
     QueueFull,
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("Inference error: {0}")]
+    Inference(String),
 }
 
 impl From<std::io::Error> for AppError {
@@ -34,6 +36,7 @@ impl serde::Serialize for AppError {
             AppError::VectorDb(_) => "VectorDb",
             AppError::QueueFull => "QueueFull",
             AppError::Internal(_) => "Internal",
+            AppError::Inference(_) => "Inference",
         };
         map.serialize_entry("kind", kind)?;
         map.serialize_entry("message", &self.to_string())?;
