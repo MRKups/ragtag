@@ -1,18 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentStatus {
+    #[default]
     Queued,
     Embedding,
     Indexed,
     Failed,
-}
-
-impl Default for DocumentStatus {
-    fn default() -> Self {
-        Self::Queued
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

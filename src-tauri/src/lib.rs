@@ -2,9 +2,10 @@ mod state;
 pub use state::AppState;
 
 use domain::{AppError, Document, DocumentStatus};
-use persistence::{init_pool, DocumentRepository};
+use persistence::{init_pool, DocumentRepository, VectorDb};
 use sha2::{Digest, Sha512};
-use tauri::Manager;
+use std::sync::Arc;
+use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 
 #[tauri::command]
@@ -89,24 +90,31 @@ pub fn run() {
             let app_local_data = app
                 .path()
                 .app_local_data_dir()
-                .map_err(|e| Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                .map_err(|e| Box::new(std::io::Error::other(
                     e.to_string(),
                 )))?;
 
             let pool = tauri::async_runtime::block_on(init_pool(&app_local_data))
-                .map_err(|e| Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                .map_err(|e| Box::new(std::io::Error::other(
                     e.to_string(),
                 )))?;
+
+            let models_dir = app_local_data.join("models");
+
+            let embedder = tauri::async_runtime::block_on(async {
+                let dir = models_dir.clone();
+                tokio::task::spawn_blocking(move || rag_pipeline::init_embedder(&dir))
+                    .await
+                    .map_err(|e| std::io::Error::other(format!("Embedder task panicked: {e}")))?
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+            })?;
 
             let (tx, mut rx) = mpsc::channel::<String>(32);
 
             // Crash recovery: reset embedding → queued
             let repo = DocumentRepository::new(pool.clone());
             let recovered = tauri::async_runtime::block_on(repo.reset_embedding_to_queued())
-                .map_err(|e| Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                .map_err(|e| Box::new(std::io::Error::other(
                     e.to_string(),
                 )))?;
             for id in recovered {
@@ -115,24 +123,77 @@ pub fn run() {
 
             // Re-queue any documents that were 'queued' before crash
             let queued = tauri::async_runtime::block_on(repo.get_queued_ids())
-                .map_err(|e| Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                .map_err(|e| Box::new(std::io::Error::other(
                     e.to_string(),
                 )))?;
             for id in queued {
                 let _ = tx.try_send(id);
             }
 
+            let lancedb_dir = app_local_data.join(".lancedb");
+            let vector_db = tauri::async_runtime::block_on(VectorDb::init(&lancedb_dir))
+                .map_err(|e| Box::new(std::io::Error::other(
+                    e.to_string(),
+                )))?;
+            let vector_db = Arc::new(vector_db);
+
+            let embedder = Arc::new(std::sync::Mutex::new(embedder));
+
             app.manage(AppState {
                 db_pool: pool.clone(),
                 job_queue: tx,
                 llm_token: tokio::sync::Mutex::new(String::new()),
+                embedder: embedder.clone(),
+                vector_db: vector_db.clone(),
             });
 
-            // Background worker: consumes jobs from the channel
+            let docs_dir = app_local_data.clone();
+            let app_handle = app.handle().clone();
+
+            // Background worker: processes documents from the channel
             tokio::spawn(async move {
+                let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
-                    eprintln!("[Worker] Received job: {}", doc_id);
+                    eprintln!("[Worker] Processing document: {doc_id}");
+
+                    let result = match repo.get_by_id(&doc_id).await {
+                        Ok(Some(doc)) => {
+                            let pdf_path = docs_dir.join(&doc.storage_path);
+                            rag_pipeline::process_document(
+                                &pdf_path,
+                                &doc_id,
+                                embedder.clone(),
+                                &repo,
+                                &vector_db,
+                            ).await
+                        }
+                        Ok(None) => {
+                            eprintln!("[Worker] Document {doc_id} not found");
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!("[Worker] DB error for {doc_id}: {e}");
+                            continue;
+                        }
+                    };
+
+                    match result {
+                        Ok(()) => {
+                            eprintln!("[Worker] Document {doc_id} indexed successfully");
+                            let _ = app_handle.emit("document_indexed", serde_json::json!({
+                                "document_id": &doc_id,
+                                "status": "indexed",
+                            }));
+                        }
+                        Err(e) => {
+                            eprintln!("[Worker] Document {doc_id} failed: {e}");
+                            let _ = repo.update_status(&doc_id, DocumentStatus::Failed).await;
+                            let _ = app_handle.emit("document_failed", serde_json::json!({
+                                "document_id": &doc_id,
+                                "error": e.to_string(),
+                            }));
+                        }
+                    }
                 }
             });
 

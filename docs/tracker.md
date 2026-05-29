@@ -34,18 +34,18 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 - [x] 23. Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
 - [x] 24. Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue stale `queued` docs).
-- [x] 25. Spawn the main background worker task in `lib.rs` (currently placeholder — logs received job IDs).
+- [x] 25. Spawn the main background worker task in `lib.rs` (now runs the full `rag_pipeline::process_document` pipeline and emits `document_indexed` / `document_failed` events).
 - [x] 26. Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, computes SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row with relative `storage_path`, pushes doc ID via `try_send()`.
 - [x] 27. Implement Rust logic to safely copy raw bytes to the App Data directory (via `tokio::fs`).
 - [x] 28. Write initial SQLite `queued` row and push job to the MPSC channel.
-- [ ] 29. Integrate `pdf-extract` into `crates/rag_pipeline`.
-- [ ] 30. Write extraction loop (MUST be page-by-page to preserve citation boundaries).
-- [ ] 31. Implement token chunking logic (512 size / 80 overlap).
-- [ ] 32. Integrate `fastembed-rs` (v5).
-- [ ] 33. Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
-- [ ] 34. Hook embedding generation into the chunking pipeline.
-- [ ] 35. Enforce write order: Save vectors to LanceDB *first*, update SQLite to `indexed` *second*.
-- [ ] 36. Emit `document_indexed` Tauri event to Svelte upon completion.
+- [x] 29. Integrate `pdf-extract` into `crates/rag_pipeline`.
+- [x] 30. Write extraction loop (MUST be page-by-page to preserve citation boundaries).
+- [x] 31. Implement token chunking logic (512 size / 80 overlap).
+- [x] 32. Integrate `fastembed-rs` (v5).
+- [x] 33. Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
+- [x] 34. Hook embedding generation into the chunking pipeline.
+- [x] 35. Enforce write order: Save vectors to LanceDB *first*, update SQLite to `indexed` *second*.
+- [x] 36. Emit `document_indexed` Tauri event to Svelte upon completion.
 
 ## Phase 4: AI Execution & RAG (The Voice)
 
