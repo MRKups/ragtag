@@ -15,7 +15,9 @@ src-tauri/binaries/
 debug/
 **/*.rs.bk
 *.pdb
-**/mutants.out*/
+
+# Databases
+*.db
 
 # SvelteKit & Vite
 frontend/build/

@@ -32,12 +32,12 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ## Phase 3: Background Processing Pipeline (The Muscle)
 
-- [ ] 23. Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
-- [ ] 24. Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue).
-- [ ] 25. Spawn the main background worker task in `lib.rs`.
-- [ ] 26. Create Tauri command `upload_document`.
-- [ ] 27. Implement Rust logic to safely copy raw bytes to the App Data directory.
-- [ ] 28. Write initial SQLite `queued` row and push job to the MPSC channel.
+- [x] 23. Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
+- [x] 24. Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue stale `queued` docs).
+- [x] 25. Spawn the main background worker task in `lib.rs` (currently placeholder — logs received job IDs).
+- [x] 26. Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, computes SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row with relative `storage_path`, pushes doc ID via `try_send()`.
+- [x] 27. Implement Rust logic to safely copy raw bytes to the App Data directory (via `tokio::fs`).
+- [x] 28. Write initial SQLite `queued` row and push job to the MPSC channel.
 - [ ] 29. Integrate `pdf-extract` into `crates/rag_pipeline`.
 - [ ] 30. Write extraction loop (MUST be page-by-page to preserve citation boundaries).
 - [ ] 31. Implement token chunking logic (512 size / 80 overlap).

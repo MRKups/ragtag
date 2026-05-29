@@ -128,6 +128,17 @@ impl DocumentRepository {
         Ok(row.map(|r| r.into_domain()))
     }
 
+    pub async fn get_queued_ids(&self) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query!(
+            "SELECT id FROM documents WHERE status = 'queued'"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(rows.into_iter().filter_map(|r| r.id).collect())
+    }
+
     pub async fn reset_embedding_to_queued(&self) -> Result<Vec<String>, AppError> {
         let docs = sqlx::query!(
             "SELECT id FROM documents WHERE status = 'embedding'"
