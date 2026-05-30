@@ -56,7 +56,7 @@
           text={queryState.text}
           citations={queryState.citations}
           isStreaming={queryState.isStreaming}
-          error={queryState.error?.message ?? null}
+          error={null}
           onCitationClick={handleCitationClick}
         />
       {:else}

@@ -5,18 +5,20 @@
 
   const dispatch = createEventDispatcher();
 
-  let isDragging = false;
-  let isUploading = false;
+  let isDragging = $state(false);
+  let isUploading = $state(false);
   let fileInput: HTMLInputElement;
-  
+
+  // Track each selected file with its upload status
   interface FileStatus {
     file: File;
     status: 'pending' | 'uploading' | 'success' | 'error';
-    message?: string;
+    progress: number;
+    errorMsg?: string;
   }
 
   // We only handle one file at a time, but UI can still list what's selected
-  let files: FileStatus[] = [];
+  let files: FileStatus[] = $state([]);
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
@@ -53,13 +55,13 @@
       const hasValidExtension = allowedExtensions.some(ext => name.endsWith(ext));
 
       if (!hasValidExtension) {
-        return { file: f, status: 'error' as const, message: 'Unsupported file type' };
+        return { file: f, status: 'error' as const, progress: 0, errorMsg: 'Unsupported file type' };
       }
       if (f.size > maxFileSize) {
-        return { file: f, status: 'error' as const, message: 'File too large (>50MB)' };
+        return { file: f, status: 'error' as const, progress: 0, errorMsg: 'File too large (>50MB)' };
       }
 
-      return { file: f, status: 'pending' as const };
+      return { file: f, status: 'pending' as const, progress: 0 };
     });
 
     files = [...files, ...newFileStatuses];
@@ -86,10 +88,9 @@
       
       try {
         await api.uploadDocument(files[i].file);
-        files[i] = { ...files[i], status: 'success', message: 'Uploaded' };
-        successCount++;
+        files[i] = { ...files[i], status: 'success', errorMsg: 'Uploaded' };
       } catch (e) {
-        files[i] = { ...files[i], status: 'error', message: e instanceof Error ? e.message : 'Upload failed' };
+        files[i] = { ...files[i], status: 'error', errorMsg: e instanceof Error ? e.message : 'Upload failed' };
       }
     }
 
@@ -112,11 +113,11 @@
     role="button"
     tabindex="0"
     class="drop-zone {isDragging ? 'dragging' : ''} {isUploading ? 'disabled' : ''}"
-    on:dragover={handleDragOver}
-    on:dragleave={handleDragLeave}
-    on:drop={handleDrop}
-    on:click={() => !isUploading && fileInput.click()}
-    on:keydown={(e) => e.key === 'Enter' && !isUploading && fileInput.click()}
+    ondragover={handleDragOver}
+    ondragleave={handleDragLeave}
+    ondrop={handleDrop}
+    onclick={() => !isUploading && fileInput.click()}
+    onkeydown={(e) => e.key === 'Enter' && !isUploading && fileInput.click()}
   >
     <input
       bind:this={fileInput}
@@ -124,7 +125,7 @@
       accept=".pdf"
       multiple
       class="hidden"
-      on:change={handleFileSelect}
+      onchange={handleFileSelect}
       disabled={isUploading}
     />
 
@@ -150,9 +151,9 @@
             <p class="file-name" title={file.file.name}>
               {file.file.name}
             </p>
-            {#if file.message}
+            {#if file.errorMsg}
               <p class="file-status {file.status}">
-                {file.message}
+                {file.errorMsg}
               </p>
             {:else}
               <p class="file-size">
@@ -171,7 +172,7 @@
             {:else}
               <button 
                 class="remove-btn"
-                on:click|stopPropagation={() => removeFile(i)}
+                onclick={(e) => { e.stopPropagation(); removeFile(i); }}
               >
                 <X size={20} />
               </button>
@@ -184,7 +185,7 @@
     <div class="actions">
       <button
         class="upload-btn"
-        on:click={uploadAll}
+        onclick={uploadAll}
         disabled={isUploading || !files.some(f => f.status === 'pending' || f.status === 'error')}
       >
         {#if isUploading}

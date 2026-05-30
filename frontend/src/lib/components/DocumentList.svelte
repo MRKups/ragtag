@@ -4,10 +4,10 @@
   import { api } from '$lib/api';
   import type { Document } from '$lib/types';
 
-  let documents: Document[] = [];
-  let isLoading = false;
-  let error: string | null = null;
-  let deleting: string | null = null;
+  let documents: Document[] = $state([]);
+  let isLoading = $state(false);
+  let error: string | null = $state(null);
+  let deleting: string | null = $state(null);
   let pollTimeout: ReturnType<typeof setTimeout>;
 
   export async function refresh() {
@@ -80,7 +80,7 @@
     </h3>
     <button 
       class="refresh-btn" 
-      on:click={() => fetchDocuments(false)} 
+      onclick={() => fetchDocuments(false)} 
       disabled={isLoading}
       title="Refresh list"
     >
@@ -100,7 +100,7 @@
       <div class="error-state">
         <AlertCircle size={20} />
         <p>{error}</p>
-        <button class="retry-link" on:click={() => fetchDocuments(false)}>Retry</button>
+        <button class="retry-link" onclick={() => fetchDocuments(false)}>Retry</button>
       </div>
     {:else if documents.length === 0}
       <div class="empty-state">
@@ -135,7 +135,7 @@
               <button 
                 class="action-btn delete-btn"
                 title="Delete"
-                on:click={() => handleDelete(doc.id, doc.filename)}
+                onclick={() => handleDelete(doc.id, doc.filename)}
                 disabled={deleting === doc.id}
               >
                 {#if deleting === doc.id}

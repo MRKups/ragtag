@@ -1,33 +1,34 @@
-<script lang="ts">
-  import { CheckCircle, AlertTriangle, AlertOctagon } from 'lucide-svelte';
+  <script lang="ts">
+  import { CheckCircle, AlertTriangle, AlertCircle } from 'lucide-svelte';
 
-  let { level = 'LOW' } = $props<{
-    level?: 'HIGH' | 'MEDIUM' | 'LOW';
+  let { confidence } = $props<{
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   }>();
 
-  const config: Record<string, { className: string; icon: typeof CheckCircle; label: string }> = {
+  let config: Record<'HIGH' | 'MEDIUM' | 'LOW', { icon: any, label: string, className: string }> = $derived({
     HIGH: {
-      className: 'badge-high',
       icon: CheckCircle,
-      label: 'High Confidence'
+      label: 'High Confidence',
+      className: 'badge-high'
     },
     MEDIUM: {
-      className: 'badge-medium',
       icon: AlertTriangle,
-      label: 'Medium Confidence'
+      label: 'Medium Confidence',
+      className: 'badge-medium'
     },
     LOW: {
-      className: 'badge-low',
-      icon: AlertOctagon,
-      label: 'Low Confidence'
+      icon: AlertCircle,
+      label: 'Low Confidence',
+      className: 'badge-low'
     }
-  };
+  });
 
-  let current = $derived(config[level] || config.LOW);
+  let current = $derived(config[confidence as 'HIGH' | 'MEDIUM' | 'LOW']);
+  let CurrentIcon = $derived(current.icon);
 </script>
 
 <div class="badge {current.className}">
-  <svelte:component this={current.icon} size={16} />
+  <CurrentIcon size={16} />
   <span>{current.label}</span>
 </div>
 

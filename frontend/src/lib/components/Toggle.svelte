@@ -11,11 +11,12 @@
   }
 </script>
 
-<div class="setting-item" role="button" tabindex="0" on:click={toggle} on:keydown={(e) => e.key === 'Enter' && toggle()}>
+<div class="setting-item" role="button" tabindex="0" onclick={toggle} onkeydown={(e) => e.key === 'Enter' && toggle()}>
   <div class="setting-info">
     <div class="setting-label">
       {#if icon}
-        <svelte:component this={icon} size={16} class="text-blue-400" />
+        {@const Icon = icon}
+        <Icon size={16} class="text-blue-400" />
       {/if}
       {label}
     </div>
