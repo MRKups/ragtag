@@ -3,9 +3,10 @@ pub use state::AppState;
 mod model_download;
 
 use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent};
-use persistence::{init_pool, DocumentRepository, VectorDb};
+use persistence::{init_pool, DocumentRepository, AppSettingsRepository, VectorDb};
 use sha2::{Digest, Sha512};
 use std::sync::Arc;
+use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 
@@ -169,6 +170,64 @@ async fn execute_query(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Document>, AppError> {
+    let repo = DocumentRepository::new(state.db_pool.clone());
+    repo.list_all().await
+}
+
+#[tauri::command]
+async fn delete_document(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), AppError> {
+    let repo = DocumentRepository::new(state.db_pool.clone());
+    
+    if let Some(doc) = repo.get_by_id(&id).await? {
+        let app_local_data = app.path().app_local_data_dir().map_err(|e| AppError::Io(e.to_string()))?;
+        let pdf_path = app_local_data.join(&doc.storage_path);
+        
+        if pdf_path.exists() {
+            tokio::fs::remove_file(pdf_path).await.map_err(|e| AppError::Io(e.to_string()))?;
+        }
+    }
+    
+    state.vector_db.delete_chunks(&id).await?;
+    repo.delete_by_id(&id).await?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<String, String>, AppError> {
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+    
+    let mut settings = HashMap::new();
+    let keys = vec![
+        "inference_mode", "external_base_url", "generation_model", 
+        "isq_level", "use_query_enhancement", "chunk_size", "chunk_overlap"
+    ];
+    
+    for key in keys {
+        if let Some(val) = repo.get(key).await? {
+            settings.insert(key.to_string(), val);
+        }
+    }
+    
+    Ok(settings)
+}
+
+#[tauri::command]
+async fn set_setting(
+    state: tauri::State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), AppError> {
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+    repo.set(&key, &value).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -347,7 +406,15 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ping, upload_document, execute_query])
+        .invoke_handler(tauri::generate_handler![
+            ping, 
+            upload_document, 
+            execute_query,
+            list_documents,
+            delete_document,
+            get_settings,
+            set_setting
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -139,6 +139,43 @@ impl DocumentRepository {
         Ok(rows.into_iter().filter_map(|r| r.id).collect())
     }
 
+    pub async fn list_all(&self) -> Result<Vec<Document>, AppError> {
+        let rows = sqlx::query_as!(
+            DocumentRow,
+            r#"SELECT 
+                id as "id!", 
+                filename as "filename!", 
+                file_type as "file_type!", 
+                file_size_bytes, 
+                file_hash, 
+                storage_path as "storage_path!", 
+                status as "status!", 
+                chunk_count, 
+                embedding_model, 
+                embedding_attempts, 
+                CAST(created_at as TEXT) as "created_at?: String", 
+                CAST(processing_started_at as TEXT) as "processing_started_at?: String", 
+                CAST(indexed_at as TEXT) as "indexed_at?: String", 
+                error_message, 
+                retry_count 
+            FROM documents 
+            ORDER BY created_at DESC"#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(rows.into_iter().map(|r| r.into_domain()).collect())
+    }
+
+    pub async fn delete_by_id(&self, id: &str) -> Result<(), AppError> {
+        sqlx::query!("DELETE FROM documents WHERE id = ?", id)
+            .execute(&self.pool)
+            .await
+            .map_err(sql_err)?;
+        Ok(())
+    }
+
     pub async fn reset_embedding_to_queued(&self) -> Result<Vec<String>, AppError> {
         let docs = sqlx::query!(
             "SELECT id FROM documents WHERE status = 'embedding'"

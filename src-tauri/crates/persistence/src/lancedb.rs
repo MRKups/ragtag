@@ -52,6 +52,22 @@ impl VectorDb {
         }
     }
 
+    pub async fn delete_chunks(&self, document_id: &str) -> Result<(), AppError> {
+        let table_names = self.conn.table_names().execute().await
+            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+        
+        if table_names.contains(&"chunks".to_string()) {
+            let table = self.conn.open_table("chunks").execute().await
+                .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            
+            table.delete(format!("document_id = '{}'", document_id).as_str())
+                .await
+                .map_err(|e| AppError::VectorDb(e.to_string()))?;
+        }
+        
+        Ok(())
+    }
+
     pub async fn upsert_chunks(&self, batches: impl IntoIterator<Item = arrow_array::RecordBatch>) -> Result<(), AppError> {
         let table = self.get_or_create_table().await?;
         

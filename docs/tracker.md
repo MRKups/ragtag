@@ -89,8 +89,17 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 - [x] 58. Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
 - [ ] 59. Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
-- [ ] 60. Build chat interface in Svelte (query textarea + submit button, streaming token display).
-- [ ] 61. Build citation display component (show source page + filename when `TokenEvent::Done` fires).
-- [ ] 62. Build settings UI (inference mode toggle, BYO endpoint URL, chunk size, ISQ level).
-- [ ] 63. Integrate `pdf.js` for reliable cross-platform PDF rendering.
-- [ ] 64. Emit progress events via `Channel<T>` for model downloads (hf-hub progress → frontend progress bar).
+- [ ] 60. Emit progress events via `Channel<T>` for model downloads (hf-hub progress → frontend progress bar).
+
+## Phase 6: Frontend UI Components (The Face)
+
+*Infrastructure ready: types.ts, api.ts, stores, pdf-init.ts, +layout shell, Toggle. UI components that consume them are below.*
+
+- [x] 61. Build `SettingsTab.svelte` — full settings form: inference mode toggle, BYO fields (base URL + keyring-backed API key), local model repo, ISQ level, chunk size/overlap.
+- [x] 62. Build `QueryInput.svelte` — chat-style textarea with Ctrl+Enter submit, character limit indicator, disabled state during streaming.
+- [x] 63. Build `QueryResult.svelte` — streaming token display that binds to `queryState.text`, scrolls to bottom on new tokens, shows loading spinner during `isStreaming`.
+- [x] 64. Build `CitationList.svelte` — list of citation cards showing filename, page number, and a preview of the chunk content. Clicking a citation sets `queryState.selectedDocument` to drive the PDF viewer.
+- [x] 65. Build `ConfidenceBadge.svelte` — small pill component showing HIGH/MEDIUM/LOW confidence with color coding.
+- [x] 66. Build `PdfViewer.svelte` + `PdfPage.svelte` — pdf.js rendered document viewer using `pdfjsLib` from `pdf-init.ts`. Renders visible pages in canvases with prev/next navigation and zoom. PdfPage handles per-page rendering with text layer and citation highlighting.
+- [x] 67. Build `DocumentViewer.svelte` — wrapper component that hosts `PdfViewer` with a placeholder state. Converts `storagePath` to Tauri asset protocol URL via `convertFileSrc`.
+- [x] 68. Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`.

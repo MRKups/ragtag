@@ -16,8 +16,18 @@ The frontend is a SvelteKit application adapted to run inside a Tauri WebView as
 
 - `svelte.config.js`: Configured for `adapter-static` with SPA fallback (`index.html`).
 - `vite.config.ts`: Configured with `strictPort: true` and Tauri-specific dev server ignores.
-- `src/routes/`: Client-side rendered pages. Currently contains the entry point (`+page.svelte`) with a simple Tauri IPC `ping` test.
-- `src/lib/`: Svelte library files and assets.
+- `src/routes/`: Client-side rendered pages. 
+  - `+layout.ts` & `+layout.svelte`: App shell with navigation sidebar.
+  - `+page.svelte`: Query interface with streaming chat and PDF viewer panel.
+  - `documents/`: Document management (upload & list).
+  - `settings/`: Application configuration.
+- `src/lib/`:
+  - `api.ts`: Typed wrappers around Tauri `invoke` commands.
+  - `types.ts`: TypeScript interfaces mirroring Rust models.
+  - `pdf-init.ts`: pdf.js worker initialization.
+  - `stores/`: Svelte 5 `$state` stores for query and settings.
+  - `components/`: Reusable UI components. Built: `DocumentUpload`, `DocumentList`, `Toggle`, `SettingsTab`, `QueryInput`, `QueryResult`, `CitationList`, `ConfidenceBadge`, `PdfPage`, `PdfViewer`, `DocumentViewer`.
+- `static/`: Static assets including `pdf.worker.mjs`.
 
 ## `src-tauri/` (Tauri App Shell)
 
@@ -35,8 +45,9 @@ The Tauri adapter layer connecting the OS, the UI, and the Rust backend.
 The binary crate — entry point and thin command wrappers.
 
 - `main.rs`: Barebones entry point calling `mrk_ragtag_app::run()`.
-- `lib.rs`: Core setup logic. Initializes `SqlitePool` and `AppState` (db pool, job queue, llm token, embedder, vector db) inside `tauri::async_runtime::block_on`. Initializes the `fastembed` model (`EmbeddingGemma300M`) in `spawn_blocking` during startup, with cache dir at `$APPLOCALDATA/models`. Connects LanceDB at `$APPLOCALDATA/.lancedb`. Runs crash recovery (resets stale `embedding` → `queued`, re-queues `queued` docs). Spawns background worker task that consumes doc IDs from the MPSC channel, runs the full `rag_pipeline::process_document` (extract → chunk → embed → LanceDB write → SQLite status update), and emits `document_indexed` / `document_failed` Tauri events. Registers commands: `ping` (health check), `upload_document` (accepts file bytes, SHA-512 hashes in `spawn_blocking`, stores PDF to `$APPLOCALDATA/documents/`, inserts `queued` row with relative `storage_path`, pushes doc ID via `try_send()`).
-- `state.rs`: Defines `AppState` — the Tauri managed state holding `SqlitePool`, a job queue `Sender<String>`, an ephemeral `llm_token` (under `tokio::sync::Mutex` for `.await` safety), the `fastembed::TextEmbedding` model (wrapped in `Arc<std::sync::Mutex<TextEmbedding>>` for thread-safe sharing), and the LanceDB `VectorDb` connection (wrapped in `Arc`).
+- `lib.rs`: Core setup logic. Initializes `SqlitePool` and `AppState` (db pool, job queue, embedder, vector db, local LLM) inside `tauri::async_runtime::block_on`. Initializes the `fastembed` model (`EmbeddingGemma300M`) in `spawn_blocking` during startup, with cache dir at `$APPLOCALDATA/models`. Connects LanceDB at `$APPLOCALDATA/.lancedb`. Runs crash recovery (resets stale `embedding` → `queued`, re-queues `queued` docs). Spawns background LLM init task (downloads model weights via `hf-hub` with progress events, builds `mistralrs::Model` with `IsqType::Q4K`, stores in `Arc<RwLock<Option<Arc<Model>>>>`). Spawns background worker task that consumes doc IDs from the MPSC channel, runs the full `rag_pipeline::process_document` (extract → chunk → embed → LanceDB write → SQLite status update), and emits `document_indexed` / `document_failed` Tauri events. Registers commands: `ping`, `upload_document`, `execute_query`, `list_documents`, `delete_document`, `get_settings`, `set_setting`.
+- `state.rs`: Defines `AppState` — the Tauri managed state holding `SqlitePool`, a job queue `Sender<String>`, the `fastembed::TextEmbedding` model (wrapped in `Arc<std::sync::Mutex<TextEmbedding>>`), the LanceDB `VectorDb` connection (wrapped in `Arc`), and the `mistralrs::Model` (wrapped in `Arc<RwLock<Option<Arc<Model>>>>` for late initialization).
+- `model_download.rs`: `hf-hub` model download logic with resume support and Tauri progress events (`model_download_progress`). Implements `hf_hub::api::tokio::Progress` trait on a `ProgressReporter` struct that emits per-file download progress to the frontend.
 
 ### `src-tauri/crates/` (Business Logic Workspace)
 
@@ -60,13 +71,16 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
 - `src/lib.rs`: Re-exports `DocumentRepository`, `VectorDb`, and `init_pool`. Contains a private `fn sql_err(e: sqlx::Error) -> AppError` helper to work around orphan rule restrictions on `From` impls.
 - `src/sqlite.rs`:
   - `init_pool()`: Creates the app data directory, opens a SQLite connection with `SqliteConnectOptions`, runs migrations, returns a `SqlitePool` (max 5 connections).
-  - `DocumentRepository`: CRUD operations — `insert`, `update_status`, `get_by_id` (maps raw rows through `DocumentRow → into_domain()`), `get_queued_ids` (fetches all `queued` doc IDs for crash recovery), and `reset_embedding_to_queued` (recovery: flips `embedding` back to `queued` on crash restart). Date/time columns use `CAST(... as TEXT)` with sqlx type overrides since SQLite has no native datetime type.
+  - `DocumentRepository`: CRUD operations — `insert`, `update_status`, `get_by_id`, `list_all`, `delete_by_id` (maps raw rows through `DocumentRow → into_domain()`), `get_queued_ids` (fetches all `queued` doc IDs for crash recovery), and `reset_embedding_to_queued` (recovery: flips `embedding` back to `queued` on crash restart). Date/time columns use `CAST(... as TEXT)` with sqlx type overrides since SQLite has no native datetime type.
+  - `AppSettingsRepository`: Key-value settings store — `get(key)` and `set(key, value)` with upsert on conflict. Stores keys like `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, `chunk_size`, `chunk_overlap`, `use_query_enhancement`.
 - `src/lancedb.rs`:
   - `VectorDb`: Holds a LanceDB `Connection` and an `AtomicBool` for FTS index guard.
   - `init()`: Connects to a LanceDB directory on disk.
   - `schema()`: Arrow schema with `FixedSizeList(Float32, 768)` vectors, plus `document_id`, `page`, `chunk_index`, `content` columns.
   - `get_or_create_table()`: Opens existing `chunks` table or creates a new empty one. FTS index is deferred to first write.
   - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, then rebuilds the FTS index on the first call per session (`AtomicBool` swap).
+  - `hybrid_search()`: Performs FTS + dense vector hybrid search via Reciprocal Rank Fusion. Falls back to vector-only if FTS index is missing or errors. Returns deduplicated `Vec<SearchResult>` capped at the requested limit.
+  - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by the `delete_document` command before SQLite row deletion.
 - `migrations/`:
   - `20240101000000_initial.sql`: Creates `documents` table (id, file metadata, processing status, embedding metadata, timestamps, error tracking) with indexes on `status`, `file_hash` (unique), and `created_at`. Creates `app_settings` key-value table.
 
@@ -78,5 +92,7 @@ End-to-end document ingestion logic. Depends on `domain`, `persistence`, `pdf-ex
 - `src/lib.rs`: Re-exports `Chunk`. Public functions:
   - `init_embedder(cache_dir)`: Creates the `TextEmbedding` model (`EmbeddingGemma300M` via ONNX backend) in a given cache directory. Blocking call — must be run in `spawn_blocking`.
   - `process_document(pdf_path, document_id, embedder, repo, vector_db)`: Full pipeline orchestration — extracts pages, chunks text (512 tokens / 80 overlap with `"passage: "` prefix), marks status `embedding`, generates embeddings in `spawn_blocking` (via `Arc<Mutex<TextEmbedding>>`), builds Arrow `RecordBatch` with `FixedSizeList<Float32>(768)`, upserts to LanceDB via `merge_insert` (idempotent on `[document_id, page, chunk_index]`), marks status `indexed`. Enforces write-order discipline (LanceDB first, SQLite second).
+  - `embed_query(embedder, query)`: Runs query embedding via `fastembed` with `"query: "` prefix. Returns a single `Vec<f32>` (768-dim).
+  - `build_rag_prompt(query, search_results)`: Assembles the LLM prompt with document excerpts and page citations.
 - `src/extractor.rs`: PDF text extraction using `pdf-extract`. Splits output by form-feed (`\x0C`) to detect page boundaries. Returns `Vec<(i32, String)>` with 1-indexed page numbers.
 - `src/chunker.rs`: Character-level sliding-window chunker. Estimates tokens at 4 chars/token. Produces overlapping chunks prefixed with `"passage: "` for instruction-aware embedding models. Exports `Chunk { page, chunk_index, content }`.
