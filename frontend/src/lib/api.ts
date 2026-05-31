@@ -3,6 +3,8 @@ import type { Document, TokenEvent } from './types';
 
 export const api = {
   ping: () => invoke<string>('ping'),
+
+  beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
   
   uploadDocument: async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();

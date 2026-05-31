@@ -5,14 +5,152 @@ mod model_download;
 use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent};
 use persistence::{init_pool, DocumentRepository, AppSettingsRepository, VectorDb};
 use sha2::{Digest, Sha512};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 
+static INIT_STARTED: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 fn ping() -> String {
     "pong".to_string()
+}
+
+#[tauri::command]
+async fn begin_first_run_init(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), AppError> {
+    if INIT_STARTED.swap(true, Ordering::SeqCst) {
+        eprintln!("[Init] Already started, skipping duplicate begin_first_run_init");
+        return Ok(());
+    }
+
+    let models_dir = app.path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?
+        .join("models");
+
+    let embedder_state = state.embedder.clone();
+    let embedder_handle = app.clone();
+    let models_dir_embedder = models_dir.clone();
+    let embedder_pool = state.db_pool.clone();
+    let embedder_job_queue = state.job_queue.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            rag_pipeline::init_embedder(&models_dir_embedder)
+        }).await;
+
+        match result {
+            Ok(Ok(emb)) => {
+                *embedder_state.write().await = Some(Arc::new(std::sync::Mutex::new(emb)));
+                let _ = embedder_handle.emit("embedder_ready", ());
+
+                // Crash recovery: re-enqueue docs now that embedder is ready
+                let repo = persistence::DocumentRepository::new(embedder_pool.clone());
+                if let Ok(recovered) = repo.reset_embedding_to_queued().await {
+                    let count = recovered.len();
+                    for id in recovered {
+                        let _ = embedder_job_queue.try_send(id);
+                    }
+                    eprintln!("[Init] Crash recovery: re-queued {} embedding→queued docs", count);
+                }
+                if let Ok(queued) = repo.get_queued_ids().await {
+                    let count = queued.len();
+                    for id in queued {
+                        let _ = embedder_job_queue.try_send(id);
+                    }
+                    eprintln!("[Init] Crash recovery: re-queued {} queued docs", count);
+                }
+            }
+            Ok(Err(e)) => {
+                eprintln!("[Init] Embedder init failed: {}", e);
+            }
+            Err(e) => {
+                eprintln!("[Init] Embedder task panicked: {}", e);
+            }
+        }
+    });
+
+    let llm_state = state.local_llm.clone();
+    let llm_handle = app.clone();
+    let pool = state.db_pool.clone();
+    let models_dir_llm = models_dir;
+
+    tauri::async_runtime::spawn(async move {
+        let app_settings = persistence::AppSettingsRepository::new(pool);
+        let mode = app_settings.get("inference_mode").await
+            .unwrap_or_default()
+            .unwrap_or_else(|| "local".to_string());
+
+        if mode != "local" {
+            eprintln!("[Init] BYO inference mode active, skipping local LLM init");
+            let _ = llm_handle.emit("llm_ready", ());
+            return;
+        }
+
+        let model_id = "unsloth/Qwen3-1.7B-GGUF";
+        let gguf_filename = "Qwen3-1.7B-Q4_K_M.gguf";
+
+        eprintln!("[Init] Starting model download via hf-hub...");
+
+        let gguf_path = match model_download::download_model(
+            model_id,
+            gguf_filename,
+            &models_dir_llm,
+            &llm_handle,
+        ).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[Init] Model download failed: {}", e);
+                let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
+                    model_id: model_id.to_string(),
+                    current_file: String::new(),
+                    file_downloaded: 0,
+                    file_total: 0,
+                    files_completed: 0,
+                    total_files: 0,
+                    stage: model_download::DownloadStage::Error { message: e.to_string() },
+                });
+                return;
+            }
+        };
+
+        eprintln!("[Init] Model downloaded, building mistral.rs pipeline...");
+
+        let builder = mistralrs::GgufModelBuilder::new(
+            gguf_path.parent().unwrap().to_string_lossy().to_string(),
+            vec![gguf_filename.to_string()],
+        )
+        .with_tok_model_id("Qwen/Qwen3-1.7B");
+
+        match builder.build().await {
+            Ok(model) => {
+                *llm_state.write().await = Some(Arc::new(model));
+                eprintln!("[Init] mistral.rs ready");
+                let _ = llm_handle.emit("llm_ready", ());
+            }
+            Err(e) => {
+                let msg = format!("Failed to initialize local model: {e}");
+                eprintln!("[Init] {msg}");
+                let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
+                    model_id: model_id.to_string(),
+                    current_file: String::new(),
+                    file_downloaded: 0,
+                    file_total: 0,
+                    files_completed: 0,
+                    total_files: 0,
+                    stage: model_download::DownloadStage::Error { message: msg },
+                });
+                let _ = llm_handle.emit("llm_ready", ());
+            }
+        }
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -91,7 +229,12 @@ async fn execute_query(
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
     let repo = DocumentRepository::new(state.db_pool.clone());
-    let embedder = state.embedder.clone();
+    let embedder_opt = {
+        let guard = state.embedder.read().await;
+        guard.clone()
+    };
+    let embedder = embedder_opt
+        .ok_or_else(|| AppError::Internal("Embedding model not yet loaded. Please wait.".into()))?;
     let vector_db = state.vector_db.clone();
     let local_llm = state.local_llm.clone();
     let http_client = state.http_client.clone();
@@ -473,36 +616,10 @@ pub fn run() {
                     e.to_string(),
                 )))?;
 
-            let models_dir = app_local_data.join("models");
-
-            let embedder = tauri::async_runtime::block_on(async {
-                let dir = models_dir.clone();
-                tokio::task::spawn_blocking(move || rag_pipeline::init_embedder(&dir))
-                    .await
-                    .map_err(|e| std::io::Error::other(format!("Embedder task panicked: {e}")))?
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-            })?;
+            let embedder: Arc<tokio::sync::RwLock<Option<Arc<std::sync::Mutex<fastembed::TextEmbedding>>>>> =
+                Arc::new(tokio::sync::RwLock::new(None));
 
             let (tx, mut rx) = mpsc::channel::<String>(32);
-
-            // Crash recovery: reset embedding → queued
-            let repo = DocumentRepository::new(pool.clone());
-            let recovered = tauri::async_runtime::block_on(repo.reset_embedding_to_queued())
-                .map_err(|e| Box::new(std::io::Error::other(
-                    e.to_string(),
-                )))?;
-            for id in recovered {
-                let _ = tx.try_send(id);
-            }
-
-            // Re-queue any documents that were 'queued' before crash
-            let queued = tauri::async_runtime::block_on(repo.get_queued_ids())
-                .map_err(|e| Box::new(std::io::Error::other(
-                    e.to_string(),
-                )))?;
-            for id in queued {
-                let _ = tx.try_send(id);
-            }
 
             let lancedb_dir = app_local_data.join(".lancedb");
             let vector_db = tauri::async_runtime::block_on(VectorDb::init(&lancedb_dir))
@@ -510,8 +627,6 @@ pub fn run() {
                     e.to_string(),
                 )))?;
             let vector_db = Arc::new(vector_db);
-
-            let embedder = Arc::new(std::sync::Mutex::new(embedder));
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
 
@@ -530,79 +645,21 @@ pub fn run() {
             let docs_dir = app_local_data.clone();
             let app_handle = app.handle().clone();
 
-            // Background init for LLM
-            let llm_handle = app_handle.clone();
-            let llm_state = local_llm.clone();
-            let app_settings = persistence::AppSettingsRepository::new(pool.clone());
-            let models_dir_llm = models_dir.clone();
-            
-            tauri::async_runtime::spawn(async move {
-                let mode = app_settings.get("inference_mode").await
-                    .unwrap_or_default()
-                    .unwrap_or_else(|| "local".to_string());
-                
-                if mode != "local" {
-                    eprintln!("[Init] BYO inference mode active, skipping local LLM init");
-                    let _ = llm_handle.emit("llm_ready", ());
-                    return;
-                }
-                
-                {
-                    let model_id = "unsloth/gemma-4-E2B-it-GGUF";
-                    let gguf_filename = "gemma-4-E2B-it-Q8_0.gguf";
-                    
-                    eprintln!("[Init] Starting model download via hf-hub...");
-                    
-                    let gguf_path = match model_download::download_model(
-                        model_id,
-                        gguf_filename,
-                        &models_dir_llm,
-                        &llm_handle,
-                    ).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("[Init] Model download failed: {}", e);
-                            let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
-                                model_id: model_id.to_string(),
-                                current_file: String::new(),
-                                file_downloaded: 0,
-                                file_total: 0,
-                                files_completed: 0,
-                                total_files: 0,
-                                stage: model_download::DownloadStage::Error { message: e.to_string() },
-                            });
-                            return;
-                        }
-                    };
-                    
-                    eprintln!("[Init] Model downloaded, building mistral.rs pipeline...");
-                    
-                    let builder = mistralrs::GgufModelBuilder::new(
-                        gguf_path.to_string_lossy().to_string(),
-                        vec!["gemma-4-E2B-it-Q8_0.gguf".to_string()],
-                    )
-                    .with_tok_model_id("google/gemma-4-E2B-it");
-                    
-                    match builder.build().await {
-                        Ok(model) => {
-                            *llm_state.write().await = Some(Arc::new(model));
-                            eprintln!("[Init] mistral.rs ready");
-                            let _ = llm_handle.emit("llm_ready", ());
-                        }
-                        Err(e) => {
-                            eprintln!("[Init] Failed to build mistral model: {}", e);
-                        }
-                    }
-                }
-            });
-
-            let _ = app_handle.emit("embedder_ready", ());
-
             // Background worker: processes documents from the channel
+            let embedder_worker = embedder.clone();
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
                     eprintln!("[Worker] Processing document: {doc_id}");
+
+                    let embedder = {
+                        let guard = embedder_worker.read().await;
+                        guard.clone()
+                    };
+                    let Some(embedder) = embedder else {
+                        eprintln!("[Worker] Embedder not ready for {doc_id}, skipping");
+                        continue;
+                    };
 
                     let result = match repo.get_by_id(&doc_id).await {
                         Ok(Some(doc)) => {
@@ -610,7 +667,7 @@ pub fn run() {
                             rag_pipeline::process_document(
                                 &pdf_path,
                                 &doc_id,
-                                embedder.clone(),
+                                embedder,
                                 &repo,
                                 &vector_db,
                             ).await
@@ -648,7 +705,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ping, 
+            ping,
+            begin_first_run_init, 
             upload_document, 
             execute_query,
             list_documents,

@@ -30,7 +30,7 @@ It is a standalone executable that processes PDFs, generates embeddings, stores 
 - **Database:** SQLite (via `sqlx`)
 - **Vector DB:** LanceDB (Embedded, native Rust vector database)
 - **Local Embeddings:** `fastembed-rs` (Runs ONNX models natively in Rust)
-- **Local LLM (Generation):** `mistral.rs` (In-process, pure-Rust inference engine — no sidecar)
+- **Local LLM (Generation):** `mistral.rs` (In-process, pure-Rust inference engine using Qwen3-1.7B — no sidecar)
 - **Model Downloads:** `hf-hub` (Downloads model files safely on first-run with resume support)
 
 ## How to Run

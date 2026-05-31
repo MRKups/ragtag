@@ -187,7 +187,7 @@ let apiKeyValue = $state('');
             <input
               id="generation_model"
               type="text"
-              placeholder="google/gemma-2-2b-it-GGUF"
+              placeholder="Qwen/Qwen3-1.7B-Instruct"
               bind:value={settingsState.generation_model}
               onblur={() => updateSetting('generation_model', settingsState.generation_model)}
             />
