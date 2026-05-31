@@ -35,31 +35,4 @@ export interface AppError {
   message: string;
 }
 
-export interface QueryResponse {
-  answerComponents?: AnswerComponent[];
-  sources: Source[];
-  confidence: ConfidenceLevel;
-  errors?: string[];
-}
 
-export interface AnswerComponent {
-  type: "text" | "citation";
-  content?: string;
-  citation?: CitationData;
-}
-
-export interface CitationData {
-  documentId: string;
-  filename: string;
-  page: number;
-}
-
-export type ConfidenceLevel = "HIGH" | "MEDIUM" | "LOW";
-
-export interface Source {
-  documentId: string;
-  filename: string;
-  page: number;
-  content: string;
-  score: number;
-}

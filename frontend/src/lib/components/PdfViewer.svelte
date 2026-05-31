@@ -17,15 +17,15 @@
     citedPages?: number[];
   }>();
 
-  let pdfDoc: PDFDocumentProxy | null = null;
-  let pageNum = $state(page);
-  let lastPageProp = page;
+  let pdfDoc: PDFDocumentProxy | null = $state(null);
+  let pageNum = $state(1);
+  let lastPageProp = $state(1);
   let scale = $state(1.0);
   let totalPages = $state(0);
   let loading = $state(true);
   let error: string | null = $state(null);
   let pagesToRender: number[] = $state([]);
-  let scrollContainer: HTMLDivElement;
+  let scrollContainer: HTMLDivElement | null = $state(null);
   let canvasRefs: Record<number, HTMLCanvasElement> = {};
   let textLayerRefs: Record<number, HTMLDivElement> = {};
   let renderTasks: any[] = [];
@@ -121,21 +121,21 @@
   {:else}
     <div class="toolbar">
       <div class="group">
-        <button class="tool-btn" onclick={onPrevPage} disabled={pageNum <= Math.max(1, pageNum - contextPages)}>
+        <button class="tool-btn" onclick={onPrevPage} disabled={pageNum <= Math.max(1, pageNum - contextPages)} aria-label="Previous page">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <span class="page-info">Page {pageNum} of {totalPages}</span>
-        <button class="tool-btn" onclick={onNextPage} disabled={pageNum >= Math.min(totalPages, pageNum + contextPages)}>
+        <button class="tool-btn" onclick={onNextPage} disabled={pageNum >= Math.min(totalPages, pageNum + contextPages)} aria-label="Next page">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button>
       </div>
 
       <div class="group">
-        <button class="tool-btn" onclick={onZoomOut} disabled={scale <= 0.4}>
+        <button class="tool-btn" onclick={onZoomOut} disabled={scale <= 0.4} aria-label="Zoom out">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         </button>
         <span class="zoom-info">{Math.round(scale * 100)}%</span>
-        <button class="tool-btn" onclick={onZoomIn}>
+        <button class="tool-btn" onclick={onZoomIn} aria-label="Zoom in">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         </button>
       </div>

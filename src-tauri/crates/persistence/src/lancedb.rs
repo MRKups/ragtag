@@ -106,6 +106,13 @@ impl VectorDb {
         Ok(())
     }
 
+    pub async fn compact(&self) -> Result<(), AppError> {
+        let table = self.get_or_create_table().await?;
+        table.optimize(lancedb::table::OptimizeAction::default()).await
+            .map_err(|e| AppError::VectorDb(format!("Compact failed: {e}")))?;
+        Ok(())
+    }
+
     pub async fn hybrid_search(&self, query_text: &str, query_vector: &[f32], limit: usize) -> Result<Vec<SearchResult>, AppError> {
         let table = self.get_or_create_table().await?;
         

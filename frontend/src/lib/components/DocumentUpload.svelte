@@ -89,6 +89,7 @@
       try {
         await api.uploadDocument(files[i].file);
         files[i] = { ...files[i], status: 'success', errorMsg: 'Uploaded' };
+        successCount++;
       } catch (e) {
         files[i] = { ...files[i], status: 'error', errorMsg: e instanceof Error ? e.message : 'Upload failed' };
       }

@@ -27,9 +27,7 @@
     </h3>
     <div class="citations-grid">
       {#each citations as citation, i}
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <!-- svelte-ignore a11y-no-static-element-interactions -->
-        <div class="citation-card" onclick={() => handleClick(citation)}>
+        <button class="citation-card citation-btn" onclick={() => handleClick(citation)}>
           <div class="citation-header">
             <span class="citation-number">[{i + 1}]</span>
             <span class="citation-source" title={citation.filename}>
@@ -41,7 +39,7 @@
             <span class="badge">Page {citation.page}</span>
           </div>
           <p class="citation-text">"{citation.chunk_content}"</p>
-        </div>
+        </button>
       {/each}
     </div>
   </div>
@@ -80,6 +78,11 @@
     font-size: 0.875rem;
     transition: all 0.2s;
     cursor: pointer;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    width: 100%;
+    line-height: inherit;
   }
 
   .citation-card:hover {
@@ -114,10 +117,6 @@
     gap: 0.25rem;
   }
 
-  .source-icon {
-    flex-shrink: 0;
-  }
-
   .citation-details {
     display: flex;
     gap: 0.5rem;
@@ -138,6 +137,7 @@
     line-height: 1.4;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
     margin: 0;

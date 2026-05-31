@@ -18,7 +18,7 @@
     onCitationClick?: (citation: { filename: string; documentId: string; page: number }) => void;
   }>();
 
-  let contentEl: HTMLDivElement;
+  let contentEl: HTMLDivElement | null = $state(null);
 
   let renderedHtml = $derived.by(() => {
     if (!text) return '';
@@ -58,8 +58,8 @@
   {/if}
 
   {#if text || isStreaming}
-    <!-- svelte-ignore a11y-click-events-have-key-events -->
-    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="prose" bind:this={contentEl} onclick={handleCitationClick}>
       {@html renderedHtml}
       {#if isStreaming}

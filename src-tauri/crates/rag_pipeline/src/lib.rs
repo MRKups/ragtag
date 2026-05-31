@@ -131,12 +131,7 @@ pub fn build_rag_prompt(
     query: &str,
     chunks: &[persistence::SearchResult],
 ) -> String {
-    let mut context = String::from(
-        "You are a helpful assistant for querying technical documents. \
-        Use ONLY the document excerpts below to answer the user's question. \
-        If the excerpts do not contain enough information, say so clearly. \
-        Cite sources by indicating the page number in brackets like [Page N].\n\n",
-    );
+    let mut context = String::new();
 
     for chunk in chunks {
         context.push_str(&format!(

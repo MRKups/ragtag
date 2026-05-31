@@ -3,57 +3,61 @@
   import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from 'lucide-svelte';
   import { page } from '$app/stores';
   import { settingsState } from '$lib/stores/settings.svelte';
+  import { appState } from '$lib/stores/app-state.svelte';
+  import AppInitializer from '$lib/components/AppInitializer.svelte';
 
   let { children } = $props();
 
   onMount(async () => {
-    // Load settings on app start
     await settingsState.load();
+    appState.init();
   });
 </script>
 
-<div class="app-container">
-  <header class="header">
-    <div class="brand">
-      <a href="/" class="logo-link">
-        <div class="logo">
-          <Wrench color="white" size={20} />
-        </div>
-        <h1>Ragtag V1</h1>
-      </a>
-    </div>
-    
-    <nav class="nav-menu">
-      <a 
-        href="/" 
-        class="nav-btn {String($page.url.pathname) === '/' ? 'active' : ''}"
-      >
-        <MessageSquare size={18} />
-        <span>Query</span>
-      </a>
-      <a 
-        href="/documents" 
-        class="nav-btn {String($page.url.pathname) === '/documents' ? 'active' : ''}"
-      >
-        <Files size={18} />
-        <span>Documents</span>
-      </a>
-      <a 
-        href="/settings" 
-        class="nav-btn {String($page.url.pathname) === '/settings' ? 'active' : ''}"
-      >
-        <SettingsIcon size={18} />
-        <span>Settings</span>
-      </a>
-    </nav>
+<AppInitializer>
+  <div class="app-container">
+    <header class="header">
+      <div class="brand">
+        <a href="/" class="logo-link">
+          <div class="logo">
+            <Wrench color="white" size={20} />
+          </div>
+          <h1>Ragtag V1</h1>
+        </a>
+      </div>
+      
+      <nav class="nav-menu">
+        <a 
+          href="/" 
+          class="nav-btn {String($page.url.pathname) === '/' ? 'active' : ''}"
+        >
+          <MessageSquare size={18} />
+          <span>Query</span>
+        </a>
+        <a 
+          href="/documents" 
+          class="nav-btn {String($page.url.pathname) === '/documents' ? 'active' : ''}"
+        >
+          <Files size={18} />
+          <span>Documents</span>
+        </a>
+        <a 
+          href="/settings" 
+          class="nav-btn {String($page.url.pathname) === '/settings' ? 'active' : ''}"
+        >
+          <SettingsIcon size={18} />
+          <span>Settings</span>
+        </a>
+      </nav>
 
-    <div class="header-spacer"></div>
-  </header>
+      <div class="header-spacer"></div>
+    </header>
 
-  <main class="main-content">
-    {@render children()}
-  </main>
-</div>
+    <main class="main-content">
+      {@render children()}
+    </main>
+  </div>
+</AppInitializer>
 
 <style>
   :global(*) {

@@ -11,4 +11,5 @@ pub struct AppState {
     pub embedder: Arc<StdMutex<TextEmbedding>>,
     pub vector_db: Arc<VectorDb>,
     pub local_llm: Arc<RwLock<Option<Arc<mistralrs::Model>>>>,
+    pub http_client: reqwest::Client,
 }

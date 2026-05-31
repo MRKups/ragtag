@@ -94,6 +94,8 @@ async fn execute_query(
     let embedder = state.embedder.clone();
     let vector_db = state.vector_db.clone();
     let local_llm = state.local_llm.clone();
+    let http_client = state.http_client.clone();
+    let settings_repo = AppSettingsRepository::new(state.db_pool.clone());
 
     let query_embedding = {
         let embedder = embedder.clone();
@@ -120,6 +122,77 @@ async fn execute_query(
     }
 
     let context = rag_pipeline::build_rag_prompt(&query, &search_results);
+    let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
+
+    let mode = settings_repo.get("inference_mode").await
+        .unwrap_or_default()
+        .unwrap_or_else(|| "local".to_string());
+
+    if mode == "external" {
+        let base_url = settings_repo.get("external_base_url").await
+            .unwrap_or_default()
+            .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
+
+        let api_key = tokio::task::spawn_blocking(|| {
+            keyring::Entry::new("ragtag", "external_api_key")
+                .ok()
+                .and_then(|e| e.get_password().ok())
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+        .unwrap_or_default();
+
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+        let body = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context}
+            ],
+            "stream": true
+        });
+
+        let mut req = http_client.post(&url).json(&body);
+        if !api_key.is_empty() {
+            req = req.bearer_auth(&api_key);
+        }
+
+        let response = req.send().await
+            .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
+
+        use futures_util::StreamExt;
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| AppError::Inference(format!("Stream error: {e}")))?;
+            let text = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&text);
+
+            while let Some(pos) = buffer.find("\n\n") {
+                let line = buffer[..pos].to_string();
+                buffer = buffer[pos + 2..].to_string();
+
+                if line.starts_with("data: ") {
+                    let data = &line[6..];
+                    if data == "[DONE]" {
+                        let _ = channel.send(TokenEvent::Done { citations });
+                        return Ok(());
+                    }
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
+                            if !token.is_empty() {
+                                let _ = channel.send(TokenEvent::Token { text: token.to_string() });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = channel.send(TokenEvent::Done { citations });
+        return Ok(());
+    }
 
     let model = {
         let guard = local_llm.read().await;
@@ -128,8 +201,7 @@ async fn execute_query(
 
     if let Some(model) = model {
         let request = mistralrs::RequestBuilder::new()
-            .add_message(mistralrs::TextMessageRole::System, 
-                "You are a helpful assistant that answers questions using document excerpts. Answer concisely using only the provided context. Do not use your own knowledge.".to_string())
+            .add_message(mistralrs::TextMessageRole::System, system_prompt.to_string())
             .add_message(mistralrs::TextMessageRole::User, context);
 
         let mut stream = model
@@ -165,7 +237,7 @@ async fn execute_query(
         }
     } else {
         let _ = channel.send(TokenEvent::Error {
-            message: "No LLM model loaded. Is BYO inference configured?".into(),
+            message: "No LLM model loaded. Switch to external inference in Settings.".into(),
         });
     }
 
@@ -230,6 +302,128 @@ async fn set_setting(
     repo.set(&key, &value).await
 }
 
+#[tauri::command]
+async fn set_api_key(key: String) -> Result<bool, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let entry = keyring::Entry::new("ragtag", "external_api_key")
+            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
+        entry.set_password(&key)
+            .map_err(|e| AppError::Internal(format!("keyring set: {e}")))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+}
+
+#[tauri::command]
+async fn has_api_key() -> Result<bool, AppError> {
+    tokio::task::spawn_blocking(|| {
+        match keyring::Entry::new("ragtag", "external_api_key") {
+            Ok(entry) => match entry.get_password() {
+                Ok(pwd) => Ok(!pwd.is_empty()),
+                Err(_) => Ok(false),
+            },
+            Err(_) => Ok(false),
+        }
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+}
+
+#[tauri::command]
+async fn delete_api_key() -> Result<bool, AppError> {
+    tokio::task::spawn_blocking(|| {
+        let entry = keyring::Entry::new("ragtag", "external_api_key")
+            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
+        entry.delete_credential()
+            .map_err(|e| AppError::Internal(format!("keyring delete: {e}")))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+}
+
+#[tauri::command]
+async fn get_storage_info(
+    app: tauri::AppHandle,
+    _state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let app_local_data = app.path().app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?;
+
+    let db_size = tokio::fs::metadata(app_local_data.join("app.db"))
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let lancedb_dir = app_local_data.join(".lancedb");
+    let lancedb_size = dir_size(&lancedb_dir);
+
+    let docs_dir = app_local_data.join("documents");
+    let docs_size = dir_size(&docs_dir);
+
+    let models_dir = app_local_data.join("models");
+    let models_size = dir_size(&models_dir);
+
+    Ok(serde_json::json!({
+        "database_bytes": db_size,
+        "vector_store_bytes": lancedb_size,
+        "documents_bytes": docs_size,
+        "models_bytes": models_size,
+    }))
+}
+
+fn dir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    total += dir_size(&entry.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+#[tauri::command]
+async fn compact_vector_store(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    state.vector_db.compact().await?;
+    Ok(serde_json::json!({"status": "compacted"}))
+}
+
+#[tauri::command]
+async fn vacuum_database(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    sqlx::query("VACUUM")
+        .execute(&state.db_pool)
+        .await
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+    Ok(serde_json::json!({"status": "vacuumed"}))
+}
+
+#[tauri::command]
+async fn reset_all_data(
+    app: tauri::AppHandle,
+    delete_models: bool,
+) -> Result<serde_json::Value, AppError> {
+    let app_local_data = app.path().app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?;
+
+    let sentinel = app_local_data.join(".reset_pending");
+    let payload = serde_json::json!({"delete_models": delete_models});
+    tokio::fs::write(&sentinel, payload.to_string()).await?;
+
+    Ok(serde_json::json!({"requires_restart": true}))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -241,6 +435,38 @@ pub fn run() {
                 .map_err(|e| Box::new(std::io::Error::other(
                     e.to_string(),
                 )))?;
+
+            // Two-phase reset: check for pending reset sentinel before any DB init
+            let sentinel = app_local_data.join(".reset_pending");
+            if sentinel.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&sentinel) {
+                    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
+                        let delete_models = config["delete_models"].as_bool().unwrap_or(false);
+
+                        // Purge data directories
+                        let _ = std::fs::remove_dir_all(app_local_data.join("documents"));
+                        let _ = std::fs::remove_dir_all(app_local_data.join(".lancedb"));
+                        let _ = std::fs::remove_file(app_local_data.join("app.db"));
+                        let _ = std::fs::remove_file(app_local_data.join("app.db-wal"));
+                        let _ = std::fs::remove_file(app_local_data.join("app.db-shm"));
+
+                        if delete_models {
+                            // Remove model dirs but preserve fastembed cache
+                            if let Ok(entries) = std::fs::read_dir(app_local_data.join("models")) {
+                                for entry in entries.flatten() {
+                                    let name = entry.file_name();
+                                    let name_str = name.to_string_lossy();
+                                    if !name_str.contains("fastembed") {
+                                        let _ = std::fs::remove_dir_all(entry.path());
+                                    }
+                                }
+                            }
+                        }
+
+                        let _ = std::fs::remove_file(&sentinel);
+                    }
+                }
+            }
 
             let pool = tauri::async_runtime::block_on(init_pool(&app_local_data))
                 .map_err(|e| Box::new(std::io::Error::other(
@@ -295,6 +521,10 @@ pub fn run() {
                 embedder: embedder.clone(),
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
+                http_client: reqwest::Client::builder()
+                    .use_rustls_tls()
+                    .build()
+                    .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?,
             });
 
             let docs_dir = app_local_data.clone();
@@ -306,41 +536,52 @@ pub fn run() {
             let app_settings = persistence::AppSettingsRepository::new(pool.clone());
             let models_dir_llm = models_dir.clone();
             
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 let mode = app_settings.get("inference_mode").await
                     .unwrap_or_default()
                     .unwrap_or_else(|| "local".to_string());
                 
-                if mode == "local" {
+                if mode != "local" {
+                    eprintln!("[Init] BYO inference mode active, skipping local LLM init");
+                    let _ = llm_handle.emit("llm_ready", ());
+                    return;
+                }
+                
+                {
+                    let model_id = "unsloth/gemma-4-E2B-it-GGUF";
+                    let gguf_filename = "gemma-4-E2B-it-Q8_0.gguf";
+                    
                     eprintln!("[Init] Starting model download via hf-hub...");
                     
-                    let model_id = "mistralai/Mistral-7B-Instruct-v0.1"; // TODO: read from settings
-                    
-                    // Step 1: Download with progress
-                    if let Err(e) = model_download::download_model(
+                    let gguf_path = match model_download::download_model(
                         model_id,
+                        gguf_filename,
                         &models_dir_llm,
                         &llm_handle,
                     ).await {
-                        eprintln!("[Init] Model download failed: {}", e);
-                        let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
-                            model_id: model_id.to_string(),
-                            current_file: String::new(),
-                            file_downloaded: 0,
-                            file_total: 0,
-                            files_completed: 0,
-                            total_files: 0,
-                            stage: model_download::DownloadStage::Error { message: e.to_string() },
-                        });
-                        return;
-                    }
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("[Init] Model download failed: {}", e);
+                            let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
+                                model_id: model_id.to_string(),
+                                current_file: String::new(),
+                                file_downloaded: 0,
+                                file_total: 0,
+                                files_completed: 0,
+                                total_files: 0,
+                                stage: model_download::DownloadStage::Error { message: e.to_string() },
+                            });
+                            return;
+                        }
+                    };
                     
                     eprintln!("[Init] Model downloaded, building mistral.rs pipeline...");
                     
-                    // Step 2: Build the model from cache
-                    let builder = mistralrs::TextModelBuilder::new(model_id)
-                        .with_isq(mistralrs::IsqType::Q4K)
-                        .from_hf_cache_path(models_dir_llm);
+                    let builder = mistralrs::GgufModelBuilder::new(
+                        gguf_path.to_string_lossy().to_string(),
+                        vec!["gemma-4-E2B-it-Q8_0.gguf".to_string()],
+                    )
+                    .with_tok_model_id("google/gemma-4-E2B-it");
                     
                     match builder.build().await {
                         Ok(model) => {
@@ -358,7 +599,7 @@ pub fn run() {
             let _ = app_handle.emit("embedder_ready", ());
 
             // Background worker: processes documents from the channel
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
                     eprintln!("[Worker] Processing document: {doc_id}");
@@ -413,7 +654,14 @@ pub fn run() {
             list_documents,
             delete_document,
             get_settings,
-            set_setting
+            set_setting,
+            set_api_key,
+            has_api_key,
+            delete_api_key,
+            get_storage_info,
+            compact_vector_store,
+            vacuum_database,
+            reset_all_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

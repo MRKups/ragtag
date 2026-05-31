@@ -30,5 +30,24 @@ export const api = {
   
   getSettings: () => invoke<Record<string, string>>('get_settings'),
   
-  setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value })
+  setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
+
+  setApiKey: (key: string) => invoke<boolean>('set_api_key', { key }),
+
+  hasApiKey: () => invoke<boolean>('has_api_key'),
+
+  deleteApiKey: () => invoke<boolean>('delete_api_key'),
+
+  getStorageInfo: () => invoke<{
+    database_bytes: number;
+    vector_store_bytes: number;
+    documents_bytes: number;
+    models_bytes: number;
+  }>('get_storage_info'),
+
+  compactVectorStore: () => invoke<{ status: string }>('compact_vector_store'),
+
+  vacuumDatabase: () => invoke<{ status: string }>('vacuum_database'),
+
+  resetAllData: (deleteModels: boolean) => invoke<{ requires_restart: boolean }>('reset_all_data', { deleteModels })
 };
