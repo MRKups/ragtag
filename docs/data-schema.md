@@ -80,7 +80,8 @@ Example keys:
 - `external_base_url`: URL for an OpenAI-compatible endpoint (used if mode is external).
 - `use_query_enhancement`: `"true"` or `"false"`
 - `embedding_model`: `"EmbeddingGemma-300M"`
-- `generation_model`: HF repo ID consumed by `mistral.rs` (e.g., `"google/gemma-4-E2B-it"`).
+- `generation_model`: HF repo ID consumed by `mistral.rs` (e.g., `"unsloth/Qwen3-1.7B-GGUF"`).
+- `gguf_filename`: Filename of the GGUF file within the generation model repo (e.g., `"Qwen3-1.7B-Q4_K_M.gguf"`).
 - `isq_level`: In-situ quantization level for `mistral.rs` (e.g., `"Q4K"`, `"Q8_0"`).
 - `vector_dim`: `"768"`
 - `chunk_size`: `"512"`

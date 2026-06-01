@@ -147,7 +147,7 @@ let apiKeyValue = $state('');
               type="text"
               placeholder="http://localhost:11434/v1"
               bind:value={settingsState.external_base_url}
-              onblur={() => updateSetting('external_base_url', settingsState.external_base_url)}
+              onblur={() => { const v = settingsState.external_base_url.trim(); if (v) updateSetting('external_base_url', v); }}
             />
           </div>
 
@@ -189,7 +189,7 @@ let apiKeyValue = $state('');
               type="text"
               placeholder="Qwen/Qwen3-1.7B-Instruct"
               bind:value={settingsState.generation_model}
-              onblur={() => updateSetting('generation_model', settingsState.generation_model)}
+              onblur={() => { const v = settingsState.generation_model.trim(); if (v) updateSetting('generation_model', v); }}
             />
             <p class="help-text">GGUF models are pre-quantized — ISQ does not apply in local mode.</p>
           </div>

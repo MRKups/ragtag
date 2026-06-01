@@ -68,7 +68,7 @@ To eliminate hallucination risks, the application uses a retrieval-grounded cita
 ### LLM Lifecycle
 
 `mistral.rs` runs in-process inside the main Rust binary. There is no subprocess, no port, no auth token, no health check. The lifecycle is:
-- **Startup:** During `lib.rs` setup, build the model asynchronously (`TextModelBuilder::new(repo_id).with_isq(IsqType::Q4K).build().await`). This is the only slow step — it loads weights from `$APPLOCALDATA/models` and applies in-situ quantization. Wrap the result in `Arc<Model>` and stash it in `AppState`.
+- **Startup:** During `lib.rs` setup, build the model asynchronously (`GgufModelBuilder::new(repo_dir, vec![filename]).build().await`). This is the only slow step — it loads pre-quantized weights from `$APPLOCALDATA/models`. Wrap the result in `Arc<Model>` and stash it in `AppState`.
 - **Ready Signal:** Once `.build().await` resolves, emit `llm_ready` to the UI to unlock the query interface.
 - **Runtime:** Tauri commands clone the `Arc<Model>` and call `stream_chat_request`. `mistral.rs` handles continuous batching, KV cache, and worker threads internally.
 - **Shutdown:** Nothing to do. The `Model` drops when `AppState` drops at process exit.
@@ -92,5 +92,5 @@ Users can opt to use an external OpenAI-compatible endpoint instead of the in-pr
 ### Model Files and First-Run Staged Availability
 Instead of bundling massive AI model files into the application binary, model files are downloaded on first run. To ensure a good UX, the application uses **Staged Availability**:
 - **Embedding Models:** Downloaded via `fastembed` (or `hf-hub` with resume support). This is relatively small (~500MB). Once complete, the application emits an `embedder_ready` event, **unlocking the document ingestion UI** immediately.
-- **Text Generation:** Model weights for `mistral.rs` (e.g., Gemma 4 E2B GGUF or safetensors files) are downloaded to the OS application data directory using the `hf-hub` crate in parallel with the embedding model. Because LLMs can be several gigabytes, the **query interface remains locked** until `mistral.rs`'s `TextModelBuilder::build().await` completes and an `llm_ready` event fires.
+- **Text Generation:** Model weights for `mistral.rs` (e.g., Qwen3-1.7B GGUF files) are downloaded to the OS application data directory using the `hf-hub` crate in parallel with the embedding model. Because LLMs can be large, the **query interface remains locked** until `mistral.rs`'s `GgufModelBuilder::build().await` completes and an `llm_ready` event fires.
 - **Rationale:** This prevents the user from waiting 10+ minutes on a slow connection before they can even upload a PDF. If BYO inference mode is active, the LLM download and in-process model build are skipped entirely and the query UI unlocks as soon as the embedder is ready.

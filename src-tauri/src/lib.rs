@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
+use log::{debug, error, info, warn};
 
 static INIT_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -24,7 +25,7 @@ async fn begin_first_run_init(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
     if INIT_STARTED.swap(true, Ordering::SeqCst) {
-        eprintln!("[Init] Already started, skipping duplicate begin_first_run_init");
+        debug!("begin_first_run_init called but init already in progress — no-op");
         return Ok(());
     }
 
@@ -56,21 +57,29 @@ async fn begin_first_run_init(
                     for id in recovered {
                         let _ = embedder_job_queue.try_send(id);
                     }
-                    eprintln!("[Init] Crash recovery: re-queued {} embedding→queued docs", count);
+                    if count > 0 {
+                        warn!("startup recovery — re-queued {count} documents stuck in 'embedding' status");
+                    } else {
+                        debug!("startup recovery — no documents stuck in 'embedding' status");
+                    }
                 }
                 if let Ok(queued) = repo.get_queued_ids().await {
                     let count = queued.len();
                     for id in queued {
                         let _ = embedder_job_queue.try_send(id);
                     }
-                    eprintln!("[Init] Crash recovery: re-queued {} queued docs", count);
+                    if count > 0 {
+                        info!("startup recovery — re-queued {count} pending documents");
+                    } else {
+                        debug!("startup recovery — no pending documents to resume");
+                    }
                 }
             }
             Ok(Err(e)) => {
-                eprintln!("[Init] Embedder init failed: {}", e);
+                error!("embedder initialization failed: {e}");
             }
             Err(e) => {
-                eprintln!("[Init] Embedder task panicked: {}", e);
+                error!("embedder initialization task panicked: {e}");
             }
         }
     });
@@ -87,25 +96,32 @@ async fn begin_first_run_init(
             .unwrap_or_else(|| "local".to_string());
 
         if mode != "local" {
-            eprintln!("[Init] BYO inference mode active, skipping local LLM init");
+            info!("BYO inference mode — skipping local LLM initialization");
             let _ = llm_handle.emit("llm_ready", ());
             return;
         }
 
-        let model_id = "unsloth/Qwen3-1.7B-GGUF";
-        let gguf_filename = "Qwen3-1.7B-Q4_K_M.gguf";
+        let model_id = app_settings.get("generation_model").await
+            .unwrap_or_default()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
 
-        eprintln!("[Init] Starting model download via hf-hub...");
+        let gguf_filename = app_settings.get("gguf_filename").await
+            .unwrap_or_default()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
+
+        info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
 
         let gguf_path = match model_download::download_model(
-            model_id,
-            gguf_filename,
+            &model_id,
+            &gguf_filename,
             &models_dir_llm,
             &llm_handle,
         ).await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("[Init] Model download failed: {}", e);
+                error!("model download failed after all retries: {e}");
                 let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
                     model_id: model_id.to_string(),
                     current_file: String::new(),
@@ -119,7 +135,7 @@ async fn begin_first_run_init(
             }
         };
 
-        eprintln!("[Init] Model downloaded, building mistral.rs pipeline...");
+        info!("model downloaded, building mistral.rs pipeline...");
 
         let builder = mistralrs::GgufModelBuilder::new(
             gguf_path.parent().unwrap().to_string_lossy().to_string(),
@@ -130,12 +146,12 @@ async fn begin_first_run_init(
         match builder.build().await {
             Ok(model) => {
                 *llm_state.write().await = Some(Arc::new(model));
-                eprintln!("[Init] mistral.rs ready");
+                info!("mistral.rs pipeline built and ready");
                 let _ = llm_handle.emit("llm_ready", ());
             }
             Err(e) => {
                 let msg = format!("Failed to initialize local model: {e}");
-                eprintln!("[Init] {msg}");
+                error!("{msg}");
                 let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
                     model_id: model_id.to_string(),
                     current_file: String::new(),
@@ -423,7 +439,7 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<Strin
     let mut settings = HashMap::new();
     let keys = vec![
         "inference_mode", "external_base_url", "generation_model", 
-        "isq_level", "use_query_enhancement", "chunk_size", "chunk_overlap"
+        "gguf_filename", "isq_level", "use_query_enhancement", "chunk_size", "chunk_overlap"
     ];
     
     for key in keys {
@@ -441,6 +457,9 @@ async fn set_setting(
     key: String,
     value: String,
 ) -> Result<(), AppError> {
+    if (key == "generation_model" || key == "gguf_filename") && value.trim().is_empty() {
+        return Err(AppError::Io(format!("{} cannot be empty", key)));
+    }
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     repo.set(&key, &value).await
 }
@@ -569,6 +588,8 @@ async fn reset_all_data(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -650,14 +671,14 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
-                    eprintln!("[Worker] Processing document: {doc_id}");
+                    info!("processing document {doc_id}");
 
                     let embedder = {
                         let guard = embedder_worker.read().await;
                         guard.clone()
                     };
                     let Some(embedder) = embedder else {
-                        eprintln!("[Worker] Embedder not ready for {doc_id}, skipping");
+                        warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
                         continue;
                     };
 
@@ -673,25 +694,25 @@ pub fn run() {
                             ).await
                         }
                         Ok(None) => {
-                            eprintln!("[Worker] Document {doc_id} not found");
+                            warn!("document {doc_id} not found in DB — may have been deleted");
                             continue;
                         }
                         Err(e) => {
-                            eprintln!("[Worker] DB error for {doc_id}: {e}");
+                            error!("database error while fetching document {doc_id}: {e}");
                             continue;
                         }
                     };
 
                     match result {
                         Ok(()) => {
-                            eprintln!("[Worker] Document {doc_id} indexed successfully");
+                            info!("document {doc_id} indexed successfully");
                             let _ = app_handle.emit("document_indexed", serde_json::json!({
                                 "document_id": &doc_id,
                                 "status": "indexed",
                             }));
                         }
                         Err(e) => {
-                            eprintln!("[Worker] Document {doc_id} failed: {e}");
+                            error!("document {doc_id} processing failed: {e}");
                             let _ = repo.update_status(&doc_id, DocumentStatus::Failed).await;
                             let _ = app_handle.emit("document_failed", serde_json::json!({
                                 "document_id": &doc_id,

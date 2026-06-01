@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use futures::stream::StreamExt;
+use log::{debug, warn};
 
 pub struct VectorDb {
     pub conn: Connection,
@@ -94,13 +95,14 @@ impl VectorDb {
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        if !self.fts_built.swap(true, Ordering::SeqCst) {
+        if !self.fts_built.load(Ordering::SeqCst) {
             let index_params = lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
             table.create_index(&["content"], index_params)
                 .replace(true)
                 .execute()
                 .await
                 .map_err(|e| AppError::VectorDb(format!("FTS Index failed: {}", e)))?;
+            self.fts_built.store(true, Ordering::SeqCst);
         }
 
         Ok(())
@@ -115,9 +117,11 @@ impl VectorDb {
 
     pub async fn hybrid_search(&self, query_text: &str, query_vector: &[f32], limit: usize) -> Result<Vec<SearchResult>, AppError> {
         let table = self.get_or_create_table().await?;
-        
+
         let query_vector_f32: Vec<f32> = query_vector.to_vec();
         let fts_query = lance_index::scalar::FullTextSearchQuery::new(query_text.to_string());
+
+        static FTS_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
         let mut stream = match table.query()
             .full_text_search(fts_query)
@@ -125,11 +129,14 @@ impl VectorDb {
             .map_err(|e| AppError::VectorDb(e.to_string()))?
             .limit(limit)
             .execute()
-            .await 
+            .await
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("[LanceDB] Hybrid search failed, falling back to vector-only: {}", e);
+                if !FTS_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
+                    warn!("hybrid search unavailable (FTS index missing) — falling back to vector-only search");
+                }
+                debug!("hybrid search error detail: {e}");
                 table.query()
                     .nearest_to(query_vector_f32)
                     .map_err(|e| AppError::VectorDb(e.to_string()))?

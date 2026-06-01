@@ -2,6 +2,7 @@ use domain::AppError;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
+use log::warn;
 
 #[derive(Clone, Serialize, Debug)]
 pub struct ModelDownloadProgress {
@@ -147,7 +148,7 @@ pub async fn download_model(
         match repo.download_with_progress(filename, reporter).await {
             Ok(p) => break p,
             Err(e) if attempts < max_attempts => {
-                eprintln!("[Download] Attempt {attempts}/{max_attempts} failed: {e}, cleaning stale files and retrying...");
+                warn!("download attempt {attempts}/{max_attempts} failed — cleaning stale files and retrying ({e})");
                 clean_stale_cache_files(cache_dir, model_id);
             }
             Err(e) => {

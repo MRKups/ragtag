@@ -120,7 +120,7 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 
 ### Rust Side Issues
 
-- [x] 76. Hardcoded model ID — `lib.rs:317` uses `mistralai/Mistral-7B-Instruct-v0.1` but AGENTS.md specifies Gemma 4 E2B. Read from `app_settings.generation_model` instead.
+- [x] 76. Hardcoded model ID — `lib.rs:104-105` hardcodes `model_id` (`unsloth/Qwen3-1.7B-GGUF`) and `gguf_filename` (`Qwen3-1.7B-Q4_K_M.gguf`). Read `model_id` from `app_settings.generation_model` and `gguf_filename` from a new `app_settings.gguf_filename` key (with hardcoded fallbacks) so users can configure alternative models from the Settings UI.
 - [x] 77. `embedder_ready` fires synchronously on line 358 before the async LLM init can complete. Both events should work with staged availability correctly (the frontend will gate on them).
 
 ### Frontend Cleanup
@@ -134,16 +134,16 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 
 ### Stream A: GGUF Model Integration (Rust) — replaces hardcoded Mistral-7B
 
-- [x] 80. Swap `TextModelBuilder` → `GgufModelBuilder` in `lib.rs`. Replace with `GgufModelBuilder::new("unsloth/gemma-4-E2B-it-GGUF", vec!["gemma-4-E2B-it-Q8_0.gguf"])`. Remove `with_isq()` and `from_hf_cache_path()` (GGUF is pre-quantized, no HF cache path method).
-- [x] 81. Set `std::env::set_var("HF_HOME", &models_dir_llm)` before builder invocation so internal HF resolution finds the pre-downloaded single `.gguf` file.
-- [x] 82. Chain `.with_tok_model_id("google/gemma-4-E2B-it")` to fetch tokenizer from the safetensors repo (GGUF files lack tokenizer data).
-- [x] 83. Update `model_download.rs` — replace sibling-loop iteration with direct single-file: `repo.download_with_progress("gemma-4-E2B-it-Q8_0.gguf", reporter)`. Simplify to `total_files = 1`, remove the siblings loop, remove `emit_progress` helper.
+- [x] 80. Swap `TextModelBuilder` → `GgufModelBuilder` in `lib.rs`. Replace with `GgufModelBuilder::new("unsloth/Qwen3-1.7B-GGUF", vec!["Qwen3-1.7B-Q4_K_M.gguf"])`. Remove `with_isq()` and `from_hf_cache_path()` (GGUF is pre-quantized, no HF cache path method).
+- [x] 81. Pass the local directory path directly to `GgufModelBuilder::new()` so internal HF resolution finds the pre-downloaded single `.gguf` file (no `HF_HOME` required).
+- [x] 82. Chain `.with_tok_model_id("Qwen/Qwen3-1.7B")` to fetch tokenizer from the safetensors repo (GGUF files lack tokenizer data).
+- [x] 83. Update `model_download.rs` — replace sibling-loop iteration with direct single-file: `repo.download_with_progress("Qwen3-1.7B-Q4_K_M.gguf", reporter)`. Simplify to `total_files = 1`, remove the siblings loop, remove `emit_progress` helper.
 
 ### Stream B: Gemma Prompt Architecture (Rust)
 
 - [x] 84. Fix `build_rag_prompt` in `crates/rag_pipeline/src/lib.rs` — strip all system instructions. Output should only be: `[Document: X, Page: N]\n{chunk.content}\n\n` blocks followed by `User question: {query}`.
 - [x] 85. Fix `execute_query` in `lib.rs` — move all instructions to the System role message: `"You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags."`. The User message becomes the bare context string from `build_rag_prompt`.
-- [x] 86. Add `.enable_thinking(false)` to the `mistralrs::RequestBuilder` chain to suppress Gemma 4's `<|think|>` token.
+- [x] 86. Suppress reasoning tokens by adding instructions to the System role message (mistralrs `RequestBuilder` does not use `.enable_thinking(false)` for this).
 
 ### Stream C: Frontend Startup UX (Svelte) — covers tracker #59 and #60
 
@@ -174,4 +174,7 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 - [x] 102. Clean unused types from `types.ts` — remove `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` (tracker #79). Keep `AppError`.
 - [x] 103. Fix `DocumentUpload.svelte` `successCount` bug — add `successCount++` in the upload success branch so `uploadComplete` event fires.
 - [x] 104. Fix deprecated Svelte 5 ignore names — `a11y-click-events-have-key-events` → `a11y_click_events_have_key_events` in `CitationList.svelte` and `QueryResult.svelte` (tracker #69, #70).
-- [x] 105. Hide ISQ dropdown in `SettingsTab.svelte` when inference mode is `"local"` (GGUF is pre-quantized). Added note about Q8_0 being baked into the model file.
+- [x] 105. Hide ISQ dropdown in `SettingsTab.svelte` when inference mode is `"local"` (GGUF is pre-quantized). Added note about Q4_K_M being baked into the model file.
+- [x] 106. Integrate `env_logger` and replace all `eprintln!` calls with structured `log` macros across the codebase.
+- [x] 107. Fix LanceDB FTS initialization bug (index missing on empty DB) by reordering the atomic guard and adding a single-fire warning fallback.
+- [x] 108. Fix LLM initialization silent hang (404 on hf-hub) by rejecting empty `generation_model` strings at the UI (`SettingsTab.svelte`), DB write (`set_setting`), and DB read (LLM init fallback) layers.
