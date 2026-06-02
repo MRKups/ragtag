@@ -63,6 +63,17 @@ async fn begin_first_run_init(
                         debug!("startup recovery — no documents stuck in 'embedding' status");
                     }
                 }
+                if let Ok(recovered) = repo.reset_failed_to_queued(3).await {
+                    let count = recovered.len();
+                    for id in recovered {
+                        let _ = embedder_job_queue.try_send(id);
+                    }
+                    if count > 0 {
+                        info!("startup recovery — re-queued {count} failed documents for retry");
+                    } else {
+                        debug!("startup recovery — no failed documents eligible for retry");
+                    }
+                }
                 if let Ok(queued) = repo.get_queued_ids().await {
                     let count = queued.len();
                     for id in queued {
@@ -172,9 +183,17 @@ async fn begin_first_run_init(
 #[tauri::command]
 async fn upload_document(
     app: tauri::AppHandle,
-    filename: String,
-    file_bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<String, AppError> {
+    let filename = request.headers()
+        .get("x-filename")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Io("Missing filename header".into()))?
+        .to_string();
+    let file_bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.clone(),
+        tauri::ipc::InvokeBody::Json(_) => return Err(AppError::Io("Expected raw binary body".into())),
+    };
     let state = app.state::<AppState>();
     let repo = DocumentRepository::new(state.db_pool.clone());
 
@@ -196,15 +215,19 @@ async fn upload_document(
     .await
     .map_err(|e| AppError::Internal(format!("Hashing failed: {}", e)))?;
 
+    if let Some(existing) = repo.find_by_hash(&hash).await? {
+        return Err(AppError::DuplicateDocument(
+            format!("This file was already uploaded as '{}' (status: {:?})", existing.filename, existing.status)
+        ));
+    }
+
     let doc_id = uuid::Uuid::now_v7().to_string();
     let storage_filename = format!("{}.pdf", &doc_id);
     let storage_path = docs_dir.join(&storage_filename);
+    let relative_storage_path = format!("documents/{}", storage_filename);
 
     tokio::fs::write(&storage_path, &file_bytes).await?;
 
-    let relative_storage_path = format!("documents/{}", storage_filename);
-
-    // Format matches SQLite CURRENT_TIMESTAMP
     let created_at = jiff::Zoned::now()
         .strftime("%Y-%m-%d %H:%M:%S")
         .to_string();
@@ -227,7 +250,10 @@ async fn upload_document(
         retry_count: 0,
     };
 
-    repo.insert(&doc).await?;
+    if let Err(e) = repo.insert(&doc).await {
+        let _ = tokio::fs::remove_file(&storage_path).await;
+        return Err(e);
+    }
 
     state
         .job_queue
@@ -239,7 +265,7 @@ async fn upload_document(
 
 #[tauri::command]
 async fn execute_query(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     query: String,
     channel: tauri::ipc::Channel<TokenEvent>,
@@ -268,19 +294,25 @@ async fn execute_query(
         .hybrid_search(&query, &query_embedding, 10)
         .await?;
 
+    let app_local_data = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?;
+
     let mut citations: Vec<Citation> = Vec::new();
     for result in &search_results {
         if let Ok(Some(doc)) = repo.get_by_id(&result.document_id).await {
             citations.push(Citation {
                 document_id: result.document_id.clone(),
                 filename: doc.filename.clone(),
+                storage_path: app_local_data.join(&doc.storage_path).to_string_lossy().to_string(),
                 page: result.page as i32,
                 chunk_content: result.content.clone(),
             });
         }
     }
 
-    let context = rag_pipeline::build_rag_prompt(&query, &search_results);
+    let context = rag_pipeline::build_rag_prompt(&query, &citations);
     let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
 
     let mode = settings_repo.get("inference_mode").await
@@ -324,7 +356,13 @@ async fn execute_query(
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| AppError::Inference(format!("Stream error: {e}")))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = channel.send(TokenEvent::Error { message: format!("Stream error: {e}"), citations });
+                    return Ok(());
+                }
+            };
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
@@ -363,40 +401,43 @@ async fn execute_query(
             .add_message(mistralrs::TextMessageRole::System, system_prompt.to_string())
             .add_message(mistralrs::TextMessageRole::User, context);
 
-        let mut stream = model
-            .stream_chat_request(request)
-            .await
-            .map_err(|e| AppError::Inference(format!("LLM request failed: {e}")))?;
-
-        loop {
-            match stream.next().await {
-                Some(mistralrs::Response::Chunk(chunk)) => {
-                    if let Some(choice) = chunk.choices.first() {
-                        if let Some(token) = &choice.delta.content {
-                            if !token.is_empty() {
-                                let _ = channel.send(TokenEvent::Token { text: token.clone() });
+        match model.stream_chat_request(request).await {
+            Ok(mut stream) => {
+                loop {
+                    match stream.next().await {
+                        Some(mistralrs::Response::Chunk(chunk)) => {
+                            if let Some(choice) = chunk.choices.first() {
+                                if let Some(token) = &choice.delta.content {
+                                    if !token.is_empty() {
+                                        let _ = channel.send(TokenEvent::Token { text: token.clone() });
+                                    }
+                                }
                             }
                         }
+                        Some(mistralrs::Response::Done(_response)) => {
+                            let _ = channel.send(TokenEvent::Done { citations });
+                            break;
+                        }
+                        Some(mistralrs::Response::ModelError(msg, _)) => {
+                            let _ = channel.send(TokenEvent::Error { message: msg, citations });
+                            break;
+                        }
+                        None => {
+                            let _ = channel.send(TokenEvent::Done { citations });
+                            break;
+                        }
+                        _ => {}
                     }
                 }
-                Some(mistralrs::Response::Done(_response)) => {
-                    let _ = channel.send(TokenEvent::Done { citations });
-                    break;
-                }
-                Some(mistralrs::Response::ModelError(msg, _)) => {
-                    let _ = channel.send(TokenEvent::Error { message: msg });
-                    break;
-                }
-                None => {
-                    let _ = channel.send(TokenEvent::Done { citations });
-                    break;
-                }
-                _ => {}
+            }
+            Err(e) => {
+                let _ = channel.send(TokenEvent::Error { message: format!("LLM request failed: {e}"), citations });
             }
         }
     } else {
         let _ = channel.send(TokenEvent::Error {
             message: "No LLM model loaded. Switch to external inference in Settings.".into(),
+            citations,
         });
     }
 
@@ -713,7 +754,7 @@ pub fn run() {
                         }
                         Err(e) => {
                             error!("document {doc_id} processing failed: {e}");
-                            let _ = repo.update_status(&doc_id, DocumentStatus::Failed).await;
+                            let _ = repo.mark_failed(&doc_id).await;
                             let _ = app_handle.emit("document_failed", serde_json::json!({
                                 "document_id": &doc_id,
                                 "error": e.to_string(),

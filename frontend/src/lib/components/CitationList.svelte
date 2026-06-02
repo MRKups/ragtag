@@ -4,15 +4,16 @@
 
   let {
     citations = [] as Citation[],
-    onCitationClick = (_citation: { filename: string; documentId: string; page: number }) => {}
+    onCitationClick = (_citation: { filename: string; storagePath: string; documentId: string; page: number }) => {}
   } = $props<{
     citations?: Citation[];
-    onCitationClick?: (citation: { filename: string; documentId: string; page: number }) => void;
+    onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
   }>();
 
   function handleClick(citation: Citation) {
     onCitationClick({
       filename: citation.filename,
+      storagePath: citation.storage_path,
       documentId: citation.document_id,
       page: citation.page
     });

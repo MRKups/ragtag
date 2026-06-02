@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import { Upload, FileText, CheckCircle, AlertCircle, X } from 'lucide-svelte';
   import { api } from '$lib/api';
 
-  const dispatch = createEventDispatcher();
+  let { onUploadComplete }: { onUploadComplete?: () => void } = $props();
 
   let isDragging = $state(false);
   let isUploading = $state(false);
@@ -91,12 +90,13 @@
         files[i] = { ...files[i], status: 'success', errorMsg: 'Uploaded' };
         successCount++;
       } catch (e) {
-        files[i] = { ...files[i], status: 'error', errorMsg: e instanceof Error ? e.message : 'Upload failed' };
+        const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Upload failed';
+        files[i] = { ...files[i], status: 'error', errorMsg: msg };
       }
     }
 
     if (successCount > 0) {
-      dispatch('uploadComplete');
+      onUploadComplete?.();
     }
 
     isUploading = false;
@@ -144,7 +144,7 @@
   <!-- File List -->
   {#if files.length > 0}
     <div class="file-list">
-      {#each files as file, i}
+      {#each files as file, i (file.file.name)}
         <div class="file-item">
           <FileText size={20} color="#9ca3af" class="file-icon" />
           
@@ -172,8 +172,9 @@
               <AlertCircle size={20} color="#ef4444" />
             {:else}
               <button 
+                type="button"
                 class="remove-btn"
-                onclick={(e) => { e.stopPropagation(); removeFile(i); }}
+                onclick={() => removeFile(i)}
               >
                 <X size={20} />
               </button>
@@ -332,9 +333,8 @@
   .file-status {
     font-size: 0.75rem;
     margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    word-break: break-word;
   }
 
   .file-status.success { color: #4ade80; }

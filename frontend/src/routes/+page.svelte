@@ -22,18 +22,20 @@
           queryState.isLoading = false;
         } else if (event.type === 'error') {
           queryState.error = { message: event.message };
+          queryState.citations = event.citations;
           queryState.isStreaming = false;
           queryState.isLoading = false;
         }
       });
     } catch (e) {
-      queryState.error = { message: e instanceof Error ? e.message : 'Query failed' };
+      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Query failed';
+      queryState.error = { message: msg };
       queryState.isStreaming = false;
       queryState.isLoading = false;
     }
   }
 
-  function handleCitationClick(detail: { filename: string; documentId: string; page: number }) {
+  function handleCitationClick(detail: { filename: string; storagePath: string; documentId: string; page: number }) {
     queryState.selectedDocument = detail;
   }
 </script>
@@ -82,7 +84,7 @@
   <div class="panel right-panel">
     <DocumentViewer
       filename={queryState.selectedDocument?.filename ?? null}
-      storagePath={queryState.selectedDocument?.documentId ?? null}
+      storagePath={queryState.selectedDocument?.storagePath ?? null}
       page={queryState.selectedDocument?.page ?? 1}
     />
   </div>

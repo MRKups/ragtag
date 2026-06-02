@@ -9,13 +9,13 @@
     citations = [] as Citation[],
     isStreaming = false,
     error = null as string | null,
-    onCitationClick = (_citation: { filename: string; documentId: string; page: number }) => {}
+    onCitationClick = (_citation: { filename: string; storagePath: string; documentId: string; page: number }) => {}
   } = $props<{
     text?: string;
     citations?: Citation[];
     isStreaming?: boolean;
     error?: string | null;
-    onCitationClick?: (citation: { filename: string; documentId: string; page: number }) => void;
+    onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
   }>();
 
   let contentEl: HTMLDivElement | null = $state(null);
@@ -42,6 +42,7 @@
       if (citation) {
         onCitationClick({
           filename: citation.filename,
+          storagePath: citation.storage_path,
           documentId: citation.document_id,
           page: citation.page
         });

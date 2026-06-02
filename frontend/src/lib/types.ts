@@ -21,6 +21,7 @@ export interface Document {
 export interface Citation {
   document_id: string;
   filename: string;
+  storage_path: string;
   page: number;
   chunk_content: string;
 }
@@ -28,7 +29,7 @@ export interface Citation {
 export type TokenEvent = 
   | { type: "token"; text: string }
   | { type: "done"; citations: Citation[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; citations: Citation[] };
 
 export interface AppError {
   kind: string;

@@ -8,7 +8,7 @@
 <div class="page-container">
     <div class="panel">
         <div class="panel-content">
-            <DocumentUpload on:uploadComplete={() => documentList?.refresh()} />
+            <DocumentUpload onUploadComplete={() => documentList?.refresh()} />
         </div>
     </div>
     <div class="panel">

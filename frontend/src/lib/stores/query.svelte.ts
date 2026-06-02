@@ -6,7 +6,7 @@ export class QueryState {
   citations = $state<Citation[]>([]);
   error = $state<{ message: string; requestId?: string } | null>(null);
   queryText = $state('');
-  selectedDocument = $state<{ filename: string; documentId?: string; page: number } | null>(null);
+  selectedDocument = $state<{ filename: string; storagePath?: string; page: number } | null>(null);
   isStreaming = $state(false);
 
   reset() {

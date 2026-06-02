@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { listen } from '@tauri-apps/api/event';
   import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from 'lucide-svelte';
   import { api } from '$lib/api';
   import type { Document } from '$lib/types';
@@ -8,35 +9,50 @@
   let isLoading = $state(false);
   let error: string | null = $state(null);
   let deleting: string | null = $state(null);
+  let confirmDeleteTarget: { id: string; filename: string } | null = $state(null);
   let pollTimeout: ReturnType<typeof setTimeout>;
+  let unlistenFns: Array<() => void> = [];
+  let fetchPromise: Promise<void> | null = null;
 
   export async function refresh() {
     await fetchDocuments();
   }
 
   async function fetchDocuments(silent = false) {
+    if (fetchPromise) return fetchPromise;
+
     if (!silent) {
       isLoading = true;
       error = null;
     }
-    
-    try {
-      documents = await api.listDocuments();
-      schedulePolling();
-    } catch (e) {
-      if (!silent) {
-        error = e instanceof Error ? e.message : 'Failed to load documents';
+
+    fetchPromise = (async () => {
+      try {
+        const TIMEOUT_MS = 10_000;
+        const listPromise = api.listDocuments();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Request timed out')), TIMEOUT_MS)
+        );
+        documents = await Promise.race([listPromise, timeoutPromise]);
+        schedulePolling();
+      } catch (e) {
+        if (!silent) {
+          error = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Failed to load documents';
+        }
+        clearTimeout(pollTimeout);
+      } finally {
+        if (!silent) isLoading = false;
+        fetchPromise = null;
       }
-      clearTimeout(pollTimeout);
-    } finally {
-      if (!silent) isLoading = false;
-    }
+    })();
+
+    return fetchPromise;
   }
 
   function schedulePolling() {
     clearTimeout(pollTimeout);
-    
-    const hasTransientDocs = documents.some(doc => 
+
+    const hasTransientDocs = documents.some(doc =>
       ['queued', 'embedding'].includes(doc.status)
     );
 
@@ -47,28 +63,47 @@
     }
   }
 
-  async function handleDelete(id: string, filename: string) {
-    if (!confirm(`Are you sure you want to delete "${filename}"? This action cannot be undone.`)) {
-      return;
-    }
+  function confirmDelete(id: string, filename: string) {
+    confirmDeleteTarget = { id, filename };
+  }
 
+  function cancelDelete() {
+    confirmDeleteTarget = null;
+  }
+
+  async function executeDelete() {
+    if (!confirmDeleteTarget) return;
+    const { id } = confirmDeleteTarget;
+    confirmDeleteTarget = null;
     deleting = id;
     try {
       await api.deleteDocument(id);
-      await fetchDocuments();
+      documents = await api.listDocuments();
     } catch (e) {
-      alert(`Failed to delete document: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
+      error = `Failed to delete: ${msg}`;
     } finally {
       deleting = null;
     }
   }
 
-  onMount(() => {
-    fetchDocuments();
+  onMount(async () => {
+    await fetchDocuments();
+
+    try {
+      const [unlisten1, unlisten2] = await Promise.all([
+        listen('document_indexed', () => fetchDocuments(true)),
+        listen('document_failed', () => fetchDocuments(true)),
+      ]);
+      unlistenFns = [unlisten1, unlisten2];
+    } catch (err) {
+      console.error('Failed to register document event listeners:', err);
+    }
   });
 
   onDestroy(() => {
     clearTimeout(pollTimeout);
+    for (const fn of unlistenFns) fn();
   });
 </script>
 
@@ -79,6 +114,7 @@
       Document Library
     </h3>
     <button 
+      type="button"
       class="refresh-btn" 
       onclick={() => fetchDocuments(false)} 
       disabled={isLoading}
@@ -91,6 +127,20 @@
   </div>
 
   <div class="content">
+    {#if confirmDeleteTarget}
+      <div class="confirm-overlay" role="dialog" tabindex="-1" onclick={cancelDelete} onkeydown={(e) => e.key === 'Escape' && cancelDelete()}>
+        <div class="confirm-dialog" role="presentation" onclick={(e) => e.stopPropagation()}>
+          <p class="confirm-text">Delete "<strong>{confirmDeleteTarget.filename}</strong>"?</p>
+          <p class="confirm-sub">This action cannot be undone.</p>
+          <div class="confirm-actions">
+            <button type="button" class="confirm-cancel-btn" onclick={cancelDelete}>Cancel</button>
+            <button type="button" class="confirm-delete-btn" onclick={executeDelete}>
+              {deleting ? 'Deleting...' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if isLoading && documents.length === 0}
       <div class="loading-state">
         <div class="spinner"></div>
@@ -100,7 +150,7 @@
       <div class="error-state">
         <AlertCircle size={20} />
         <p>{error}</p>
-        <button class="retry-link" onclick={() => fetchDocuments(false)}>Retry</button>
+        <button type="button" class="retry-link" onclick={() => fetchDocuments(false)}>Retry</button>
       </div>
     {:else if documents.length === 0}
       <div class="empty-state">
@@ -109,7 +159,7 @@
       </div>
     {:else}
       <ul class="document-list">
-        {#each documents as doc}
+        {#each documents as doc (doc.id)}
           <li class="document-item">
             <span class="doc-icon-wrapper">
               <FileText size={16} />
@@ -133,9 +183,10 @@
             </div>
             <div class="actions">
               <button 
+                type="button"
                 class="action-btn delete-btn"
                 title="Delete"
-                onclick={() => handleDelete(doc.id, doc.filename)}
+                onclick={() => confirmDelete(doc.id, doc.filename)}
                 disabled={deleting === doc.id}
               >
                 {#if deleting === doc.id}
@@ -385,5 +436,73 @@
   
   .content::-webkit-scrollbar-thumb:hover {
     background: #64748b; 
+  }
+
+  .confirm-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+
+  .confirm-dialog {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    max-width: 350px;
+    width: 90%;
+    text-align: center;
+  }
+
+  .confirm-text {
+    color: #e5e7eb;
+    font-size: 0.95rem;
+    margin: 0 0 0.5rem 0;
+  }
+
+  .confirm-sub {
+    color: #9ca3af;
+    font-size: 0.8rem;
+    margin: 0 0 1.25rem 0;
+  }
+
+  .confirm-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+  }
+
+  .confirm-cancel-btn {
+    background: #334155;
+    color: #e5e7eb;
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.5rem 1.25rem;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .confirm-cancel-btn:hover {
+    background: #475569;
+  }
+
+  .confirm-delete-btn {
+    background: #dc2626;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    padding: 0.5rem 1.25rem;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .confirm-delete-btn:hover {
+    background: #b91c1c;
   }
 </style>

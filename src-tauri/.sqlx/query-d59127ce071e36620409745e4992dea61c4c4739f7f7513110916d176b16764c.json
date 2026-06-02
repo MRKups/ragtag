@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE documents SET status = 'queued' WHERE status = 'failed' AND retry_count < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d59127ce071e36620409745e4992dea61c4c4739f7f7513110916d176b16764c"
+}

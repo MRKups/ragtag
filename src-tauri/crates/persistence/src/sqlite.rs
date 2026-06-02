@@ -168,6 +168,48 @@ impl DocumentRepository {
         Ok(rows.into_iter().map(|r| r.into_domain()).collect())
     }
 
+    pub async fn mark_failed(&self, id: &str) -> Result<(), AppError> {
+        sqlx::query!(
+            "UPDATE documents SET status = 'failed', retry_count = retry_count + 1 WHERE id = ?",
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(())
+    }
+
+    pub async fn find_by_hash(&self, hash: &[u8]) -> Result<Option<Document>, AppError> {
+        let row = sqlx::query_as!(
+            DocumentRow,
+            r#"SELECT 
+                id as "id!", 
+                filename as "filename!", 
+                file_type as "file_type!", 
+                file_size_bytes, 
+                file_hash, 
+                storage_path as "storage_path!", 
+                status as "status!", 
+                chunk_count, 
+                embedding_model, 
+                embedding_attempts, 
+                CAST(created_at as TEXT) as "created_at?: String", 
+                CAST(processing_started_at as TEXT) as "processing_started_at?: String", 
+                CAST(indexed_at as TEXT) as "indexed_at?: String", 
+                error_message, 
+                retry_count 
+            FROM documents 
+            WHERE file_hash = ?"#,
+            hash
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(row.map(|r| r.into_domain()))
+    }
+
     pub async fn delete_by_id(&self, id: &str) -> Result<(), AppError> {
         sqlx::query!("DELETE FROM documents WHERE id = ?", id)
             .execute(&self.pool)
@@ -189,6 +231,30 @@ impl DocumentRepository {
         if !ids.is_empty() {
             sqlx::query!(
                 "UPDATE documents SET status = 'queued' WHERE status = 'embedding'"
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(sql_err)?;
+        }
+
+        Ok(ids)
+    }
+
+    pub async fn reset_failed_to_queued(&self, max_retries: i32) -> Result<Vec<String>, AppError> {
+        let docs = sqlx::query!(
+            "SELECT id FROM documents WHERE status = 'failed' AND retry_count < ?",
+            max_retries
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        let ids: Vec<String> = docs.into_iter().filter_map(|d| d.id).collect();
+
+        if !ids.is_empty() {
+            sqlx::query!(
+                "UPDATE documents SET status = 'queued' WHERE status = 'failed' AND retry_count < ?",
+                max_retries
             )
             .execute(&self.pool)
             .await

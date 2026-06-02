@@ -88,9 +88,11 @@ fn build_record_batch(
     }
 
     let float_values = Float32Array::from(all_floats);
-    let vector_field = schema.field(0).clone();
+    let arrow_schema::DataType::FixedSizeList(inner_field, _) = schema.field(0).data_type() else {
+        return Err(AppError::Internal("Schema vector field must be FixedSizeList".into()));
+    };
     let vector_col = FixedSizeListArray::try_new(
-        vector_field.into(),
+        inner_field.clone(),
         dim as i32,
         Arc::new(float_values),
         None,
@@ -129,14 +131,14 @@ pub fn embed_query(
 
 pub fn build_rag_prompt(
     query: &str,
-    chunks: &[persistence::SearchResult],
+    chunks: &[domain::Citation],
 ) -> String {
     let mut context = String::new();
 
     for chunk in chunks {
         context.push_str(&format!(
             "[Document: {}, Page: {}]\n{}\n\n",
-            chunk.document_id, chunk.page, chunk.content
+            chunk.filename, chunk.page, chunk.chunk_content
         ));
     }
 

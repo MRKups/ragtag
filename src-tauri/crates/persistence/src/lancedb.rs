@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use futures::stream::StreamExt;
-use log::{debug, warn};
+use log::warn;
 
 pub struct VectorDb {
     pub conn: Connection,
-    fts_built: AtomicBool,
+    indexes_built: AtomicBool,
 }
 
 impl VectorDb {
@@ -19,7 +19,7 @@ impl VectorDb {
         let conn = lancedb::connect(uri).execute().await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
         
-        Ok(Self { conn, fts_built: AtomicBool::new(false) })
+        Ok(Self { conn, indexes_built: AtomicBool::new(false) })
     }
 
     pub fn schema() -> Arc<ArrowSchema> {
@@ -95,14 +95,33 @@ impl VectorDb {
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        if !self.fts_built.load(Ordering::SeqCst) {
-            let index_params = lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
-            table.create_index(&["content"], index_params)
+        if !self.indexes_built.load(Ordering::SeqCst) {
+            let fts_params = lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
+            table.create_index(&["content"], fts_params)
                 .replace(true)
                 .execute()
                 .await
                 .map_err(|e| AppError::VectorDb(format!("FTS Index failed: {}", e)))?;
-            self.fts_built.store(true, Ordering::SeqCst);
+
+            match table
+                .create_index(
+                    &["vector"],
+                    lancedb::index::Index::IvfPq(lancedb::index::vector::IvfPqIndexBuilder::default()),
+                )
+                .replace(true)
+                .execute()
+                .await
+            {
+                Ok(_) => {
+                    self.indexes_built.store(true, Ordering::SeqCst);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Vector index creation deferred (will retry after more documents are ingested): {}",
+                        e
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -136,7 +155,7 @@ impl VectorDb {
                 if !FTS_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
                     warn!("hybrid search unavailable (FTS index missing) — falling back to vector-only search");
                 }
-                debug!("hybrid search error detail: {e}");
+                warn!("hybrid search error detail: {e}");
                 table.query()
                     .nearest_to(query_vector_f32)
                     .map_err(|e| AppError::VectorDb(e.to_string()))?

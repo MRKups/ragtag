@@ -8,11 +8,13 @@ export const api = {
   
   uploadDocument: async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
-    const bytes = Array.from(new Uint8Array(arrayBuffer));
+    const bytes = new Uint8Array(arrayBuffer);
     
-    return invoke<string>('upload_document', {
-      filename: file.name,
-      fileBytes: bytes
+    return invoke<string>('upload_document', bytes, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': file.name,
+      }
     });
   },
   

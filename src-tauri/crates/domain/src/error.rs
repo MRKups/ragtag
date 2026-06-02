@@ -16,6 +16,8 @@ pub enum AppError {
     Internal(String),
     #[error("Inference error: {0}")]
     Inference(String),
+    #[error("A document with this content already exists: {0}")]
+    DuplicateDocument(String),
 }
 
 impl From<std::io::Error> for AppError {
@@ -37,6 +39,7 @@ impl serde::Serialize for AppError {
             AppError::QueueFull => "QueueFull",
             AppError::Internal(_) => "Internal",
             AppError::Inference(_) => "Inference",
+            AppError::DuplicateDocument(_) => "DuplicateDocument",
         };
         map.serialize_entry("kind", kind)?;
         map.serialize_entry("message", &self.to_string())?;
