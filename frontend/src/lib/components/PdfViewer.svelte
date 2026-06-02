@@ -19,17 +19,23 @@
 
   let pdfDoc: PDFDocumentProxy | null = $state(null);
   let pageNum = $state(1);
-  let lastPageProp = $state(1);
   let scale = $state(1.0);
   let totalPages = $state(0);
   let loading = $state(true);
   let error: string | null = $state(null);
-  let pagesToRender: number[] = $state([]);
   let scrollContainer: HTMLDivElement | null = $state(null);
-  let canvasRefs: Record<number, HTMLCanvasElement> = {};
-  let textLayerRefs: Record<number, HTMLDivElement> = {};
-  let renderTasks: any[] = [];
-  let renderIds: Record<number, number> = {};
+  let loadId = 0;
+
+  let pagesToRender = $derived.by(() => {
+    if (!totalPages) return [] as number[];
+    const start = Math.max(1, pageNum - contextPages);
+    const end = Math.min(totalPages, pageNum + contextPages);
+    const result: number[] = [];
+    for (let i = start; i <= end; i++) {
+      result.push(i);
+    }
+    return result;
+  });
 
   $effect(() => {
     if (url && pdfjsLib) {
@@ -38,33 +44,18 @@
   });
 
   $effect(() => {
-    if (page !== lastPageProp) {
-      lastPageProp = page;
-      if (pdfDoc && page <= totalPages && page >= 1) {
-        pageNum = page;
-      }
+    if (pdfDoc && page >= 1 && page <= totalPages && page !== pageNum) {
+      pageNum = page;
     }
   });
 
   $effect(() => {
-    pageNum; scale; totalPages;
-    updatePageRange();
-  });
-
-  function updatePageRange() {
-    if (!totalPages) return;
-    const start = Math.max(1, pageNum - contextPages);
-    const end = Math.min(totalPages, pageNum + contextPages);
-    pagesToRender = [];
-    for (let i = start; i <= end; i++) {
-      pagesToRender.push(i);
-    }
-    if (!loading) {
+    if (totalPages && !loading) {
       tick().then(() => {
         setTimeout(() => scrollToPage(pageNum), 100);
       });
     }
-  }
+  });
 
   function scrollToPage(p: number) {
     const el = document.getElementById(`pdf-page-${p}`);
@@ -72,17 +63,20 @@
   }
 
   async function loadDocument(docUrl: string) {
+    const myLoadId = ++loadId;
     loading = true;
     error = null;
     try {
       const loadingTask = pdfjsLib.getDocument({ url: docUrl, withCredentials: false });
       pdfDoc = await loadingTask.promise;
+      if (myLoadId !== loadId) return;
       totalPages = pdfDoc.numPages;
       pageNum = (page && page <= totalPages) ? page : 1;
       loading = false;
       await tick();
       scrollToPage(pageNum);
     } catch (e) {
+      if (myLoadId !== loadId) return;
       error = 'Failed to load PDF document.';
       loading = false;
     }
@@ -109,9 +103,6 @@
 
   onDestroy(() => {
     pdfDoc?.destroy();
-    for (const task of renderTasks) {
-      try { task.cancel(); } catch (_) {}
-    }
   });
 </script>
 
