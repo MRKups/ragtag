@@ -19,7 +19,6 @@ persistence = { path = "crates/persistence" }
 rag_pipeline = { path = "crates/rag_pipeline" }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-fs = "2"
-mistralrs = "=0.8.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "=0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
@@ -34,6 +33,12 @@ hf-hub = { version = "0.4", features = ["tokio"] }
 futures-util = "0.3"
 log = "0.4"
 env_logger = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mistralrs = { version = "=0.8.1", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+mistralrs = "=0.8.1"
 
 [profile.dev]
 opt-level = 1

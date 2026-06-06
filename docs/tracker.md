@@ -223,3 +223,17 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 
 - [x] 133. Update `docs/file-structure.md` to reflect new plain Svelte layout (added `src/app.d.ts`, `src/lib/index.ts`, `src/lib/assets/`, and fixed store filenames).
 - [x] 134. Remove `frontend-sveltekit/` after full verification.
+
+## Phase 10: Bug Fixes & Refinements (June 2026)
+
+### 10.1 Apple Silicon Metal Acceleration & Model Init
+- [x] 135. Add `metal` feature to `mistralrs` on macOS (`Cargo.toml`) to fix CPU out-of-memory errors on M-series chips.
+- [x] 136. Fix `llm_ready` race condition (`lib.rs`): don't emit `llm_ready` when `GgufModelBuilder` fails, preventing the UI from entering a falsely "ready" state with no LLM.
+- [x] 137. Fix model download lockout (`lib.rs`): emit `llm_ready` even on model download failure so the user can reach the Settings page and switch to BYO inference mode instead of being locked out.
+
+### 10.2 Known Backlog (Identified during audit)
+- [ ] 138. Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:152`).
+- [ ] 139. Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values.
+- [ ] 140. Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs`).
+- [ ] 141. Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback.
+- [ ] 142. Add embedder readiness tracking to `AppPhase` state machine (`app-state.svelte.ts`) so vector search failures are caught.
