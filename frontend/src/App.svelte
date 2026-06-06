@@ -1,12 +1,23 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from 'lucide-svelte';
-  import { page } from '$app/stores';
   import { settingsState } from '$lib/stores/settings.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import AppInitializer from '$lib/components/AppInitializer.svelte';
+  import { router, type Route } from '$lib/router.svelte';
+  import QueryPage from './pages/QueryPage.svelte';
+  import DocumentsPage from './pages/DocumentsPage.svelte';
+  import SettingsPage from './pages/SettingsPage.svelte';
 
-  let { children } = $props();
+  const pages: Record<Route, typeof QueryPage> = {
+    query: QueryPage,
+    documents: DocumentsPage,
+    settings: SettingsPage
+  };
+
+  function navTo(route: Route) {
+    document.startViewTransition(() => router.navigate(route));
+  }
 
   onMount(async () => {
     await settingsState.load();
@@ -18,43 +29,54 @@
   <div class="app-container">
     <header class="header">
       <div class="brand">
-        <a href="/" class="logo-link">
+        <button class="logo-link" onclick={() => navTo('query')}>
           <div class="logo">
             <Wrench color="white" size={20} />
           </div>
           <h1>Ragtag V1</h1>
-        </a>
+        </button>
       </div>
-      
+
       <nav class="nav-menu">
-        <a 
-          href="/" 
-          class="nav-btn {String($page.url.pathname) === '/' ? 'active' : ''}"
+        <button
+          class="nav-btn"
+          class:active={router.current === 'query'}
+          onclick={() => navTo('query')}
         >
           <MessageSquare size={18} />
           <span>Query</span>
-        </a>
-        <a 
-          href="/documents" 
-          class="nav-btn {String($page.url.pathname) === '/documents' ? 'active' : ''}"
+        </button>
+        <button
+          class="nav-btn"
+          class:active={router.current === 'documents'}
+          onclick={() => navTo('documents')}
         >
           <Files size={18} />
           <span>Documents</span>
-        </a>
-        <a 
-          href="/settings" 
-          class="nav-btn {String($page.url.pathname) === '/settings' ? 'active' : ''}"
+        </button>
+        <button
+          class="nav-btn"
+          class:active={router.current === 'settings'}
+          onclick={() => navTo('settings')}
         >
           <SettingsIcon size={18} />
           <span>Settings</span>
-        </a>
+        </button>
       </nav>
 
       <div class="header-spacer"></div>
     </header>
 
     <main class="main-content">
-      {@render children()}
+      {#key router.current}
+        {#if router.current === 'query'}
+          <QueryPage />
+        {:else if router.current === 'documents'}
+          <DocumentsPage />
+        {:else if router.current === 'settings'}
+          <SettingsPage />
+        {/if}
+      {/key}
     </main>
   </div>
 </AppInitializer>
@@ -75,13 +97,11 @@
   .app-container {
     display: flex;
     flex-direction: column;
-    height: 100vh; /* Fallback */
     height: 100dvh;
     width: 100%;
     overflow: hidden;
   }
 
-  /* Header */
   .header {
     height: 64px;
     border-bottom: 1px solid #1e293b;
@@ -101,16 +121,22 @@
     gap: 0.75rem;
     width: 300px;
   }
-  
+
   .logo-link {
     display: flex;
     align-items: center;
     gap: 0.75rem;
     text-decoration: none;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    color: inherit;
+    font: inherit;
   }
 
   .header-spacer {
-    width: 300px; /* Matches brand width to ensure nav is perfectly centered */
+    width: 300px;
   }
 
   .logo {
@@ -132,7 +158,6 @@
     white-space: nowrap;
   }
 
-  /* Navigation */
   .nav-menu {
     display: flex;
     gap: 0.5rem;
@@ -155,7 +180,6 @@
     font-weight: 500;
     cursor: pointer;
     transition: all 0.2s;
-    text-decoration: none;
   }
 
   .nav-btn:hover {
@@ -168,7 +192,6 @@
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   }
 
-  /* Main Content */
   .main-content {
     display: flex;
     flex: 1;

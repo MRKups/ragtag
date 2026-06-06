@@ -91,7 +91,7 @@ Example keys:
 
 ## IPC Data Types
 
-These types define the shape of data sent from Rust to the SvelteKit frontend, specifically for the LLM streaming responses via Tauri v2 Channels.
+These types define the shape of data sent from Rust to the frontend, specifically for the LLM streaming responses via Tauri v2 Channels.
 
 ```rust
 // In crates/domain/src/events.rs

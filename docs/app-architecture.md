@@ -7,7 +7,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 | Component | Technology | Role |
 |-----------|------------|------|
 | **App Shell** | Tauri v2 | OS integration, window management, security capabilities |
-| **Frontend** | SvelteKit (static) | UI, running inside the OS-native WebView |
+| **Frontend** | Svelte 5 (Vite) | UI, running inside the OS-native WebView |
 | **Core Engine** | Rust | Document processing, embedding logic, file I/O, API clients |
 | **Relational DB** | SQLite (`sqlx`) | Document registry and app settings |
 | **Vector DB** | LanceDB | Embedded semantic similarity search |
@@ -17,7 +17,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 
 ## 2. Component Responsibilities
 
-### Tauri & SvelteKit (The Frontend)
+### Tauri & Svelte 5 (The Frontend)
 - No longer makes HTTP requests to a backend server.
 - Uses `invoke('command_name', { args })` to securely request actions from Rust via IPC.
 - Renders PDFs directly from disk using the browser's native renderer via Tauri's custom asset protocol (`http://asset.localhost/...` or `asset://localhost/...`). **Note:** This is configured in `tauri.conf.json` using `assetProtocol`, not in capabilities. The scope must include `$APPLOCALDATA/**` and `$APPLOCALDATA/.**/**` (to match dotfiles like `.cache`). Always construct asset URLs via `convertFileSrc()`. Windows WebView2 disables the native PDF viewer by default (`msPdfOOUI`); it is highly recommended to ship `pdf.js` for consistent cross-platform rendering rather than relying on WebView quirks.

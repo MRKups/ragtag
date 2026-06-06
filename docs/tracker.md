@@ -93,7 +93,7 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 
 ## Phase 6: Frontend UI Components (The Face)
 
-*Infrastructure ready: types.ts, api.ts, stores, pdf-init.ts, +layout shell, Toggle. UI components that consume them are below.*
+*Infrastructure ready: types.ts, api.ts, stores, pdf-init.ts, +layout shell (later replaced by App.svelte in Phase 9), Toggle. UI components that consume them are below.*
 
 - [x] 61. Build `SettingsTab.svelte` — full settings form: inference mode toggle, BYO fields (base URL + keyring-backed API key), local model repo, ISQ level, chunk size/overlap.
 - [x] 62. Build `QueryInput.svelte` — chat-style textarea with Ctrl+Enter submit, character limit indicator, disabled state during streaming.
@@ -102,7 +102,7 @@ This document tracks the step-by-step implementation of the Ragtag architecture.
 - [x] 65. Build `ConfidenceBadge.svelte` — small pill component showing HIGH/MEDIUM/LOW confidence with color coding.
 - [x] 66. Build `PdfViewer.svelte` + `PdfPage.svelte` — pdf.js rendered document viewer using `pdfjsLib` from `pdf-init.ts`. Renders visible pages in canvases with prev/next navigation and zoom. PdfPage handles per-page rendering with text layer and citation highlighting.
 - [x] 67. Build `DocumentViewer.svelte` — wrapper component that hosts `PdfViewer` with a placeholder state. Converts `storagePath` to Tauri asset protocol URL via `convertFileSrc`.
-- [x] 68. Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`.
+- [x] 68. Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`. (Later migrated to `src/pages/QueryPage.svelte` in Phase 9.)
 
 ## Phase 7: Compile-Ready Polish & Bugfixes
 
@@ -149,7 +149,7 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 
 - [x] 87. Create `frontend/src/lib/stores/app-state.svelte.ts` — Svelte 5 `$state` class with `phase` (`'starting' | 'downloading_model' | 'ready' | 'error'`), `downloadProgress`, `errorMessage`. `init()` subscribes via `listen()` to `embedder_ready`, `model_download_progress`, and `llm_ready` events.
 - [x] 88. Create `frontend/src/lib/components/AppInitializer.svelte` — fullscreen dark overlay (`z-index: 9999`). Phase `'starting'` shows spinner + "Initializing Ragtag...". Phase `'downloading_model'` shows progress bar + filename. Phase `'error'` shows retry button. Phase `'ready'` renders empty (app visible underneath).
-- [x] 89. Gate `+layout.svelte` — wrap the `<div class="app-container">` in `{#if appState.phase === 'ready'}`, render `<AppInitializer />` in `{:else}`. Call `appState.init()` in `onMount`.
+- [x] 89. Gate `+layout.svelte` — wrap the `<div class="app-container">` in `{#if appState.phase === 'ready'}`, render `<AppInitializer />` in `{:else}`. Call `appState.init()` in `onMount`. (Later extracted into `src/App.svelte` in Phase 9.)
 
 ### Stream D: BYO External Inference (Rust + Frontend) — covers tracker #54, #55, #56, #57
 
@@ -178,3 +178,48 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 - [x] 106. Integrate `env_logger` and replace all `eprintln!` calls with structured `log` macros across the codebase.
 - [x] 107. Fix LanceDB FTS initialization bug (index missing on empty DB) by reordering the atomic guard and adding a single-fire warning fallback.
 - [x] 108. Fix LLM initialization silent hang (404 on hf-hub) by rejecting empty `generation_model` strings at the UI (`SettingsTab.svelte`), DB write (`set_setting`), and DB read (LLM init fallback) layers.
+
+---
+
+## Phase 9: SvelteKit → Plain Svelte 5 SPA Migration (June 2026)
+
+### 9.1 Directory & Config
+
+- [x] 109. Rename `frontend/` → `frontend-sveltekit/` (preserve as reference).
+- [x] 110. Scaffold new `frontend/` with `npm init` and clean directory structure.
+- [x] 111. Remove `@sveltejs/kit` and `@sveltejs/adapter-static` from deps; keep `@sveltejs/vite-plugin-svelte`, `svelte`, `vite`.
+- [x] 112. Rewrite `svelte.config.js`: remove `kit` block, keep `compilerOptions.runes`.
+- [x] 113. Rewrite `vite.config.ts`: direct `svelte()` plugin (not `sveltekit()`), manual `$lib` alias via `resolve.alias`.
+- [x] 114. Rewrite `tsconfig.json`: standalone config with `$lib/*` path mapping, no `.svelte-kit/` extend.
+- [x] 115. Rewrite `src/app.d.ts`: remove SvelteKit `App` namespace.
+- [x] 116. Create `index.html` at project root (Vite entry), replacing `src/app.html` SvelteKit shell.
+- [x] 117. Create `src/main.ts`: `mount(App, { target: document.getElementById('app')! })`.
+- [x] 118. Update `src-tauri/tauri.conf.json`: `frontendDist` from `"../frontend/build"` → `"../frontend/dist"`.
+
+### 9.2 Routing & App Shell
+
+- [x] 119. Create `src/lib/router.svelte.ts`: hash-based micro-router using `$state` runes. Routes: `query`, `documents`, `settings`.
+- [x] 120. Create `src/App.svelte`: root shell extracted from `+layout.svelte` with header nav, `AppInitializer` boot gate, `{#key}` page switching, `document.startViewTransition()` on navigation.
+- [x] 121. Migrate `routes/+page.svelte` → `src/pages/QueryPage.svelte` (zero logic changes).
+- [x] 122. Migrate `routes/documents/+page.svelte` → `src/pages/DocumentsPage.svelte` (zero logic changes).
+- [x] 123. Migrate `routes/settings/+page.svelte` → `src/pages/SettingsPage.svelte` (zero logic changes).
+
+### 9.3 Agnostic Code Migration
+
+- [x] 124. Copy all 12 components from `src/lib/components/` — zero modifications.
+- [x] 125. Copy all 3 stores from `src/lib/stores/` — zero modifications.
+- [x] 126. Copy `api.ts`, `types.ts`, `pdf-init.ts`, `index.ts` — zero modifications.
+- [x] 127. Copy `static/` (pdf.worker.mjs, robots.txt) and `.npmrc`.
+
+### 9.4 Verification
+
+- [x] 128. Verify `vite build` succeeds with clean output.
+- [x] 129. Verify `svelte-check` passes (1 pre-existing PDF CSS error only).
+- [ ] 130. Verify `cargo tauri dev` loads the app with IPC working.
+- [ ] 131. Verify hash-based routing + view transitions between all 3 pages.
+- [ ] 132. Verify chat streaming survives page navigation (SPA state persistence).
+
+### 9.5 Cleanup
+
+- [x] 133. Update `docs/file-structure.md` to reflect new plain Svelte layout (added `src/app.d.ts`, `src/lib/index.ts`, `src/lib/assets/`, and fixed store filenames).
+- [x] 134. Remove `frontend-sveltekit/` after full verification.

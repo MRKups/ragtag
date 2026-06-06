@@ -7,26 +7,37 @@ This document outlines the current layout of the application.
 - `package.json`: NPM workspace / scripts for driving both Svelte and Tauri builds.
 - `opencode.jsonc`: Agent tooling configuration.
 - `docs/`: Architecture, specification documentation, and implementation tracker.
-- `frontend/`: The SvelteKit UI.
+- `frontend/`: Plain Svelte 5 SPA (no SvelteKit) built with Vite.
 - `src-tauri/`: The Tauri Rust application shell.
 
-## `frontend/` (SvelteKit UI)
+## `frontend/` (Plain Svelte 5 + Vite SPA)
 
-The frontend is a SvelteKit application adapted to run inside a Tauri WebView as a Single Page Application (SPA).
+The frontend is a plain Svelte 5 application compiled by Vite, running inside a Tauri WebView as a Single Page Application (SPA). Hash-based routing is used to avoid server-side routing complexities.
 
-- `svelte.config.js`: Configured for `adapter-static` with SPA fallback (`index.html`).
-- `vite.config.ts`: Configured with `strictPort: true` and Tauri-specific dev server ignores.
-- `src/routes/`: Client-side rendered pages. 
-  - `+layout.ts` & `+layout.svelte`: App shell with navigation sidebar.
-  - `+page.svelte`: Query interface with streaming chat and PDF viewer panel.
-  - `documents/`: Document management (upload & list).
-  - `settings/`: Application configuration.
+- `index.html`: Static HTML entry point with `#app` mount target.
+- `package.json`: Plain Svelte deps — no `@sveltejs/kit` or adapter.
+- `svelte.config.js`: Compiler options only (runes mode enforced, no `kit` config).
+- `vite.config.ts`: Direct `svelte()` Vite plugin with manual `$lib` alias resolution.
+- `tsconfig.json`: Standalone config (no `.svelte-kit/` extend), with `$lib/*` path mapping.
+- `src/app.d.ts`: TypeScript declarations file (minimal — no SvelteKit `App` namespace).
+- `src/main.ts`: Entry point — mounts `App.svelte` into `#app`.
+- `src/App.svelte`: Root app shell with header nav, `AppInitializer` boot gate, hash-based page routing via `{#key}` blocks, and CSS View Transitions.
+- `src/pages/`:
+  - `QueryPage.svelte`: Query interface with streaming chat (left) and PDF viewer panel (right).
+  - `DocumentsPage.svelte`: Document management — upload (left) and list (right).
+  - `SettingsPage.svelte`: Application configuration.
 - `src/lib/`:
+  - `index.ts`: Barrel re-export entry for the `$lib` path alias.
   - `api.ts`: Typed wrappers around Tauri `invoke` commands.
   - `types.ts`: TypeScript interfaces mirroring Rust models.
   - `pdf-init.ts`: pdf.js worker initialization.
-  - `stores/`: Svelte 5 `$state` stores for query and settings.
-  - `components/`: Reusable UI components. Built: `DocumentUpload`, `DocumentList`, `Toggle`, `SettingsTab`, `QueryInput`, `QueryResult`, `CitationList`, `ConfidenceBadge`, `PdfPage`, `PdfViewer`, `DocumentViewer`.
+  - `router.svelte.ts`: Hash-based micro-router using Svelte 5 `$state` runes. Routes: `query`, `documents`, `settings`.
+  - `assets/`: Static assets bundled by Vite (e.g., `favicon.svg`).
+  - `stores/`: Svelte 5 `$state` stores:
+    - `app-state.svelte.ts` — exports `AppState` class and `appState` singleton.
+    - `query.svelte.ts` — exports `QueryState` class and `queryState` singleton.
+    - `settings.svelte.ts` — exports `SettingsState` class and `settingsState` singleton.
+  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`.
 - `static/`: Static assets including `pdf.worker.mjs`.
 
 ## `src-tauri/` (Tauri App Shell)

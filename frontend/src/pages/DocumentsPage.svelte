@@ -34,7 +34,7 @@
     .panel:first-child {
         border-right: 1px solid #374151;
     }
-    
+
     .panel-content {
         padding: 2rem;
         height: 100%;

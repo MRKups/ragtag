@@ -20,7 +20,7 @@ It is a standalone executable that processes PDFs, generates embeddings, stores 
 
 **App Shell & UI:**
 - **Framework:** Tauri v2
-- **Frontend:** SvelteKit (adapter-static) / TypeScript
+- **Frontend:** Svelte 5 (Vite) / TypeScript
 - **UI & Styling:** Svelte 5 (Native component-scoped CSS, no Tailwind)
 
 **Backend Engine:**

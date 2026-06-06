@@ -4,12 +4,12 @@ These rules are strictly enforced for all AI agents and developers working on th
 
 ## 1. The Supreme Tauri v2 Directive
 **CRITICAL: Embed this in your mental model before writing any code:**
-> We are on Tauri v2.10, `@tauri-apps/api` v2, `@sveltejs/adapter-static`. Do NOT import from `@tauri-apps/api/fs`, `@tauri-apps/api/shell`, `@tauri-apps/api/window`, or `@tauri-apps/api/tauri` — those are v1 paths. Use `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-shell`, `@tauri-apps/api/webviewWindow`, `@tauri-apps/api/core` respectively. Config uses `build.frontendDist`/`build.devUrl`, not `build.distDir`/`build.devPath`. Rust uses `get_webview_window`, not `get_window`.
+> We are on Tauri v2, `@tauri-apps/api` v2, `@sveltejs/vite-plugin-svelte`. Do NOT import from `@tauri-apps/api/fs`, `@tauri-apps/api/shell`, `@tauri-apps/api/window`, or `@tauri-apps/api/tauri` — those are v1 paths. Use `@tauri-apps/plugin-fs`, `@tauri-apps/plugin-shell`, `@tauri-apps/api/webviewWindow`, `@tauri-apps/api/core` respectively. Config uses `build.frontendDist`/`build.devUrl`, not `build.distDir`/`build.devPath`. Rust uses `get_webview_window`, not `get_window`.
 
 ## 2. Architecture & IPC
 - **Commands are Handlers:** Treat `#[tauri::command]` as the security-scoped HTTP handler. Do NOT build an HTTP server (no `axum` or `actix`).
 - **No Sidecars, Period:** All inference (embeddings via `fastembed`, generation via `mistral.rs`) runs in-process. We do NOT use `tauri-plugin-shell`'s sidecar capability, and there is no `src-tauri/binaries/` directory. If a future feature requires an external binary, that decision must be re-litigated against the simplicity tenet — the default answer is no.
-- **SPA Frontend:** SvelteKit must use `adapter-static` with `fallback: 'index.html'` (SPA mode). Do NOT use SSR or prerendering `load()` functions, as they cannot access Tauri APIs at build time.
+- **SPA Frontend:** Plain Svelte 5 SPA compiled by Vite. Uses hash-based routing and `document.startViewTransition()` for same-document page transitions. Do NOT use SvelteKit patterns (`+page.svelte`, `+layout.svelte`, `load()` functions, SSR, prerendering, `@sveltejs/kit`, `adapter-static`) — this is a client-only SPA where only Tauri runtime APIs are available.
 
 ## 3. Rust Ecosystem & Crate Versions
 Pin versions aggressively. Do not hallucinate older versions.
@@ -89,4 +89,7 @@ impl serde::Serialize for AppError {
 All `#[tauri::command]` functions return `Result<T, AppError>`. The `Serialize` derive with `serde(tag = "kind")` gives the frontend a stable discriminated union to switch on.
 
 ## 6. Project Layout
-Keep `src-tauri` thin. It should only contain `tauri.conf.json`, capabilities, and the thin command wrapper functions. Heavy business logic must live in separated library crates (e.g., `src-tauri/crates/domain`, `src-tauri/crates/rag_pipeline`, `src-tauri/crates/persistence`) to ensure fast testing and Tauri-agnostic logic. There is no `src-tauri/binaries/` directory — all inference is in-process.
+
+- `frontend/`: Plain Svelte 5 SPA compiled by Vite. Hash-based routing, no SvelteKit. Pages live in `src/pages/`, shared components and stores in `src/lib/`. See `docs/file-structure.md` for the full breakdown.
+- `src-tauri/`: The Tauri Rust application shell. Keep this thin — it should only contain `tauri.conf.json`, capabilities, and thin command wrapper functions in `src/`. Heavy business logic must live in separated library crates under `src-tauri/crates/domain`, `crates/rag_pipeline`, and `crates/persistence` to ensure fast testing and Tauri-agnostic logic.
+- There is no `src-tauri/binaries/` directory — all inference is in-process.

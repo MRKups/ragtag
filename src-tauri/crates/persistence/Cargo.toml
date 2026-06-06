@@ -7,9 +7,6 @@ edition = "2024"
 domain = { path = "../domain" }
 sqlx = { version = "=0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
 tokio = { version = "1", features = ["full"] }
-thiserror = "2"
-uuid = { version = "1", features = ["v7"] }
-jiff = "0.2"
 lancedb = "=0.26.2"
 arrow-array = "57.2"
 arrow-schema = "57.2"
