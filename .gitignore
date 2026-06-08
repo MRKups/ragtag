@@ -10,7 +10,6 @@ Thumbs.db
 # Rust & Tauri
 target/
 src-tauri/target/
-src-tauri/Cargo.lock
 src-tauri/binaries/
 debug/
 **/*.rs.bk
@@ -28,6 +27,9 @@ frontend/vite.config.ts.timestamp-*
 # Node
 node_modules/
 .npm
+
+# Task Runner
+.task/
 
 # Logs
 *.log
