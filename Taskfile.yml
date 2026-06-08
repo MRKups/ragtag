@@ -1,0 +1,94 @@
+version: '3'
+
+vars:
+  FRONTEND_DIR: frontend
+  TAURI_DIR: src-tauri
+  RELEASE_BIN: target/release/mrk-ragtag-app
+
+env:
+  RUST_BACKTRACE: 1
+
+tasks:
+  default:
+    desc: Start HMR development mode
+    deps: [dev]
+
+  setup:
+    desc: Install all dependencies (npm + verify Rust)
+    cmds:
+      - task: setup-frontend
+      - task: setup-rust
+
+  setup-frontend:
+    desc: Install frontend npm dependencies
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm install
+
+  setup-rust:
+    desc: Verify Rust toolchain is installed
+    cmds:
+      - cargo --version
+      - rustc --version
+
+  dev:
+    desc: Run app in HMR development mode (Tauri + Vite dev server)
+    deps: [setup-frontend]
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - cargo tauri dev
+
+  build:
+    desc: Build release binary
+    deps: [check, build-frontend]
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - cargo build --release
+    generates:
+      - '{{.RELEASE_BIN}}'
+
+  bundle:
+    desc: Build distributable macOS .app bundle
+    deps: [check, build-frontend]
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - cargo tauri build
+    generates:
+      - target/release/bundle/macos/Ragtag.app
+
+  build-frontend:
+    desc: Build frontend Vite production bundle
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm run build
+    sources:
+      - src/**/*.svelte
+      - src/**/*.ts
+    generates:
+      - dist/index.html
+
+  check:
+    desc: Run TypeScript and Svelte type-checking
+    dir: '{{.FRONTEND_DIR}}'
+    cmds:
+      - npm run check
+
+  clean:
+    desc: Remove all build artifacts
+    cmds:
+      - task: clean-frontend
+      - task: clean-rust
+
+  clean-frontend:
+    desc: Clean frontend build output
+    silent: true
+    cmds:
+      - rm -rf '{{.FRONTEND_DIR}}/dist'
+      - rm -rf '{{.FRONTEND_DIR}}/node_modules/.vite'
+
+  clean-rust:
+    desc: Clean Rust build artifacts
+    silent: true
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - cargo clean

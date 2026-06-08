@@ -238,14 +238,19 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 - [ ] 141. Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback. Backend is fully wired (read/written/validated/used); only missing from frontend store + UI.
 - [ ] 142. Add embedder readiness tracking to `AppPhase` state machine (`app-state.svelte.ts`) so vector search failures are caught. Backend must also emit `embedder_failed` event on init failure (currently only logged silently).
 
-### 10.3 Additional Issues Surfaced During Audit (June 2026)
-- [x] 143. Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
-- [ ] 144. Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
-- [ ] 145. Add streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
-- [ ] 146. Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements #142 frontend tracking.
-- [ ] 147. Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
+### 10.3 Build Tooling Migration (Task)
+- [x] 143. Create `Taskfile.yml` at project root with `setup`, `dev`, `build`, `bundle`, `check`, `clean` commands.
+- [x] 144. Remove redundant `tauri:dev`/`build`/`bundle` scripts from root `package.json`.
+- [x] 145. Update `README.md` to reference `task dev` instead of `npm run tauri:dev` and document `go-task` prerequisite.
 
-### 10.4 Remaining Verification Tasks
-- [ ] 130. Verify `cargo tauri dev` loads the app with IPC working (Phase 9.4).
+### 10.4 Additional Issues Surfaced During Audit (June 2026)
+- [x] 146. Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
+- [ ] 147. Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
+- [ ] 148. Add streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
+- [ ] 149. Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements #142 frontend tracking.
+- [ ] 150. Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
+
+### 10.5 Remaining Verification Tasks
+- [x] 130. Verify `cargo tauri dev` (via `task dev`) loads the app with IPC working.
 - [ ] 131. Verify hash-based routing + view transitions between all 3 pages.
 - [ ] 132. Verify chat streaming survives page navigation (SPA state persistence).

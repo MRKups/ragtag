@@ -39,6 +39,7 @@ It is a standalone executable that processes PDFs, generates embeddings, stores 
 - **Node.js** 20+ and npm
 - **Xcode** (macOS only) — required for the Metal GPU acceleration layer used by `mistralrs`. Without Xcode, the build will fail with an obscure Metal compiler error.
 - **Tauri CLI** — `cargo install tauri-cli --version "^2"`
+- **Task (go-task)** — `brew install go-task` (build orchestration)
 
 ### macOS: Installing the Metal Toolchain
 
@@ -76,7 +77,7 @@ Precompiled shaders are stored in the platform-agnostic `.metallib` format — t
 ### First-Time Setup
 
 ```bash
-npm install --prefix frontend
+task setup
 ```
 
 The first launch of the app will download model weights (~2.8GB total):
@@ -88,7 +89,7 @@ Downloads are one-time and resume if interrupted. Progress is shown in the app's
 ### Development Build
 
 ```bash
-npm run tauri:dev
+task dev
 ```
 
 HMR development mode — best for prototyping and UI refinement:
@@ -103,7 +104,7 @@ Uses the installed Metal Toolchain for GPU shader precompilation at build time.
 ### Release Binary
 
 ```bash
-npm run tauri:build
+task build
 ```
 
 Binary: `src-tauri/target/release/mrk-ragtag-app` (~110MB, arm64)
@@ -113,7 +114,7 @@ Self-contained — no runtime dependencies beyond macOS system libraries. The bi
 ### App Bundle (Distributable)
 
 ```bash
-npm run tauri:bundle
+task bundle
 ```
 
 App bundle: `src-tauri/target/release/bundle/macos/Ragtag.app`
@@ -123,6 +124,7 @@ Full macOS application bundle with Info.plist, icons, and bundled frontend asset
 ### Other Commands
 
 ```bash
-npm run check          # TypeScript type-checking + Svelte diagnostics
-npm run build          # Frontend-only Vite build (check output in frontend/dist/)
+task check              # TypeScript type-checking + Svelte diagnostics
+task build-frontend     # Frontend-only Vite build (output in frontend/dist/)
+task clean              # Remove all build artifacts
 ```
