@@ -232,8 +232,20 @@ Items surfaced during the 2026-05-29 build verification pass. The project compil
 - [x] 137. Fix model download lockout (`lib.rs`): emit `llm_ready` even on model download failure so the user can reach the Settings page and switch to BYO inference mode instead of being locked out.
 
 ### 10.2 Known Backlog (Identified during audit)
-- [ ] 138. Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:152`).
-- [ ] 139. Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values.
-- [ ] 140. Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs`).
-- [ ] 141. Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback.
-- [ ] 142. Add embedder readiness tracking to `AppPhase` state machine (`app-state.svelte.ts`) so vector search failures are caught.
+- [ ] 138. Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:153`). Single risky unwrap in 14-file Rust codebase; ok_or_else + emit error event.
+- [ ] 139. Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values. Add params to `process_document()` signature; read settings in background worker from `AppSettingsRepository` with hardcoded fallbacks.
+- [ ] 140. Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs:171-181`). Add `error_message: &str` param + `error_message = ?` to UPDATE query. Wire call site in `lib.rs:757` to pass `&e.to_string()`. Also display in `DocumentList.svelte`.
+- [ ] 141. Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback. Backend is fully wired (read/written/validated/used); only missing from frontend store + UI.
+- [ ] 142. Add embedder readiness tracking to `AppPhase` state machine (`app-state.svelte.ts`) so vector search failures are caught. Backend must also emit `embedder_failed` event on init failure (currently only logged silently).
+
+### 10.3 Additional Issues Surfaced During Audit (June 2026)
+- [x] 143. Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
+- [ ] 144. Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
+- [ ] 145. Add streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
+- [ ] 146. Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements #142 frontend tracking.
+- [ ] 147. Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
+
+### 10.4 Remaining Verification Tasks
+- [ ] 130. Verify `cargo tauri dev` loads the app with IPC working (Phase 9.4).
+- [ ] 131. Verify hash-based routing + view transitions between all 3 pages.
+- [ ] 132. Verify chat streaming survives page navigation (SPA state persistence).
