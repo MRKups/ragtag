@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import QueryInput from '$lib/components/QueryInput.svelte';
   import QueryResult from '$lib/components/QueryResult.svelte';
   import DocumentViewer from '$lib/components/DocumentViewer.svelte';
@@ -7,13 +8,16 @@
   import type { TokenEvent } from '$lib/types';
 
   async function handleQuery(text: string) {
-    queryState.reset();
+    queryState.cancel();
+    const requestId = crypto.randomUUID();
+    queryState.currentRequestId = requestId;
     queryState.queryText = text;
     queryState.isLoading = true;
     queryState.isStreaming = true;
 
     try {
       await api.executeQuery(text, (event: TokenEvent) => {
+        if (queryState.currentRequestId !== requestId) return;
         if (event.type === 'token') {
           queryState.text += event.text;
         } else if (event.type === 'done') {
@@ -28,6 +32,7 @@
         }
       });
     } catch (e) {
+      if (queryState.currentRequestId !== requestId) return;
       const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Query failed';
       queryState.error = { message: msg };
       queryState.isStreaming = false;
@@ -35,9 +40,17 @@
     }
   }
 
+  function handleCancel() {
+    queryState.cancel();
+  }
+
   function handleCitationClick(detail: { filename: string; storagePath: string; documentId: string; page: number }) {
     queryState.selectedDocument = detail;
   }
+
+  onDestroy(() => {
+    queryState.cancel();
+  });
 </script>
 
 <div class="page-container">
@@ -75,6 +88,7 @@
           isLoading={queryState.isLoading}
           isStreaming={queryState.isStreaming}
           onSubmit={handleQuery}
+          onCancel={handleCancel}
           bind:text={queryState.queryText}
         />
       </div>

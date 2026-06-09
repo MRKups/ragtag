@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { Send, Loader2 } from 'lucide-svelte';
+  import { Send, Loader2, Square } from 'lucide-svelte';
 
   let {
     isLoading = false,
     isStreaming = false,
     onSubmit = () => {},
+    onCancel = () => {},
     text = $bindable('')
   } = $props<{
     isLoading?: boolean;
     isStreaming?: boolean;
     onSubmit?: (text: string) => void;
+    onCancel?: () => void;
     text?: string;
   }>();
 
@@ -21,10 +23,18 @@
     onSubmit(text);
   }
 
+  function handleCancel() {
+    onCancel();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit();
+      if (isStreaming) {
+        handleCancel();
+      } else {
+        handleSubmit();
+      }
     }
   }
 
@@ -51,12 +61,14 @@
     ></textarea>
 
     <button
-      onclick={handleSubmit}
-      disabled={!text.trim() || disabled}
-      class="submit-btn {text.trim() && !disabled ? 'active' : 'disabled'}"
-      aria-label="Submit query"
+      onclick={isStreaming ? handleCancel : handleSubmit}
+      disabled={!isStreaming && (!text.trim() || disabled)}
+      class="submit-btn {isStreaming ? 'stop' : text.trim() && !disabled ? 'active' : 'disabled'}"
+      aria-label={isStreaming ? 'Stop generation' : 'Submit query'}
     >
-      {#if disabled}
+      {#if isStreaming}
+        <Square size={20} />
+      {:else if isLoading}
         <div class="spinner-wrapper">
           <Loader2 class="animate-spin" size={20} />
         </div>
@@ -140,6 +152,14 @@
     background-color: #374151;
     cursor: not-allowed;
     color: #9ca3af;
+  }
+
+  .submit-btn.stop {
+    background-color: #dc2626;
+  }
+
+  .submit-btn.stop:hover {
+    background-color: #b91c1c;
   }
 
   .spinner-wrapper {

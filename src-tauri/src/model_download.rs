@@ -95,9 +95,14 @@ pub async fn download_model(
     cache_dir: &std::path::Path,
     app_handle: &AppHandle,
 ) -> Result<PathBuf, AppError> {
-    std::fs::create_dir_all(cache_dir)?;
+    tokio::fs::create_dir_all(cache_dir).await?;
 
-    clean_stale_cache_files(cache_dir, model_id);
+    let _ = tokio::task::spawn_blocking({
+        let cache_dir = cache_dir.to_path_buf();
+        let model_id = model_id.to_string();
+        move || clean_stale_cache_files(&cache_dir, &model_id)
+    })
+    .await;
 
     // Fast path: check if the file is already cached
     let cache = hf_hub::Cache::new(cache_dir.to_path_buf());
@@ -149,7 +154,12 @@ pub async fn download_model(
             Ok(p) => break p,
             Err(e) if attempts < max_attempts => {
                 warn!("download attempt {attempts}/{max_attempts} failed — cleaning stale files and retrying ({e})");
-                clean_stale_cache_files(cache_dir, model_id);
+                let _ = tokio::task::spawn_blocking({
+                    let cache_dir = cache_dir.to_path_buf();
+                    let model_id = model_id.to_string();
+                    move || clean_stale_cache_files(&cache_dir, &model_id)
+                })
+                .await;
             }
             Err(e) => {
                 return Err(AppError::Internal(format!(

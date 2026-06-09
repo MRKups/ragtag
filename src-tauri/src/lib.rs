@@ -405,7 +405,9 @@ async fn execute_query(
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
                             if !token.is_empty() {
-                                let _ = channel.send(TokenEvent::Token { text: token.to_string() });
+                                if channel.send(TokenEvent::Token { text: token.to_string() }).is_err() {
+                                    return Ok(());
+                                }
                             }
                         }
                     }
@@ -435,22 +437,24 @@ async fn execute_query(
                             if let Some(choice) = chunk.choices.first() {
                                 if let Some(token) = &choice.delta.content {
                                     if !token.is_empty() {
-                                        let _ = channel.send(TokenEvent::Token { text: token.clone() });
+                                        if channel.send(TokenEvent::Token { text: token.clone() }).is_err() {
+                                            return Ok(());
+                                        }
                                     }
                                 }
                             }
                         }
                         Some(mistralrs::Response::Done(_response)) => {
                             let _ = channel.send(TokenEvent::Done { citations });
-                            break;
+                            return Ok(());
                         }
                         Some(mistralrs::Response::ModelError(msg, _)) => {
                             let _ = channel.send(TokenEvent::Error { message: msg, citations });
-                            break;
+                            return Ok(());
                         }
                         None => {
                             let _ = channel.send(TokenEvent::Done { citations });
-                            break;
+                            return Ok(());
                         }
                         _ => {}
                     }
@@ -488,7 +492,7 @@ async fn delete_document(
         let app_local_data = app.path().app_local_data_dir().map_err(|e| AppError::Io(e.to_string()))?;
         let pdf_path = app_local_data.join(&doc.storage_path);
         
-        if pdf_path.exists() {
+        if tokio::fs::metadata(&pdf_path).await.is_ok() {
             tokio::fs::remove_file(pdf_path).await.map_err(|e| AppError::Io(e.to_string()))?;
         }
     }
@@ -586,13 +590,28 @@ async fn get_storage_info(
         .unwrap_or(0);
 
     let lancedb_dir = app_local_data.join(".lancedb");
-    let lancedb_size = dir_size(&lancedb_dir);
+    let lancedb_size = tokio::task::spawn_blocking({
+        let d = lancedb_dir.clone();
+        move || dir_size(&d)
+    })
+    .await
+    .unwrap_or(0);
 
     let docs_dir = app_local_data.join("documents");
-    let docs_size = dir_size(&docs_dir);
+    let docs_size = tokio::task::spawn_blocking({
+        let d = docs_dir.clone();
+        move || dir_size(&d)
+    })
+    .await
+    .unwrap_or(0);
 
     let models_dir = app_local_data.join("models");
-    let models_size = dir_size(&models_dir);
+    let models_size = tokio::task::spawn_blocking({
+        let d = models_dir.clone();
+        move || dir_size(&d)
+    })
+    .await
+    .unwrap_or(0);
 
     Ok(serde_json::json!({
         "database_bytes": db_size,

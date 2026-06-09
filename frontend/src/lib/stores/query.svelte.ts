@@ -4,10 +4,11 @@ export class QueryState {
   isLoading = $state(false);
   text = $state('');
   citations = $state<Citation[]>([]);
-  error = $state<{ message: string; requestId?: string } | null>(null);
+  error = $state<{ message: string } | null>(null);
   queryText = $state('');
   selectedDocument = $state<{ filename: string; storagePath?: string; page: number } | null>(null);
   isStreaming = $state(false);
+  currentRequestId = $state<string | null>(null);
 
   reset() {
     this.isLoading = false;
@@ -17,6 +18,11 @@ export class QueryState {
     this.queryText = '';
     this.selectedDocument = null;
     this.isStreaming = false;
+  }
+
+  cancel() {
+    this.currentRequestId = null;
+    this.reset();
   }
 }
 
