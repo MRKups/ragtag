@@ -24,6 +24,7 @@ export interface Citation {
   storage_path: string;
   page: number;
   chunk_content: string;
+  score: number;
 }
 
 export type TokenEvent = 
@@ -31,9 +32,9 @@ export type TokenEvent =
   | { type: "done"; citations: Citation[] }
   | { type: "error"; message: string; citations: Citation[] };
 
-export interface AppError {
-  kind: string;
-  message: string;
+export interface IngestionProgressEvent {
+  document_id: string;
+  stage: "extracting" | "chunking" | "embedding" | "storing";
 }
 
 

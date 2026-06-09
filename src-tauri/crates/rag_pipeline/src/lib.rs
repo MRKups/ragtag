@@ -22,13 +22,18 @@ pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
 pub async fn process_document(
     pdf_path: &Path,
     document_id: &str,
+    chunk_size: usize,
+    chunk_overlap: usize,
     embedder: Arc<std::sync::Mutex<TextEmbedding>>,
     repo: &DocumentRepository,
     vector_db: &VectorDb,
+    on_progress: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<(), AppError> {
+    on_progress("extracting");
     let pages = extractor::extract_pages(pdf_path)?;
 
-    let chunks = chunker::chunk_pages(pages, 512, 80);
+    on_progress("chunking");
+    let chunks = chunker::chunk_pages(pages, chunk_size, chunk_overlap);
     if chunks.is_empty() {
         return Err(AppError::Internal("No text chunks produced".into()));
     }
@@ -36,6 +41,7 @@ pub async fn process_document(
     repo.update_status(document_id, DocumentStatus::Embedding)
         .await?;
 
+    on_progress("embedding");
     let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
 
     let embeddings = {
@@ -54,6 +60,7 @@ pub async fn process_document(
 
     let batch = build_record_batch(document_id, &chunks, &embeddings)?;
 
+    on_progress("storing");
     vector_db
         .upsert_chunks(std::iter::once(batch))
         .await?;

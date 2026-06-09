@@ -1,6 +1,7 @@
 <script lang="ts">
   import { FileText, BookOpen } from 'lucide-svelte';
   import type { Citation } from '$lib/types';
+  import ConfidenceBadge from './ConfidenceBadge.svelte';
 
   let {
     citations = [] as Citation[],
@@ -38,6 +39,7 @@
           </div>
           <div class="citation-details">
             <span class="badge">Page {citation.page}</span>
+            <ConfidenceBadge score={citation.score} />
           </div>
           <p class="citation-text">"{citation.chunk_content}"</p>
         </button>

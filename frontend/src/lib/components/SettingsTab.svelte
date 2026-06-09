@@ -119,6 +119,9 @@ let apiKeyValue = $state('');
     {#if settingsState.isLoading}
       <div class="loading">Loading settings...</div>
     {:else}
+      {#if settingsState.loadError}
+        <div class="error-message">{settingsState.loadError}</div>
+      {/if}
       <div class="setting-group">
         <h3><Cpu size={18} /> Inference Configuration</h3>
 
@@ -192,6 +195,17 @@ let apiKeyValue = $state('');
               onblur={() => { const v = settingsState.generation_model.trim(); if (v) updateSetting('generation_model', v); }}
             />
             <p class="help-text">GGUF models are pre-quantized — ISQ does not apply in local mode.</p>
+          </div>
+          <div class="setting-field">
+            <label for="gguf_filename">GGUF Filename</label>
+            <input
+              id="gguf_filename"
+              type="text"
+              placeholder="Qwen3-1.7B-Q4_K_M.gguf"
+              bind:value={settingsState.gguf_filename}
+              onblur={() => { const v = settingsState.gguf_filename.trim(); if (v) updateSetting('gguf_filename', v); }}
+            />
+            <p class="help-text">Filename of the GGUF file within the Hugging Face repo above.</p>
           </div>
         {/if}
       </div>
@@ -288,6 +302,9 @@ let apiKeyValue = $state('');
           <p class="success-text">{storageMessage}</p>
         {/if}
       </div>
+      {#if settingsState.saveError}
+        <div class="error-banner">{settingsState.saveError}</div>
+      {/if}
     {/if}
   </div>
 </div>
@@ -319,6 +336,30 @@ let apiKeyValue = $state('');
     display: flex;
     flex-direction: column;
     gap: 2rem;
+  }
+
+  .error-message {
+    background: rgba(220, 38, 38, 0.15);
+    border: 1px solid rgba(220, 38, 38, 0.4);
+    color: #fca5a5;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.8125rem;
+  }
+
+  .error-banner {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    background: #7f1d1d;
+    border: 1px solid #dc2626;
+    color: #fca5a5;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.5rem;
+    font-size: 0.8125rem;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    max-width: 400px;
   }
 
   .setting-group {

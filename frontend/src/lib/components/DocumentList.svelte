@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from 'lucide-svelte';
   import { api } from '$lib/api';
-  import type { Document } from '$lib/types';
+  import type { Document, IngestionProgressEvent } from '$lib/types';
 
   let documents: Document[] = $state([]);
   let isLoading = $state(false);
@@ -13,6 +13,7 @@
   let pollTimeout: ReturnType<typeof setTimeout>;
   let unlistenFns: Array<() => void> = [];
   let fetchPromise: Promise<void> | null = null;
+  let documentStageMap = new Map<string, string>();
 
   export async function refresh() {
     await fetchDocuments();
@@ -78,7 +79,7 @@
     deleting = id;
     try {
       await api.deleteDocument(id);
-      documents = await api.listDocuments();
+      documents = documents.filter(d => d.id !== id);
     } catch (e) {
       const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
       error = `Failed to delete: ${msg}`;
@@ -91,11 +92,15 @@
     await fetchDocuments();
 
     try {
-      const [unlisten1, unlisten2] = await Promise.all([
-        listen('document_indexed', () => fetchDocuments(true)),
+      const [unlisten1, unlisten2, unlisten3, unlisten4] = await Promise.all([
+        listen('document_indexed', (event) => { documentStageMap.delete((event.payload as any).document_id); fetchDocuments(true); }),
         listen('document_failed', () => fetchDocuments(true)),
+        listen('document_deleted', () => fetchDocuments(true)),
+        listen<IngestionProgressEvent>('ingestion_progress', (event) => {
+          documentStageMap.set(event.payload.document_id, event.payload.stage);
+        }),
       ]);
-      unlistenFns = [unlisten1, unlisten2];
+      unlistenFns = [unlisten1, unlisten2, unlisten3, unlisten4];
     } catch (err) {
       console.error('Failed to register document event listeners:', err);
     }
@@ -179,6 +184,9 @@
                   <Clock size={12} />
                 {/if}
                 {doc.status}
+                {#if documentStageMap.get(doc.id)}
+                  <span class="doc-stage">({documentStageMap.get(doc.id)})</span>
+                {/if}
               </span>
               {#if doc.status === 'failed' && doc.error_message}
                 <span class="doc-error" title={doc.error_message}>{doc.error_message}</span>
@@ -331,6 +339,13 @@
   .status-embedding { color: #fbbf24; }
   .status-queued { color: #facc15; }
   .status-failed { color: #f87171; }
+
+  .doc-stage {
+    color: #6b7280;
+    font-size: 0.7rem;
+    font-weight: 400;
+    text-transform: none;
+  }
 
   .doc-error {
     display: block;

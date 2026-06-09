@@ -15,4 +15,5 @@ pub struct Citation {
     pub storage_path: String,
     pub page: i32,
     pub chunk_content: String,
+    pub score: f32,
 }

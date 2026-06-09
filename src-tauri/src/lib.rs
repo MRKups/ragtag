@@ -15,11 +15,6 @@ use log::{debug, error, info, warn};
 static INIT_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-fn ping() -> String {
-    "pong".to_string()
-}
-
-#[tauri::command]
 async fn begin_first_run_init(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -334,6 +329,7 @@ async fn execute_query(
                 storage_path: app_local_data.join(&doc.storage_path).to_string_lossy().to_string(),
                 page: result.page as i32,
                 chunk_content: result.content.clone(),
+                score: 1.0 / (1.0 + result.score),
             });
         }
     }
@@ -500,6 +496,10 @@ async fn delete_document(
     state.vector_db.delete_chunks(&id).await?;
     repo.delete_by_id(&id).await?;
     
+    let _ = app.emit("document_deleted", serde_json::json!({
+        "document_id": &id,
+    }));
+    
     Ok(())
 }
 
@@ -510,7 +510,7 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<Strin
     let mut settings = HashMap::new();
     let keys = vec![
         "inference_mode", "external_base_url", "generation_model", 
-        "gguf_filename", "isq_level", "use_query_enhancement", "chunk_size", "chunk_overlap"
+        "gguf_filename", "use_query_enhancement", "chunk_size", "chunk_overlap"
     ];
     
     for key in keys {
@@ -770,13 +770,32 @@ pub fn run() {
 
                     let result = match repo.get_by_id(&doc_id).await {
                         Ok(Some(doc)) => {
+                            let settings_repo = AppSettingsRepository::new(pool.clone());
+                            let chunk_size: usize = settings_repo.get("chunk_size").await
+                                .unwrap_or_default()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(512);
+                            let chunk_overlap: usize = settings_repo.get("chunk_overlap").await
+                                .unwrap_or_default()
+                                .and_then(|s| s.parse().ok())
+                                .unwrap_or(80);
                             let pdf_path = docs_dir.join(&doc.storage_path);
+                            let app_for_progress = app_handle.clone();
+                            let doc_id_for_progress = doc_id.clone();
                             rag_pipeline::process_document(
                                 &pdf_path,
                                 &doc_id,
+                                chunk_size,
+                                chunk_overlap,
                                 embedder,
                                 &repo,
                                 &vector_db,
+                                move |stage| {
+                                    let _ = app_for_progress.emit("ingestion_progress", serde_json::json!({
+                                        "document_id": &doc_id_for_progress,
+                                        "stage": stage,
+                                    }));
+                                },
                             ).await
                         }
                         Ok(None) => {
@@ -812,7 +831,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            ping,
             begin_first_run_init, 
             upload_document, 
             execute_query,

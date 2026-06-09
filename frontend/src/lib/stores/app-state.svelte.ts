@@ -19,6 +19,7 @@ export class AppState {
   downloadMessage = $state('');
   downloadProgress = $state(0);
   errorMessage = $state('');
+  embedderAvailable = $state(false);
 
   private unlisten: Array<() => void> = [];
 
@@ -26,6 +27,7 @@ export class AppState {
     try {
       const unlistenEmbedder = await listen('embedder_ready', () => {
         console.log('[AppState] embedder ready');
+        this.embedderAvailable = true;
       });
 
       const unlistenEmbedderFailed = await listen<{ message: string }>('embedder_failed', (event) => {
@@ -69,7 +71,7 @@ export class AppState {
 
       const unlistenLlm = await listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
-        if (this.phase !== 'error') {
+        if (this.phase !== 'error' && this.embedderAvailable) {
           this.phase = 'ready';
         }
       });

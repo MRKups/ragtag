@@ -16,7 +16,11 @@
   };
 
   function navTo(route: Route) {
-    document.startViewTransition(() => router.navigate(route));
+    if (typeof document.startViewTransition === 'function') {
+      document.startViewTransition(() => router.navigate(route));
+    } else {
+      router.navigate(route);
+    }
   }
 
   onMount(async () => {
@@ -113,6 +117,7 @@
     flex-shrink: 0;
     width: 100%;
     z-index: 10;
+    view-transition-name: app-header;
   }
 
   .brand {
@@ -197,5 +202,24 @@
     flex: 1;
     overflow: hidden;
     width: 100%;
+    view-transition-name: main-content;
+  }
+
+  ::view-transition-old(main-content) {
+    animation: fade-out 150ms ease-out forwards;
+  }
+
+  ::view-transition-new(main-content) {
+    animation: fade-in 150ms ease-out forwards;
+  }
+
+  @keyframes fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
 </style>
