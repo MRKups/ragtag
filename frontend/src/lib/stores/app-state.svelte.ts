@@ -28,6 +28,12 @@ export class AppState {
         console.log('[AppState] embedder ready');
       });
 
+      const unlistenEmbedderFailed = await listen<{ message: string }>('embedder_failed', (event) => {
+        console.error('[AppState] embedder failed:', event.payload.message);
+        this.phase = 'error';
+        this.errorMessage = event.payload.message;
+      });
+
       const unlistenProgress = await listen<DownloadProgress>('model_download_progress', (event) => {
         const p = event.payload;
         console.log('[AppState] download progress:', p);
@@ -63,10 +69,12 @@ export class AppState {
 
       const unlistenLlm = await listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
-        this.phase = 'ready';
+        if (this.phase !== 'error') {
+          this.phase = 'ready';
+        }
       });
 
-      this.unlisten = [unlistenEmbedder, unlistenProgress, unlistenLlm];
+      this.unlisten = [unlistenEmbedder, unlistenEmbedderFailed, unlistenProgress, unlistenLlm];
 
       // All listeners are set up — kick off first-run init (embedder + LLM download)
       console.log('[AppState] Listeners ready, triggering first-run init');

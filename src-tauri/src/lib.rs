@@ -88,9 +88,15 @@ async fn begin_first_run_init(
             }
             Ok(Err(e)) => {
                 error!("embedder initialization failed: {e}");
+                let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
+                    "message": e.to_string(),
+                }));
             }
             Err(e) => {
                 error!("embedder initialization task panicked: {e}");
+                let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
+                    "message": format!("Embedder task panicked: {e}"),
+                }));
             }
         }
     });
@@ -149,8 +155,27 @@ async fn begin_first_run_init(
 
         info!("model downloaded, building mistral.rs pipeline...");
 
+        let Some(parent_dir) = gguf_path.parent() else {
+            let msg = format!(
+                "GGUF path has no parent directory: '{}'",
+                gguf_path.display()
+            );
+            error!("{msg}");
+            let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
+                model_id: model_id.to_string(),
+                current_file: String::new(),
+                file_downloaded: 0,
+                file_total: 0,
+                files_completed: 0,
+                total_files: 0,
+                stage: model_download::DownloadStage::Error { message: msg },
+            });
+            let _ = llm_handle.emit("llm_ready", ());
+            return;
+        };
+
         let builder = mistralrs::GgufModelBuilder::new(
-            gguf_path.parent().unwrap().to_string_lossy().to_string(),
+            parent_dir.to_string_lossy().to_string(),
             vec![gguf_filename.to_string()],
         )
         .with_tok_model_id("Qwen/Qwen3-1.7B");
