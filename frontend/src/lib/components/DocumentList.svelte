@@ -180,6 +180,9 @@
                 {/if}
                 {doc.status}
               </span>
+              {#if doc.status === 'failed' && doc.error_message}
+                <span class="doc-error" title={doc.error_message}>{doc.error_message}</span>
+              {/if}
             </div>
             <div class="actions">
               <button 
@@ -328,6 +331,18 @@
   .status-embedding { color: #fbbf24; }
   .status-queued { color: #facc15; }
   .status-failed { color: #f87171; }
+
+  .doc-error {
+    display: block;
+    font-size: 0.7rem;
+    color: #f87171;
+    opacity: 0.8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    margin-top: 0.15rem;
+  }
 
   .spin-slow {
     animation: spin 2s linear infinite;

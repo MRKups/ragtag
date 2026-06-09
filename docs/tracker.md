@@ -1,256 +1,164 @@
-# Implementation Tracker
+# Ragtag Implementation Tracker
 
-This document tracks the step-by-step implementation of the Ragtag architecture.
+*Global ID Counter: Next item is **B127***
 
-## Phase 1: Workspace & App Shell Foundation
+## Features (F)
+- [x] F1: Call `invoke('ping')` from Svelte on load and verify the message passes successfully.
+- [x] F2: Implement CRUD repository functions for `documents` (`insert`, `update_status`, `get_by_id`, `reset_embedding_to_queued`).
+- [x] F3: Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row, pushes doc ID via `try_send()`.
+- [x] F4: Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
+- [x] F5: Build `SettingsTab.svelte` — full settings form: inference mode toggle, BYO fields (base URL + keyring-backed API key), local model repo, ISQ level, chunk size/overlap.
+- [x] F6: Build `QueryInput.svelte` — chat-style textarea with Ctrl+Enter submit, character limit indicator, disabled state during streaming.
+- [x] F7: Build `QueryResult.svelte` — streaming token display that binds to `queryState.text`, scrolls to bottom on new tokens, shows loading spinner during `isStreaming`.
+- [x] F8: Build `CitationList.svelte` — list of citation cards showing filename, page number, and a preview of the chunk content. Clicking a citation sets `queryState.selectedDocument` to drive the PDF viewer.
+- [x] F9: Build `ConfidenceBadge.svelte` — small pill component showing HIGH/MEDIUM/LOW confidence with color coding.
+- [x] F10: Build `PdfViewer.svelte` + `PdfPage.svelte` — pdf.js rendered document viewer using `pdfjsLib` from `pdf-init.ts`. Renders visible pages in canvases with prev/next navigation and zoom. PdfPage handles per-page rendering with text layer and citation highlighting.
+- [x] F11: Build `DocumentViewer.svelte` — wrapper component that hosts `PdfViewer` with a placeholder state. Converts `storagePath` to Tauri asset protocol URL via `convertFileSrc`.
+- [x] F12: Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`. (Later migrated to `src/pages/QueryPage.svelte` in Phase 9.)
+- [x] F13: Create `frontend/src/lib/stores/app-state.svelte.ts` — Svelte 5 `$state` class with `phase` (`'starting' | 'downloading_model' | 'ready' | 'error'`), `downloadProgress`, `errorMessage`. `init()` subscribes via `listen()` to `embedder_ready`, `model_download_progress`, and `llm_ready` events.
+- [x] F14: Create `frontend/src/lib/components/AppInitializer.svelte` — fullscreen dark overlay (`z-index: 9999`). Phase `'starting'` shows spinner + "Initializing Ragtag...". Phase `'downloading_model'` shows progress bar + filename. Phase `'error'` shows retry button. Phase `'ready'` renders empty (app visible underneath).
+- [x] F15: Gate `+layout.svelte` — wrap the `<div class="app-container">` in `{#if appState.phase === 'ready'}`, render `<AppInitializer />` in `{:else}`. Call `appState.init()` in `onMount`. (Later extracted into `src/App.svelte` in Phase 9.)
+- [x] F16: Add 3 keyring Tauri commands — `set_api_key` (uses `Entry::new("ragtag", "external_api_key").set_password()` in `spawn_blocking`), `has_api_key`, `delete_api_key`. All wrapped in `spawn_blocking`. Register in `invoke_handler`.
+- [x] F17: Implement BYO routing in `execute_query` — read `inference_mode` from `app_settings`. If `"external"`: read `external_base_url`, GET the API key from keyring, POST to `{base_url}/v1/chat/completions` with `{"stream":true}`, parse SSE line-by-line, extract `"choices"[0]["delta"]["content"]`, forward via `channel.send(TokenEvent::Token{...})`, attach citations on `[DONE]`.
+- [x] F18: Wire frontend keyring functions — add `setApiKey`, `hasApiKey`, `deleteApiKey` to `api.ts`. Update `SettingsTab.svelte` API key field: replace the disabled placeholder with a real password input + "Save API Key" button + "Clear Key" button + success feedback.
+- [x] F19: Add `get_storage_info` command — returns byte counts for `app.db`, `.lancedb/`, `documents/`, and `models/` (excluding fastembed ONNX cache).
+- [x] F20: Add `compact_vector_store` command — calls `table.optimize()` or equivalent compact/cleanup on the LanceDB chunks table.
+- [x] F21: Add `vacuum_database` command — runs `VACUUM` on SQLite.
+- [x] F22: Add two-phase `reset_all_data(delete_models: bool)` command — writes `.reset_pending` sentinel file to `$APPLOCALDATA` with `{"delete_models": bool}`, returns `{ requires_restart: true }`. On next startup (before any pool/connection init): detect sentinel, purge `documents/`, `.lancedb/`, `app.db`, and conditionally `models/models--*` (preserving `models--fastembed`), remove sentinel, then proceed with normal init.
+- [x] F23: Build "Storage Management" UI section at the bottom of `SettingsTab.svelte` — displays metrics from `get_storage_info`, buttons for VACUUM, Compact, and Reset All (with confirmation dialog and "delete models?" checkbox). On reset confirm, show "Restart required" modal.
+- [x] F24: Create `src/lib/router.svelte.ts`: hash-based micro-router using `$state` runes. Routes: `query`, `documents`, `settings`.
+- [x] F25: Create `src/App.svelte`: root shell extracted from `+layout.svelte` with header nav, `AppInitializer` boot gate, `{#key}` page switching, `document.startViewTransition()` on navigation.
+- [ ] F26: Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values. Add params to `process_document()` signature; read settings in background worker from `AppSettingsRepository` with hardcoded fallbacks.
+- [ ] F27: Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback. Backend is fully wired (read/written/validated/used); only missing from frontend store + UI.
+- [ ] F28: Implement embedder readiness tracking in AppPhase state machine — add `embedder_failed` phase so vector search failures are caught in the boot overlay. Complements B120 (backend event).
+- [ ] F29: Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
+- [ ] F30: Surface citation confidence scores to the UI. `SearchResult.score` exists in the backend but is discarded during `execute_query`. Add `score` field to `Citation` struct, plumb through to `CitationList.svelte`, and display with a `ConfidenceBadge` component.
+- [ ] F31: Implement granular progress streaming for document ingestion. AGENTS.md specifies `tauri::ipc::Channel<T>` for per-page/per-chunk progress events. Currently only binary `document_indexed` / `document_failed` events fire at completion. Add per-stage events (extraction → chunking → embedding → indexing).
 
-- [x] 1. Initialize NPM `package.json` at the root for workspace management.
-- [x] 2. Initialize Rust Cargo workspace in `src-tauri/Cargo.toml`.
-- [x] 3. Create directory structure (`frontend/`, `src-tauri/crates/`, `docs/`).
-- [x] 4. Scaffold SvelteKit app inside `frontend/`.
-- [x] 5. Configure `svelte.config.js` for `adapter-static` (SPA mode with `fallback: 'index.html'`).
-- [x] 6. Configure `vite.config.ts` (strict port `5173`, clear screen false).
-- [x] 7. Use native Svelte 5 component-scoped CSS (no Tailwind).
-- [x] 8. Update `tauri.conf.json` with build commands and basic identifiers.
-- [x] 9. Configure IPC capabilities in Tauri (`core:allow-invoke` for testing).
-- [x] 10. Configure `assetProtocol` in Tauri to allow reading from `$APPLOCALDATA/**` (required for PDF rendering).
-- [x] 11. Write a dummy `ping` command in Rust (`#[tauri::command]`).
-- [x] 12. Call `invoke('ping')` from Svelte on load and verify the message passes successfully.
-
-## Phase 2: Data Layer & Persistence (The Brain)
-
-- [x] 13. Define core data structures (`Document`, `DocumentStatus`, `AppError`, `TokenEvent`, `Citation`) in `crates/domain`.
-- [x] 14. Implement `serde::Serialize` for `AppError` to ensure safe, typed errors over IPC.
-- [x] 15. Add `sqlx` (v0.8.6) with `sqlite`, `runtime-tokio`, and `migrate` features to `crates/persistence`.
-- [x] 16. Write SQL migrations for `documents` and `app_settings` tables.
-- [x] 17. Implement DB initialization logic (ensuring the `app_local_data_dir` exists before connecting, running migrations).
-- [x] 18. Implement CRUD repository functions for `documents` (`insert`, `update_status`, `get_by_id`, `reset_embedding_to_queued`).
-- [x] 19. Add `lancedb` (v0.26.2) and `arrow` (57.2) crates to `crates/persistence`.
-- [x] 20. Define the Arrow schema for chunks (`document_id`, `vector` [FixedSizeList 768], `page`, `chunk_index`, `content`).
-- [x] 21. Implement LanceDB table creation and connection logic (`init`, `get_or_create_table`).
-- [x] 22. Implement the LanceDB `merge_insert` pipeline with write `Semaphore(1)`, FTS index rebuild guard, and idempotent upserts on `[document_id, page, chunk_index]`.
-
-## Phase 3: Background Processing Pipeline (The Muscle)
-
-- [x] 23. Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
-- [x] 24. Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue stale `queued` docs).
-- [x] 25. Spawn the main background worker task in `lib.rs` (runs full `rag_pipeline::process_document` and emits `document_indexed` / `document_failed` events).
-- [x] 26. Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row, pushes doc ID via `try_send()`.
-- [x] 27. Implement Rust logic to safely copy raw bytes to the App Data directory (via `tokio::fs`).
-- [x] 28. Write initial SQLite `queued` row and push job to the MPSC channel.
-- [x] 29. Integrate `pdf-extract` into `crates/rag_pipeline`.
-- [x] 30. Write extraction loop (MUST be page-by-page to preserve citation boundaries).
-- [x] 31. Implement token chunking logic (512 size / 80 overlap, `"passage: "` prefix).
-- [x] 32. Integrate `fastembed-rs` (v5).
-- [x] 33. Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
-- [x] 34. Hook embedding generation into the chunking pipeline.
-- [x] 35. Enforce write order: Save vectors to LanceDB *first*, update SQLite to `indexed` *second*.
-- [x] 36. Emit `document_indexed` Tauri event to Svelte upon completion.
-
-## Phase 4: AI Execution & RAG (The Voice)
-
-### Backtracking — Remove Sidecar Artifacts
-
-- [x] 37. Remove `tauri-plugin-shell` from `src-tauri/Cargo.toml` dependencies.
-- [x] 38. Remove `shell:default` permission from `capabilities/default.json`.
-- [x] 39. Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
-- [x] 40. Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
-
-### New Dependencies & State
-
-- [x] 41. Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
-- [x] 42. Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"`, `lance-index = "2.0.0"` to `src-tauri/Cargo.toml`.
-- [x] 43. Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
-- [x] 44. Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
-- [x] 45. Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
-- [x] 46. Emit `embedder_ready` event after `fastembed` init completes.
-
-### Vector Search Layer
-
-- [x] 47. Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
-- [x] 48. Add vector-only fallback search if FTS index is missing or throws.
-- [x] 49. Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
-
-### RAG Query Pipeline
-
-- [x] 50. Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
-- [x] 51. Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
-- [x] 52. Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
-- [x] 53. Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
-
-### BYO Inference Mode
-
-- [x] 54. Integrate `keyring` for secure storage of `external_api_key` (service=`"ragtag"`, username=`"external_api_key"`).
-- [x] 55. Implement `reqwest`-based BYO inference path (POST to external OpenAI-compatible `/v1/chat/completions` with streaming).
-- [x] 56. Unify local `mistralrs` and external `reqwest` paths behind shared prompt/citation logic (trait or enum dispatch).
-- [x] 57. Wire up BYO routing: `execute_query` reads `inference_mode` from `app_settings`, routes accordingly.
-
-## Phase 5: Polish, Security & UX
-
-- [x] 58. Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
-- [x] 59. Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
-- [x] 60. Emit progress events for model downloads (hf-hub progress → frontend progress bar).
-
-## Phase 6: Frontend UI Components (The Face)
-
-*Infrastructure ready: types.ts, api.ts, stores, pdf-init.ts, +layout shell (later replaced by App.svelte in Phase 9), Toggle. UI components that consume them are below.*
-
-- [x] 61. Build `SettingsTab.svelte` — full settings form: inference mode toggle, BYO fields (base URL + keyring-backed API key), local model repo, ISQ level, chunk size/overlap.
-- [x] 62. Build `QueryInput.svelte` — chat-style textarea with Ctrl+Enter submit, character limit indicator, disabled state during streaming.
-- [x] 63. Build `QueryResult.svelte` — streaming token display that binds to `queryState.text`, scrolls to bottom on new tokens, shows loading spinner during `isStreaming`.
-- [x] 64. Build `CitationList.svelte` — list of citation cards showing filename, page number, and a preview of the chunk content. Clicking a citation sets `queryState.selectedDocument` to drive the PDF viewer.
-- [x] 65. Build `ConfidenceBadge.svelte` — small pill component showing HIGH/MEDIUM/LOW confidence with color coding.
-- [x] 66. Build `PdfViewer.svelte` + `PdfPage.svelte` — pdf.js rendered document viewer using `pdfjsLib` from `pdf-init.ts`. Renders visible pages in canvases with prev/next navigation and zoom. PdfPage handles per-page rendering with text layer and citation highlighting.
-- [x] 67. Build `DocumentViewer.svelte` — wrapper component that hosts `PdfViewer` with a placeholder state. Converts `storagePath` to Tauri asset protocol URL via `convertFileSrc`.
-- [x] 68. Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`. (Later migrated to `src/pages/QueryPage.svelte` in Phase 9.)
-
-## Phase 7: Compile-Ready Polish & Bugfixes
-
-Items surfaced during the 2026-05-29 build verification pass. The project compiles clean — `cargo check`, `cargo build`, `npm run build`, and `npm run check` all pass (0 TypeScript errors, 0 Rust errors). A 600MB `mrk-ragtag-app` binary builds successfully for arm64 macOS.
-
-### Svelte 5 Warnings (20 total, 0 errors)
-
-- [x] 69. Fix deprecated svelte-ignore names in `QueryResult.svelte` — `a11y-no-static-element-interactions` → `a11y_no_static_element_interactions`, same for `a11y-click-events-have-key-events`.
-- [x] 70. Fix deprecated svelte-ignore names in `CitationList.svelte` — replaced `div` with `button` element, eliminating the a11y warnings entirely.
-- [x] 71. Fix non-reactive DOM refs in `QueryResult.svelte` — `contentEl` now uses `$state()`.
-- [x] 72. Fix non-reactive DOM refs in `PdfViewer.svelte` — `pdfDoc`, `scrollContainer` now use `$state()`.
-- [x] 73. Fix `state_referenced_locally` in `PdfViewer.svelte` — `pageNum` and `lastPageProp` initialized with `$state(1)` instead of capturing initial `page` prop value.
-- [x] 74. Add `aria-label` to PdfViewer toolbar buttons (prev/next/zoom-in/zoom-out).
-- [x] 75. Remove unused `.source-icon` CSS selector in `CitationList.svelte`.
-
-### Rust Side Issues
-
-- [x] 76. Hardcoded model ID — `lib.rs:104-105` hardcodes `model_id` (`unsloth/Qwen3-1.7B-GGUF`) and `gguf_filename` (`Qwen3-1.7B-Q4_K_M.gguf`). Read `model_id` from `app_settings.generation_model` and `gguf_filename` from a new `app_settings.gguf_filename` key (with hardcoded fallbacks) so users can configure alternative models from the Settings UI.
-- [x] 77. `embedder_ready` fires synchronously on line 358 before the async LLM init can complete. Both events should work with staged availability correctly (the frontend will gate on them).
-
-### Frontend Cleanup
-
-- [x] 78. Remove unused `tailwind-merge` from `frontend/package.json` — no imports reference it.
-- [x] 79. Clean up unused aspirational types in `types.ts` — `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` have no corresponding Rust structs and are never consumed.
-
----
-
-## Phase 8: V1 Final Polish & Architecture Blueprint
-
-### Stream A: GGUF Model Integration (Rust) — replaces hardcoded Mistral-7B
-
-- [x] 80. Swap `TextModelBuilder` → `GgufModelBuilder` in `lib.rs`. Replace with `GgufModelBuilder::new("unsloth/Qwen3-1.7B-GGUF", vec!["Qwen3-1.7B-Q4_K_M.gguf"])`. Remove `with_isq()` and `from_hf_cache_path()` (GGUF is pre-quantized, no HF cache path method).
-- [x] 81. Pass the local directory path directly to `GgufModelBuilder::new()` so internal HF resolution finds the pre-downloaded single `.gguf` file (no `HF_HOME` required).
-- [x] 82. Chain `.with_tok_model_id("Qwen/Qwen3-1.7B")` to fetch tokenizer from the safetensors repo (GGUF files lack tokenizer data).
-- [x] 83. Update `model_download.rs` — replace sibling-loop iteration with direct single-file: `repo.download_with_progress("Qwen3-1.7B-Q4_K_M.gguf", reporter)`. Simplify to `total_files = 1`, remove the siblings loop, remove `emit_progress` helper.
-
-### Stream B: Gemma Prompt Architecture (Rust)
-
-- [x] 84. Fix `build_rag_prompt` in `crates/rag_pipeline/src/lib.rs` — strip all system instructions. Output should only be: `[Document: X, Page: N]\n{chunk.content}\n\n` blocks followed by `User question: {query}`.
-- [x] 85. Fix `execute_query` in `lib.rs` — move all instructions to the System role message: `"You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags."`. The User message becomes the bare context string from `build_rag_prompt`.
-- [x] 86. Suppress reasoning tokens by adding instructions to the System role message (mistralrs `RequestBuilder` does not use `.enable_thinking(false)` for this).
-
-### Stream C: Frontend Startup UX (Svelte) — covers tracker #59 and #60
-
-- [x] 87. Create `frontend/src/lib/stores/app-state.svelte.ts` — Svelte 5 `$state` class with `phase` (`'starting' | 'downloading_model' | 'ready' | 'error'`), `downloadProgress`, `errorMessage`. `init()` subscribes via `listen()` to `embedder_ready`, `model_download_progress`, and `llm_ready` events.
-- [x] 88. Create `frontend/src/lib/components/AppInitializer.svelte` — fullscreen dark overlay (`z-index: 9999`). Phase `'starting'` shows spinner + "Initializing Ragtag...". Phase `'downloading_model'` shows progress bar + filename. Phase `'error'` shows retry button. Phase `'ready'` renders empty (app visible underneath).
-- [x] 89. Gate `+layout.svelte` — wrap the `<div class="app-container">` in `{#if appState.phase === 'ready'}`, render `<AppInitializer />` in `{:else}`. Call `appState.init()` in `onMount`. (Later extracted into `src/App.svelte` in Phase 9.)
-
-### Stream D: BYO External Inference (Rust + Frontend) — covers tracker #54, #55, #56, #57
-
-- [x] 90. Add `reqwest::Client` to `AppState` (`state.rs`). Build once in `setup()` with `rustls-tls`.
-- [x] 91. Add 3 keyring Tauri commands — `set_api_key` (uses `Entry::new("ragtag", "external_api_key").set_password()` in `spawn_blocking`), `has_api_key`, `delete_api_key`. All wrapped in `spawn_blocking`. Register in `invoke_handler`.
-- [x] 92. Implement BYO routing in `execute_query` — read `inference_mode` from `app_settings`. If `"external"`: read `external_base_url`, GET the API key from keyring, POST to `{base_url}/v1/chat/completions` with `{"stream":true}`, parse SSE line-by-line, extract `"choices"[0]["delta"]["content"]`, forward via `channel.send(TokenEvent::Token{...})`, attach citations on `[DONE]`.
-- [x] 93. BYO staged-availability bypass — in the LLM init background task, if `inference_mode == "external"`, skip download/build entirely and immediately `app.emit("llm_ready")`.
-- [x] 94. Wire frontend keyring functions — add `setApiKey`, `hasApiKey`, `deleteApiKey` to `api.ts`. Update `SettingsTab.svelte` API key field: replace the disabled placeholder with a real password input + "Save API Key" button + "Clear Key" button + success feedback.
-
-### Stream E: Storage Management (Rust + Frontend) — new feature
-
-- [x] 95. Add `get_storage_info` command — returns byte counts for `app.db`, `.lancedb/`, `documents/`, and `models/` (excluding fastembed ONNX cache).
-- [x] 96. Add `compact_vector_store` command — calls `table.optimize()` or equivalent compact/cleanup on the LanceDB chunks table.
-- [x] 97. Add `vacuum_database` command — runs `VACUUM` on SQLite.
-- [x] 98. Add two-phase `reset_all_data(delete_models: bool)` command — writes `.reset_pending` sentinel file to `$APPLOCALDATA` with `{"delete_models": bool}`, returns `{ requires_restart: true }`. On next startup (before any pool/connection init): detect sentinel, purge `documents/`, `.lancedb/`, `app.db`, and conditionally `models/models--*` (preserving `models--fastembed`), remove sentinel, then proceed with normal init.
-- [x] 99. Build "Storage Management" UI section at the bottom of `SettingsTab.svelte` — displays metrics from `get_storage_info`, buttons for VACUUM, Compact, and Reset All (with confirmation dialog and "delete models?" checkbox). On reset confirm, show "Restart required" modal.
-
-### Stream F: Cleanup & Polish
-
-- [x] 100. Remove unused `tailwind-merge` from `frontend/package.json` (tracker #78).
-- [x] 101. Remove unused `clsx` from `frontend/package.json`.
-- [x] 102. Clean unused types from `types.ts` — remove `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` (tracker #79). Keep `AppError`.
-- [x] 103. Fix `DocumentUpload.svelte` `successCount` bug — add `successCount++` in the upload success branch so `uploadComplete` event fires.
-- [x] 104. Fix deprecated Svelte 5 ignore names — `a11y-click-events-have-key-events` → `a11y_click_events_have_key_events` in `CitationList.svelte` and `QueryResult.svelte` (tracker #69, #70).
-- [x] 105. Hide ISQ dropdown in `SettingsTab.svelte` when inference mode is `"local"` (GGUF is pre-quantized). Added note about Q4_K_M being baked into the model file.
-- [x] 106. Integrate `env_logger` and replace all `eprintln!` calls with structured `log` macros across the codebase.
-- [x] 107. Fix LanceDB FTS initialization bug (index missing on empty DB) by reordering the atomic guard and adding a single-fire warning fallback.
-- [x] 108. Fix LLM initialization silent hang (404 on hf-hub) by rejecting empty `generation_model` strings at the UI (`SettingsTab.svelte`), DB write (`set_setting`), and DB read (LLM init fallback) layers.
-
----
-
-## Phase 9: SvelteKit → Plain Svelte 5 SPA Migration (June 2026)
-
-### 9.1 Directory & Config
-
-- [x] 109. Rename `frontend/` → `frontend-sveltekit/` (preserve as reference).
-- [x] 110. Scaffold new `frontend/` with `npm init` and clean directory structure.
-- [x] 111. Remove `@sveltejs/kit` and `@sveltejs/adapter-static` from deps; keep `@sveltejs/vite-plugin-svelte`, `svelte`, `vite`.
-- [x] 112. Rewrite `svelte.config.js`: remove `kit` block, keep `compilerOptions.runes`.
-- [x] 113. Rewrite `vite.config.ts`: direct `svelte()` plugin (not `sveltekit()`), manual `$lib` alias via `resolve.alias`.
-- [x] 114. Rewrite `tsconfig.json`: standalone config with `$lib/*` path mapping, no `.svelte-kit/` extend.
-- [x] 115. Rewrite `src/app.d.ts`: remove SvelteKit `App` namespace.
-- [x] 116. Create `index.html` at project root (Vite entry), replacing `src/app.html` SvelteKit shell.
-- [x] 117. Create `src/main.ts`: `mount(App, { target: document.getElementById('app')! })`.
-- [x] 118. Update `src-tauri/tauri.conf.json`: `frontendDist` from `"../frontend/build"` → `"../frontend/dist"`.
-
-### 9.2 Routing & App Shell
-
-- [x] 119. Create `src/lib/router.svelte.ts`: hash-based micro-router using `$state` runes. Routes: `query`, `documents`, `settings`.
-- [x] 120. Create `src/App.svelte`: root shell extracted from `+layout.svelte` with header nav, `AppInitializer` boot gate, `{#key}` page switching, `document.startViewTransition()` on navigation.
-- [x] 121. Migrate `routes/+page.svelte` → `src/pages/QueryPage.svelte` (zero logic changes).
-- [x] 122. Migrate `routes/documents/+page.svelte` → `src/pages/DocumentsPage.svelte` (zero logic changes).
-- [x] 123. Migrate `routes/settings/+page.svelte` → `src/pages/SettingsPage.svelte` (zero logic changes).
-
-### 9.3 Agnostic Code Migration
-
-- [x] 124. Copy all 12 components from `src/lib/components/` — zero modifications.
-- [x] 125. Copy all 3 stores from `src/lib/stores/` — zero modifications.
-- [x] 126. Copy `api.ts`, `types.ts`, `pdf-init.ts`, `index.ts` — zero modifications.
-- [x] 127. Copy `static/` (pdf.worker.mjs, robots.txt) and `.npmrc`.
-
-### 9.4 Verification
-
-- [x] 128. Verify `vite build` succeeds with clean output.
-- [x] 129. Verify `svelte-check` passes (1 pre-existing PDF CSS error only).
-- [ ] 130. Verify `cargo tauri dev` loads the app with IPC working.
-- [ ] 131. Verify hash-based routing + view transitions between all 3 pages.
-- [ ] 132. Verify chat streaming survives page navigation (SPA state persistence).
-
-### 9.5 Cleanup
-
-- [x] 133. Update `docs/file-structure.md` to reflect new plain Svelte layout (added `src/app.d.ts`, `src/lib/index.ts`, `src/lib/assets/`, and fixed store filenames).
-- [x] 134. Remove `frontend-sveltekit/` after full verification.
-
-## Phase 10: Bug Fixes & Refinements (June 2026)
-
-### 10.1 Apple Silicon Metal Acceleration & Model Init
-- [x] 135. Add `metal` feature to `mistralrs` on macOS (`Cargo.toml`) to fix CPU out-of-memory errors on M-series chips.
-- [x] 136. Fix `llm_ready` race condition (`lib.rs`): don't emit `llm_ready` when `GgufModelBuilder` fails, preventing the UI from entering a falsely "ready" state with no LLM.
-- [x] 137. Fix model download lockout (`lib.rs`): emit `llm_ready` even on model download failure so the user can reach the Settings page and switch to BYO inference mode instead of being locked out.
-
-### 10.2 Known Backlog (Identified during audit)
-- [ ] 138. Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:153`). Single risky unwrap in 14-file Rust codebase; ok_or_else + emit error event.
-- [ ] 139. Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values. Add params to `process_document()` signature; read settings in background worker from `AppSettingsRepository` with hardcoded fallbacks.
-- [ ] 140. Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs:171-181`). Add `error_message: &str` param + `error_message = ?` to UPDATE query. Wire call site in `lib.rs:757` to pass `&e.to_string()`. Also display in `DocumentList.svelte`.
-- [ ] 141. Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback. Backend is fully wired (read/written/validated/used); only missing from frontend store + UI.
-- [ ] 142. Add embedder readiness tracking to `AppPhase` state machine (`app-state.svelte.ts`) so vector search failures are caught. Backend must also emit `embedder_failed` event on init failure (currently only logged silently).
-
-### 10.3 Build Tooling Migration (Task)
-- [x] 143. Create `Taskfile.yml` at project root with `setup`, `dev`, `build`, `bundle`, `check`, `clean` commands.
-- [x] 144. Remove redundant `tauri:dev`/`build`/`bundle` scripts from root `package.json`.
-- [x] 145. Update `README.md` to reference `task dev` instead of `npm run tauri:dev` and document `go-task` prerequisite.
-
-### 10.4 Additional Issues Surfaced During Audit (June 2026)
-- [x] 146. Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
-- [ ] 147. Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
-- [ ] 148. Add streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
-- [ ] 149. Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements #142 frontend tracking.
-- [ ] 150. Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
-
-### 10.5 Remaining Verification Tasks
-- [x] 130. Verify `cargo tauri dev` (via `task dev`) loads the app with IPC working.
-- [ ] 131. Verify hash-based routing + view transitions between all 3 pages.
-- [ ] 132. Verify chat streaming survives page navigation (SPA state persistence).
+## Bugfixes (B)
+- [x] B1: Initialize NPM `package.json` at the root for workspace management.
+- [x] B2: Initialize Rust Cargo workspace in `src-tauri/Cargo.toml`.
+- [x] B3: Create directory structure (`frontend/`, `src-tauri/crates/`, `docs/`).
+- [x] B4: Scaffold SvelteKit app inside `frontend/`.
+- [x] B5: Configure `svelte.config.js` for `adapter-static` (SPA mode with `fallback: 'index.html'`).
+- [x] B6: Configure `vite.config.ts` (strict port `5173`, clear screen false).
+- [x] B7: Use native Svelte 5 component-scoped CSS (no Tailwind).
+- [x] B8: Update `tauri.conf.json` with build commands and basic identifiers.
+- [x] B9: Configure IPC capabilities in Tauri (`core:allow-invoke` for testing).
+- [x] B10: Configure `assetProtocol` in Tauri to allow reading from `$APPLOCALDATA/**` (required for PDF rendering).
+- [x] B11: Write a dummy `ping` command in Rust (`#[tauri::command]`).
+- [x] B12: Define core data structures (`Document`, `DocumentStatus`, `AppError`, `TokenEvent`, `Citation`) in `crates/domain`.
+- [x] B13: Implement `serde::Serialize` for `AppError` to ensure safe, typed errors over IPC.
+- [x] B14: Add `sqlx` (v0.8.6) with `sqlite`, `runtime-tokio`, and `migrate` features to `crates/persistence`.
+- [x] B15: Write SQL migrations for `documents` and `app_settings` tables.
+- [x] B16: Implement DB initialization logic (ensuring the `app_local_data_dir` exists before connecting, running migrations).
+- [x] B17: Add `lancedb` (v0.26.2) and `arrow` (57.2) crates to `crates/persistence`.
+- [x] B18: Define the Arrow schema for chunks (`document_id`, `vector` [FixedSizeList 768], `page`, `chunk_index`, `content`).
+- [x] B19: Implement LanceDB table creation and connection logic (`init`, `get_or_create_table`).
+- [x] B20: Implement the LanceDB `merge_insert` pipeline with write `Semaphore(1)`, FTS index rebuild guard, and idempotent upserts on `[document_id, page, chunk_index]`.
+- [x] B21: Set up `tokio::sync::mpsc` channel (capacity 32) in Tauri's managed state within `lib.rs`.
+- [x] B22: Implement the crash-recovery loop on startup (reset `embedding` docs to `queued` and re-queue stale `queued` docs).
+- [x] B23: Spawn the main background worker task in `lib.rs` (runs full `rag_pipeline::process_document` and emits `document_indexed` / `document_failed` events).
+- [x] B24: Implement Rust logic to safely copy raw bytes to the App Data directory (via `tokio::fs`).
+- [x] B25: Write initial SQLite `queued` row and push job to the MPSC channel.
+- [x] B26: Integrate `pdf-extract` into `crates/rag_pipeline`.
+- [x] B27: Write extraction loop (MUST be page-by-page to preserve citation boundaries).
+- [x] B28: Implement token chunking logic (512 size / 80 overlap, `"passage: "` prefix).
+- [x] B29: Integrate `fastembed-rs` (v5).
+- [x] B30: Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
+- [x] B31: Hook embedding generation into the chunking pipeline.
+- [x] B32: Enforce write order: Save vectors to LanceDB *first*, update SQLite to `indexed` *second*.
+- [x] B33: Emit `document_indexed` Tauri event to Svelte upon completion.
+- [x] B34: Remove `tauri-plugin-shell` from `src-tauri/Cargo.toml` dependencies.
+- [x] B35: Remove `shell:default` permission from `capabilities/default.json`.
+- [x] B36: Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
+- [x] B37: Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
+- [x] B38: Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
+- [x] B39: Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"`, `lance-index = "2.0.0"` to `src-tauri/Cargo.toml`.
+- [x] B40: Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
+- [x] B41: Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
+- [x] B42: Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
+- [x] B43: Emit `embedder_ready` event after `fastembed` init completes.
+- [x] B44: Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
+- [x] B45: Add vector-only fallback search if FTS index is missing or throws.
+- [x] B46: Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
+- [x] B47: Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
+- [x] B48: Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
+- [x] B49: Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
+- [x] B50: Integrate `keyring` for secure storage of `external_api_key` (service=`"ragtag"`, username=`"external_api_key"`).
+- [x] B51: Implement `reqwest`-based BYO inference path (POST to external OpenAI-compatible `/v1/chat/completions` with streaming).
+- [x] B52: Unify local `mistralrs` and external `reqwest` paths behind shared prompt/citation logic (trait or enum dispatch).
+- [x] B53: Wire up BYO routing: `execute_query` reads `inference_mode` from `app_settings`, routes accordingly.
+- [x] B54: Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
+- [x] B55: Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
+- [x] B56: Emit progress events for model downloads (hf-hub progress → frontend progress bar).
+- [x] B57: Fix deprecated svelte-ignore names in `QueryResult.svelte` — `a11y-no-static-element-interactions` → `a11y_no_static_element_interactions`, same for `a11y-click-events-have-key-events`.
+- [x] B58: Fix deprecated svelte-ignore names in `CitationList.svelte` — replaced `div` with `button` element, eliminating the a11y warnings entirely.
+- [x] B59: Fix non-reactive DOM refs in `QueryResult.svelte` — `contentEl` now uses `$state()`.
+- [x] B60: Fix non-reactive DOM refs in `PdfViewer.svelte` — `pdfDoc`, `scrollContainer` now use `$state()`.
+- [x] B61: Fix `state_referenced_locally` in `PdfViewer.svelte` — `pageNum` and `lastPageProp` initialized with `$state(1)` instead of capturing initial `page` prop value.
+- [x] B62: Add `aria-label` to PdfViewer toolbar buttons (prev/next/zoom-in/zoom-out).
+- [x] B63: Remove unused `.source-icon` CSS selector in `CitationList.svelte`.
+- [x] B64: Hardcoded model ID — `lib.rs:104-105` hardcodes `model_id` (`unsloth/Qwen3-1.7B-GGUF`) and `gguf_filename` (`Qwen3-1.7B-Q4_K_M.gguf`). Read `model_id` from `app_settings.generation_model` and `gguf_filename` from a new `app_settings.gguf_filename` key (with hardcoded fallbacks) so users can configure alternative models from the Settings UI.
+- [x] B65: `embedder_ready` fires synchronously on line 358 before the async LLM init can complete. Both events should work with staged availability correctly (the frontend will gate on them).
+- [x] B66: Remove unused `tailwind-merge` from `frontend/package.json` — no imports reference it.
+- [x] B67: Clean up unused aspirational types in `types.ts` — `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` have no corresponding Rust structs and are never consumed.
+- [x] B68: Swap `TextModelBuilder` → `GgufModelBuilder` in `lib.rs`. Replace with `GgufModelBuilder::new("unsloth/Qwen3-1.7B-GGUF", vec!["Qwen3-1.7B-Q4_K_M.gguf"])`. Remove `with_isq()` and `from_hf_cache_path()` (GGUF is pre-quantized, no HF cache path method).
+- [x] B69: Pass the local directory path directly to `GgufModelBuilder::new()` so internal HF resolution finds the pre-downloaded single `.gguf` file (no `HF_HOME` required).
+- [x] B70: Chain `.with_tok_model_id("Qwen/Qwen3-1.7B")` to fetch tokenizer from the safetensors repo (GGUF files lack tokenizer data).
+- [x] B71: Update `model_download.rs` — replace sibling-loop iteration with direct single-file: `repo.download_with_progress("Qwen3-1.7B-Q4_K_M.gguf", reporter)`. Simplify to `total_files = 1`, remove the siblings loop, remove `emit_progress` helper.
+- [x] B72: Fix `build_rag_prompt` in `crates/rag_pipeline/src/lib.rs` — strip all system instructions. Output should only be: `[Document: X, Page: N]\n{chunk.content}\n\n` blocks followed by `User question: {query}`.
+- [x] B73: Fix `execute_query` in `lib.rs` — move all instructions to the System role message: `"You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags."`. The User message becomes the bare context string from `build_rag_prompt`.
+- [x] B74: Suppress reasoning tokens by adding instructions to the System role message (mistralrs `RequestBuilder` does not use `.enable_thinking(false)` for this).
+- [x] B75: Add `reqwest::Client` to `AppState` (`state.rs`). Build once in `setup()` with `rustls-tls`.
+- [x] B76: BYO staged-availability bypass — in the LLM init background task, if `inference_mode == "external"`, skip download/build entirely and immediately `app.emit("llm_ready")`.
+- [x] B77: Remove unused `tailwind-merge` from `frontend/package.json` (tracker #78 duplicate pass).
+- [x] B78: Remove unused `clsx` from `frontend/package.json`.
+- [x] B79: Clean unused types from `types.ts` — remove `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` (tracker #79 duplicate pass). Keep `AppError`.
+- [x] B80: Fix `DocumentUpload.svelte` `successCount` bug — add `successCount++` in the upload success branch so `uploadComplete` event fires.
+- [x] B81: Fix deprecated Svelte 5 ignore names — `a11y-click-events-have-key-events` → `a11y_click_events_have_key_events` in `CitationList.svelte` and `QueryResult.svelte` (tracker #69, #70 duplicate pass).
+- [x] B82: Hide ISQ dropdown in `SettingsTab.svelte` when inference mode is `"local"` (GGUF is pre-quantized). Added note about Q4_K_M being baked into the model file.
+- [x] B83: Integrate `env_logger` and replace all `eprintln!` calls with structured `log` macros across the codebase.
+- [x] B84: Fix LanceDB FTS initialization bug (index missing on empty DB) by reordering the atomic guard and adding a single-fire warning fallback.
+- [x] B85: Fix LLM initialization silent hang (404 on hf-hub) by rejecting empty `generation_model` strings at the UI (`SettingsTab.svelte`), DB write (`set_setting`), and DB read (LLM init fallback) layers.
+- [x] B86: Rename `frontend/` → `frontend-sveltekit/` (preserve as reference).
+- [x] B87: Scaffold new `frontend/` with `npm init` and clean directory structure.
+- [x] B88: Remove `@sveltejs/kit` and `@sveltejs/adapter-static` from deps; keep `@sveltejs/vite-plugin-svelte`, `svelte`, `vite`.
+- [x] B89: Rewrite `svelte.config.js`: remove `kit` block, keep `compilerOptions.runes`.
+- [x] B90: Rewrite `vite.config.ts`: direct `svelte()` plugin (not `sveltekit()`), manual `$lib` alias via `resolve.alias`.
+- [x] B91: Rewrite `tsconfig.json`: standalone config with `$lib/*` path mapping, no `.svelte-kit/` extend.
+- [x] B92: Rewrite `src/app.d.ts`: remove SvelteKit `App` namespace.
+- [x] B93: Create `index.html` at project root (Vite entry), replacing `src/app.html` SvelteKit shell.
+- [x] B94: Create `src/main.ts`: `mount(App, { target: document.getElementById('app')! })`.
+- [x] B95: Update `src-tauri/tauri.conf.json`: `frontendDist` from `"../frontend/build"` → `"../frontend/dist"`.
+- [x] B96: Migrate `routes/+page.svelte` → `src/pages/QueryPage.svelte` (zero logic changes).
+- [x] B97: Migrate `routes/documents/+page.svelte` → `src/pages/DocumentsPage.svelte` (zero logic changes).
+- [x] B98: Migrate `routes/settings/+page.svelte` → `src/pages/SettingsPage.svelte` (zero logic changes).
+- [x] B99: Copy all 12 components from `src/lib/components/` — zero modifications.
+- [x] B100: Copy all 3 stores from `src/lib/stores/` — zero modifications.
+- [x] B101: Copy `api.ts`, `types.ts`, `pdf-init.ts`, `index.ts` — zero modifications.
+- [x] B102: Copy `static/` (pdf.worker.mjs, robots.txt) and `.npmrc`.
+- [x] B103: Verify `vite build` succeeds with clean output.
+- [x] B104: Verify `svelte-check` passes (1 pre-existing PDF CSS error only).
+- [x] B105: Verify `cargo tauri dev` (via `task dev`) loads the app with IPC working.
+- [ ] B106: Verify hash-based routing + view transitions between all 3 pages.
+- [ ] B107: Verify chat streaming survives page navigation (SPA state persistence).
+- [x] B108: Update `docs/file-structure.md` to reflect new plain Svelte layout (added `src/app.d.ts`, `src/lib/index.ts`, `src/lib/assets/`, and fixed store filenames).
+- [x] B109: Remove `frontend-sveltekit/` after full verification.
+- [x] B110: Add `metal` feature to `mistralrs` on macOS (`Cargo.toml`) to fix CPU out-of-memory errors on M-series chips.
+- [x] B111: Fix `llm_ready` race condition (`lib.rs`): don't emit `llm_ready` when `GgufModelBuilder` fails, preventing the UI from entering a falsely "ready" state with no LLM.
+- [x] B112: Fix model download lockout (`lib.rs`): emit `llm_ready` even on model download failure so the user can reach the Settings page and switch to BYO inference mode instead of being locked out.
+- [ ] B113: Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:153`). Single risky unwrap in 14-file Rust codebase; use `ok_or_else` + emit error event.
+- [ ] B114: Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs:171-181`). Add `error_message: &str` param + `error_message = ?` to UPDATE query. Wire call site in `lib.rs:757` to pass `&e.to_string()`. Also display in `DocumentList.svelte` for failed docs.
+- [x] B115: Create `Taskfile.yml` at project root with `setup`, `dev`, `build`, `bundle`, `check`, `clean` commands.
+- [x] B116: Remove redundant `tauri:dev`/`build`/`bundle` scripts from root `package.json`.
+- [x] B117: Update `README.md` to reference `task dev` instead of `npm run tauri:dev` and document `go-task` prerequisite.
+- [x] B118: Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
+- [ ] B119: Implement streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
+- [ ] B120: Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements F28 frontend tracking.
+- [ ] B121: Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
+- [ ] B122: Fix "Query Enhancement" toggle in `SettingsTab.svelte` — `Toggle.svelte` only flips the local `$bindable` value but never calls `settingsState.update()`, so changes appear in UI but are lost on reload. Wire up `onchange` to persist the setting to the backend.
+- [ ] B123: Fix `DocumentList.executeDelete` to use non-blocking background refresh — currently does a full re-fetch with spinner (blocking UI). Switch to event-based silent refresh like `document_indexed`/`document_failed` listeners, and add the 10s timeout via `Promise.race` that `fetchDocuments` already uses.
+- [ ] B124: Replace blocking I/O calls (`std::fs`) in async Tauri commands with `tokio::fs` or `spawn_blocking`: `model_download.rs:98` (`create_dir_all`), `model_download.rs:77-90` (`clean_stale_cache_files`), `lib.rs:579-593` (`dir_size` in `get_storage_info`).
+- [ ] B125: Surface `SettingsState` load/save failures to the UI — currently caught and logged to console but no user-visible error. Add an `error` field to `SettingsState` and display it in `SettingsTab.svelte`.
+- [ ] B126: Remove dead code — unused `isq_level` setting (pre-quantized GGUF makes ISQ moot), `AppError` frontend type (never imported), `requestId` field on `queryState.error` (never set or read), `QueryResult` error prop path (always passed `error={null}`), `api.ping()` (never called), and `ConfidenceBadge` component listed in `docs/file-structure.md` but doesn't exist on disk.

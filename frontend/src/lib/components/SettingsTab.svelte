@@ -203,6 +203,7 @@ let apiKeyValue = $state('');
           bind:checked={settingsState.use_query_enhancement}
           label="Query Enhancement"
           description="Automatically expand queries with technical synonyms to improve search recall."
+          onchange={() => updateSetting('use_query_enhancement', String(settingsState.use_query_enhancement))}
         />
 
         <div class="split-fields">

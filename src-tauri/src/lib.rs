@@ -173,6 +173,7 @@ async fn begin_first_run_init(
                     total_files: 0,
                     stage: model_download::DownloadStage::Error { message: msg },
                 });
+                let _ = llm_handle.emit("llm_ready", ());
             }
         }
     });
@@ -754,7 +755,7 @@ pub fn run() {
                         }
                         Err(e) => {
                             error!("document {doc_id} processing failed: {e}");
-                            let _ = repo.mark_failed(&doc_id).await;
+                            let _ = repo.mark_failed(&doc_id, &e.to_string()).await;
                             let _ = app_handle.emit("document_failed", serde_json::json!({
                                 "document_id": &doc_id,
                                 "error": e.to_string(),

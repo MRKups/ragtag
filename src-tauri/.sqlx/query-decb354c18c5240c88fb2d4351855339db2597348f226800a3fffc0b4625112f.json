@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE documents SET status = 'failed', retry_count = retry_count + 1, error_message = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "decb354c18c5240c88fb2d4351855339db2597348f226800a3fffc0b4625112f"
+}

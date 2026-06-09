@@ -168,9 +168,10 @@ impl DocumentRepository {
         Ok(rows.into_iter().map(|r| r.into_domain()).collect())
     }
 
-    pub async fn mark_failed(&self, id: &str) -> Result<(), AppError> {
+    pub async fn mark_failed(&self, id: &str, error_message: &str) -> Result<(), AppError> {
         sqlx::query!(
-            "UPDATE documents SET status = 'failed', retry_count = retry_count + 1 WHERE id = ?",
+            "UPDATE documents SET status = 'failed', retry_count = retry_count + 1, error_message = ? WHERE id = ?",
+            error_message,
             id
         )
         .execute(&self.pool)
