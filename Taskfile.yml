@@ -43,7 +43,7 @@ tasks:
     deps: [check, build-frontend]
     dir: '{{.TAURI_DIR}}'
     cmds:
-      - cargo build --release
+      - cargo tauri build --no-bundle
     generates:
       - '{{.RELEASE_BIN}}'
 
