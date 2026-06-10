@@ -37,7 +37,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `app-state.svelte.ts` — exports `AppState` class and `appState` singleton.
     - `query.svelte.ts` — exports `QueryState` class and `queryState` singleton.
     - `settings.svelte.ts` — exports `SettingsState` class and `settingsState` singleton.
-  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`.
+  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`.
 - `static/`: Static assets including `pdf.worker.mjs`.
 
 ## `src-tauri/` (Tauri App Shell)

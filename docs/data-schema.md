@@ -99,14 +99,16 @@ These types define the shape of data sent from Rust to the frontend, specificall
 pub enum TokenEvent {
     Token   { text: String },
     Done    { citations: Vec<Citation> },
-    Error   { message: String },
+    Error   { message: String, citations: Vec<Citation> },
 }
 
 #[derive(serde::Serialize, Clone)]
 pub struct Citation {
-    pub document_id:   String,
-    pub filename:      String,
-    pub page:          i32,
+    pub document_id: String,
+    pub filename:    String,
+    pub storage_path: String,
+    pub page:        i32,
     pub chunk_content: String,
+    pub score:       f32,
 }
 ```

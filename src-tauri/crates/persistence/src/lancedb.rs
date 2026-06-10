@@ -2,6 +2,7 @@ use domain::AppError;
 use lancedb::connection::Connection;
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use arrow_array::{Float32Array, StringArray, Int32Array};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -193,7 +194,8 @@ impl VectorDb {
             }
         }
 
-        out.dedup_by(|a, b| a.document_id == b.document_id && a.page == b.page && a.content == b.content);
+        let mut seen: HashSet<(String, u32, String)> = HashSet::new();
+        out.retain(|r| seen.insert((r.document_id.clone(), r.page, r.content.clone())));
         out.truncate(limit);
         
         Ok(out)

@@ -20,6 +20,7 @@ export class AppState {
   downloadProgress = $state(0);
   errorMessage = $state('');
   embedderAvailable = $state(false);
+  llmReady = $state(false);
 
   private unlisten: Array<() => void> = [];
 
@@ -28,6 +29,7 @@ export class AppState {
       const unlistenEmbedder = await listen('embedder_ready', () => {
         console.log('[AppState] embedder ready');
         this.embedderAvailable = true;
+        this.#tryBecomeReady();
       });
 
       const unlistenEmbedderFailed = await listen<{ message: string }>('embedder_failed', (event) => {
@@ -47,13 +49,13 @@ export class AppState {
         }
 
         if (p.type === 'fetching_info') {
-          this.phase = 'downloading_model';
+          if (this.phase !== 'error') this.phase = 'downloading_model';
           this.downloadMessage = `Fetching model info for ${p.model_id}...`;
           return;
         }
 
         if (p.type === 'downloading') {
-          this.phase = 'downloading_model';
+          if (this.phase !== 'error') this.phase = 'downloading_model';
           if (p.file_total > 0) {
             this.downloadProgress = Math.round((p.file_downloaded / p.file_total) * 100);
           }
@@ -63,7 +65,7 @@ export class AppState {
         }
 
         if (p.type === 'complete') {
-          this.phase = 'downloading_model';
+          if (this.phase !== 'error') this.phase = 'downloading_model';
           this.downloadMessage = 'Download complete, loading model...';
           return;
         }
@@ -71,12 +73,14 @@ export class AppState {
 
       const unlistenLlm = await listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
-        if (this.phase !== 'error' && this.embedderAvailable) {
-          this.phase = 'ready';
-        }
+        this.llmReady = true;
+        this.#tryBecomeReady();
       });
 
       this.unlisten = [unlistenEmbedder, unlistenEmbedderFailed, unlistenProgress, unlistenLlm];
+
+      // If both were already ready (e.g. BYO mode with cached embedder), check now
+      this.#tryBecomeReady();
 
       // All listeners are set up — kick off first-run init (embedder + LLM download)
       console.log('[AppState] Listeners ready, triggering first-run init');
@@ -89,6 +93,12 @@ export class AppState {
       console.error('[AppState] Failed to init event listeners:', e);
       this.phase = 'error';
       this.errorMessage = `Failed to initialize: ${e}`;
+    }
+  }
+
+  #tryBecomeReady() {
+    if (this.phase !== 'error' && this.embedderAvailable && this.llmReady) {
+      this.phase = 'ready';
     }
   }
 
