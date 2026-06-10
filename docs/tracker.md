@@ -34,6 +34,8 @@
 - [x] F29: Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
 - [x] F30: Surface citation confidence scores to the UI. `SearchResult.score` exists in the backend but is discarded during `execute_query`. Add `score` field to `Citation` struct, plumb through to `CitationList.svelte`, and display with a `ConfidenceBadge` component.
 - [x] F31: Implement granular progress streaming for document ingestion. AGENTS.md specifies `tauri::ipc::Channel<T>` for per-page/per-chunk progress events. Currently only binary `document_indexed` / `document_failed` events fire at completion. Add per-stage events (extraction → chunking → embedding → indexing).
+- [ ] F32: Fully implement View Transitions between all 3 pages — verify smooth cross-fade animations on hash-based navigation for query/documents/settings routes. Ensure no visual flashes, layout shifts, or header flicker during transitions. The `startViewTransition` feature detection guard is in place (B106); remaining work is full QA across routes.
+- [ ] F33: Wire up `QueryResult` error prop — currently always passed `error={null}`. Plumb actual error state from `queryState` through the `QueryResult` component to surface generation failures (e.g., model errors, timeouts) directly in the chat UI instead of only to the console.
 
 ## Bugfixes (B)
 - [x] B1: Initialize NPM `package.json` at the root for workspace management.
@@ -141,7 +143,7 @@
 - [x] B103: Verify `vite build` succeeds with clean output.
 - [x] B104: Verify `svelte-check` passes (1 pre-existing PDF CSS error only).
 - [x] B105: Verify `cargo tauri dev` (via `task dev`) loads the app with IPC working.
-- [ ] B106: Verify hash-based routing + view transitions between all 3 pages.
+- [x] B106: Verify hash-based routing + view transitions between all 3 pages.
 - [ ] B107: Verify chat streaming survives page navigation (SPA state persistence).
 - [x] B108: Update `docs/file-structure.md` to reflect new plain Svelte layout (added `src/app.d.ts`, `src/lib/index.ts`, `src/lib/assets/`, and fixed store filenames).
 - [x] B109: Remove `frontend-sveltekit/` after full verification.
@@ -161,4 +163,4 @@
 - [x] B123: Fix `DocumentList.executeDelete` to use non-blocking background refresh — currently does a full re-fetch with spinner (blocking UI). Switch to event-based silent refresh like `document_indexed`/`document_failed` listeners, and add the 10s timeout via `Promise.race` that `fetchDocuments` already uses.
 - [x] B124: Replace blocking I/O calls (`std::fs`) in async Tauri commands with `tokio::fs` or `spawn_blocking`: `model_download.rs:98` (`create_dir_all`), `model_download.rs:77-90` (`clean_stale_cache_files`), `lib.rs:579-593` (`dir_size` in `get_storage_info`).
 - [x] B125: Surface `SettingsState` load/save failures to the UI — currently caught and logged to console but no user-visible error. Add an `error` field to `SettingsState` and display it in `SettingsTab.svelte`.
-- [x] B126: Remove dead code — unused `isq_level` setting (pre-quantized GGUF makes ISQ moot), `AppError` frontend type (never imported), `api.ping()` (never called). Remaining: `QueryResult` error prop path (always passed `error={null}`).
+- [x] B126: Remove dead code — unused `isq_level` setting (pre-quantized GGUF makes ISQ moot), `AppError` frontend type (never imported), `api.ping()` (never called).
