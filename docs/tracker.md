@@ -1,6 +1,6 @@
 # Ragtag Implementation Tracker
 
-*Global ID Counter: Next item is **B127***
+*Global ID Counter: Next item is **B132***
 
 ## Features (F)
 - [x] F1: Call `invoke('ping')` from Svelte on load and verify the message passes successfully.
@@ -35,7 +35,8 @@
 - [x] F30: Surface citation confidence scores to the UI. `SearchResult.score` exists in the backend but is discarded during `execute_query`. Add `score` field to `Citation` struct, plumb through to `CitationList.svelte`, and display with a `ConfidenceBadge` component.
 - [x] F31: Implement granular progress streaming for document ingestion. AGENTS.md specifies `tauri::ipc::Channel<T>` for per-page/per-chunk progress events. Currently only binary `document_indexed` / `document_failed` events fire at completion. Add per-stage events (extraction → chunking → embedding → indexing).
 - [ ] F32: Fully implement View Transitions between all 3 pages — verify smooth cross-fade animations on hash-based navigation for query/documents/settings routes. Ensure no visual flashes, layout shifts, or header flicker during transitions. The `startViewTransition` feature detection guard is in place (B106); remaining work is full QA across routes.
-- [ ] F33: Wire up `QueryResult` error prop — currently always passed `error={null}`. Plumb actual error state from `queryState` through the `QueryResult` component to surface generation failures (e.g., model errors, timeouts) directly in the chat UI instead of only to the console.
+- [x] F33: Wire up `QueryResult` error prop — currently always passed `error={null}`. Plumb actual error state from `queryState` through the `QueryResult` component to surface generation failures (e.g., model errors, timeouts) directly in the chat UI instead of only to the console.
+- [ ] F34: Backend stream cancellation — canceling a query on the frontend (resetting `requestId`) stops the Svelte callback from processing chunks, but the Rust-side `Model::stream_chat_request` continues generating and sending through the `Channel`. No mechanism to abort the in-flight LLM generation when the user cancels or navigates away, wasting GPU/CPU cycles.
 
 ## Bugfixes (B)
 - [x] B1: Initialize NPM `package.json` at the root for workspace management.
@@ -164,3 +165,8 @@
 - [x] B124: Replace blocking I/O calls (`std::fs`) in async Tauri commands with `tokio::fs` or `spawn_blocking`: `model_download.rs:98` (`create_dir_all`), `model_download.rs:77-90` (`clean_stale_cache_files`), `lib.rs:579-593` (`dir_size` in `get_storage_info`).
 - [x] B125: Surface `SettingsState` load/save failures to the UI — currently caught and logged to console but no user-visible error. Add an `error` field to `SettingsState` and display it in `SettingsTab.svelte`.
 - [x] B126: Remove dead code — unused `isq_level` setting (pre-quantized GGUF makes ISQ moot), `AppError` frontend type (never imported), `api.ping()` (never called).
+- [ ] B127: `chunk_count` never written to DB — `process_document` in `rag_pipeline/src/lib.rs` never calls `repo.update_status` with a chunk count. The `documents.chunk_count` column stays NULL forever, so the UI document list never shows how many chunks were generated.
+- [ ] B128: `processing_started_at` and `indexed_at` timestamps never set — the SQL schema has these columns but `DocumentRepository::update_status` only writes the `status` column. The timestamps remain NULL, making it impossible to track processing duration in the UI.
+- [ ] B129: No `.sqlx/` offline query cache — `SQLX_OFFLINE=true` is set in `.env` but no `.sqlx/` directory exists in `src-tauri/`. AGENTS.md requires this to be checked into version control. Any build without a live SQLite database (CI, fresh clone) will fail at the `sqlx::query!()` / `sqlx::query_as!()` macro expansion step. Run `cargo sqlx prepare` to generate it.
+- [ ] B130: `use_query_enhancement` setting has no effect — the toggle exists in `SettingsTab.svelte`, persists to `app_settings` in SQLite, and loads into `SettingsState`, but `execute_query` in `lib.rs` never reads or acts on it. The RAG pipeline has no query enhancement/expansion logic. The toggle is a dead control.
+- [ ] B131: `app.db` binary artifact in source tree — `src-tauri/crates/persistence/app.db` is a development leftover (SQLite database generated during local runs). Should be deleted and its path added to `.gitignore`.

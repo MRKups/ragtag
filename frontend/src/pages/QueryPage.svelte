@@ -61,17 +61,12 @@
           <div class="spinner"></div>
           <p>Searching manuals...</p>
         </div>
-      {:else if queryState.error}
-        <div class="error-state">
-          <p class="error-title">Error</p>
-          <p class="error-msg">{queryState.error.message}</p>
-        </div>
-      {:else if queryState.text}
+      {:else if queryState.text || queryState.error}
         <QueryResult
           text={queryState.text}
           citations={queryState.citations}
           isStreaming={queryState.isStreaming}
-          error={null}
+          error={queryState.error?.message ?? null}
           onCitationClick={handleCitationClick}
         />
       {:else}
@@ -148,7 +143,7 @@
     width: 100%;
   }
 
-  .loading-state, .welcome-state, .error-state {
+  .loading-state, .welcome-state {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -167,22 +162,6 @@
   .welcome-state p {
     color: #9ca3af;
     font-size: 1.05rem;
-  }
-
-  .error-state {
-    color: #fca5a5;
-  }
-
-  .error-title {
-    font-weight: 600;
-    font-size: 1.125rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .error-msg {
-    color: #f87171;
-    max-width: 400px;
-    line-height: 1.5;
   }
 
   .spinner {
