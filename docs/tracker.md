@@ -77,13 +77,13 @@
 - [x] B36: Remove `.plugin(tauri_plugin_shell::init())` from `lib.rs` setup.
 - [x] B37: Remove `llm_token: Mutex<String>` from `AppState` (state.rs and lib.rs init).
 - [x] B38: Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
-- [x] B39: Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"`, `lance-index = "2.0.0"` to `src-tauri/Cargo.toml`.
+- [x] B39: Add `reqwest` (rustls-tls, stream, json), `keyring`, `hf-hub`, `rand`, and LanceDB dependencies to `src-tauri/Cargo.toml`; the manifests are the authoritative versions.
 - [x] B40: Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
 - [x] B41: Add `app_settings` get/set functions to `crates/persistence` for inference mode, external endpoint/model, local generation model/GGUF filename, query enhancement, and chunk settings.
 - [x] B42: Initialize the optional local `mistralrs::Model` asynchronously with `GgufModelBuilder`, store it as `Arc<Model>` in `AppState`, and emit `llm_ready` after a successful build.
 - [x] B43: Emit `embedder_ready` event after `fastembed` init completes.
 - [x] B44: Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
-- [x] B45: Add vector-only fallback search if FTS index is missing or throws.
+- [x] B45: Add vector-only fallback search if FTS index is missing or throws, and stream a request-scoped warning so the query UI discloses the degraded retrieval mode.
 - [x] B46: Implement query embedding via `fastembed` with `"query: "` prefix in `crates/rag_pipeline`.
 - [x] B47: Build RAG context prompt string from retrieved chunks in `crates/rag_pipeline`.
 - [x] B48: Integrate `mistralrs` streaming: `model.stream_chat_request(messages)` → forward `Response::Chunk` deltas as `TokenEvent::Token`.
