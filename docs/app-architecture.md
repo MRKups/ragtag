@@ -93,10 +93,10 @@ Instead of bundling massive AI model files into the application binary, model fi
 - **Embedding Models:** Downloaded via `fastembed`. Once initialized, the application emits `embedder_ready`, makes ingestion available, and lets the main application render.
 - **Text Generation:** In local mode, the GGUF file is downloaded with `hf-hub` and then loaded by `mistral.rs`; querying remains disabled until `llm_ready`. In external mode, local generation initialization is skipped and `llm_ready` is emitted immediately.
 - **Boot progress:** Local-model download emits byte counts from `hf-hub`; the overlay is determinate while totals are known and indeterminate while metadata is fetched or the model is built. A local-model error leaves an actionable query-unavailable message rather than blocking ingestion.
-- **Boundary:** Query availability does not yet validate an external endpoint or retry failed local initialization after settings change.
+- **Boundary:** Query availability does not validate an external endpoint before the first request. Changing inference mode transitions query readiness and starts local initialization when needed.
 
 ### Retrieval Lifecycle Limits
 
 - The page-aware migration uses one global `extraction_version` setting. Neither SQLite document rows nor LanceDB chunks record the extraction/chunk configuration that produced them.
-- LanceDB has no query-time join to SQLite document status. Retrieval obtains its top-K candidates first, then `execute_query` discards candidates whose documents are not `indexed`; stale or reindexing chunks can therefore reduce the usable result set.
-- Query cancellation is cooperative: the backend observes `cancel_query` between local-model responses or external HTTP chunks, but cannot interrupt a blocked model/HTTP read.
+- LanceDB has no query-time join to SQLite document status. Retrieval overfetches a bounded candidate set, then `execute_query` discards candidates whose documents are not `indexed`; exceptionally stale-heavy stores can still reduce the usable result set.
+- Active queries register request-scoped cancellation senders. `cancel_query` interrupts pending external HTTP/local stream reads by dropping their futures; already-running blocking embedding work remains non-interruptible.
