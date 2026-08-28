@@ -99,8 +99,13 @@ export class AppState {
         this.llmReady = true;
         this.#tryBecomeReady();
       });
+      const unlistenLlmUnready = await listen('llm_unready', () => {
+        console.log('[AppState] local LLM initialization requested');
+        this.llmReady = false;
+        this.modelError = '';
+      });
 
-      this.unlisten = [unlistenEmbedder, unlistenEmbedderFailed, unlistenProgress, unlistenLlm];
+      this.unlisten = [unlistenEmbedder, unlistenEmbedderFailed, unlistenProgress, unlistenLlm, unlistenLlmUnready];
 
       // If both were already ready (e.g. BYO mode with cached embedder), check now
       this.#tryBecomeReady();

@@ -70,7 +70,7 @@
           <div class="spinner"></div>
           <p>Searching manuals...</p>
         </div>
-      {:else if queryState.text || queryState.error}
+      {:else if queryState.text || queryState.error || queryState.retrievalWarning}
         {#if queryState.retrievalWarning}
           <p class="retrieval-warning" role="status">{queryState.retrievalWarning}</p>
         {/if}

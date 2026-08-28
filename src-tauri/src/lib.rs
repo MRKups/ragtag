@@ -22,6 +22,8 @@ const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
 
 
 const EXTRACTION_VERSION: &str = "page-aware-v1";
+const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
+const RETRIEVAL_RESULT_LIMIT: usize = 10;
 
 fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
     let name = std::path::Path::new(filename);
@@ -200,6 +202,7 @@ async fn begin_first_run_init(
 
         if mode != "local" {
             info!("BYO inference mode — skipping local LLM initialization");
+            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             let _ = llm_handle.emit("llm_ready", ());
             return;
         }
@@ -446,7 +449,11 @@ async fn execute_query(
     }?;
 
     let search = vector_db
-        .hybrid_search(&retrieval_query, &query_embedding, 10)
+        .hybrid_search(
+            &retrieval_query,
+            &query_embedding,
+            RETRIEVAL_CANDIDATE_LIMIT,
+        )
         .await?;
     if search.vector_only {
         let _ = channel.send(TokenEvent::Warning {
@@ -478,6 +485,7 @@ async fn execute_query(
             score: 1.0 / (1.0 + result.score),
         });
     }
+    citations.truncate(RETRIEVAL_RESULT_LIMIT);
 
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
     let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
@@ -744,6 +752,7 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<Strin
 
 #[tauri::command]
 async fn set_setting(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     key: String,
     value: String,
@@ -773,7 +782,17 @@ async fn set_setting(
         ));
     }
 
-    repo.set(&key, &value).await
+    repo.set(&key, &value).await?;
+    if key == "inference_mode" {
+        if value == "external" {
+            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+            let _ = app.emit("llm_ready", ());
+        } else {
+            let _ = app.emit("llm_unready", ());
+            begin_first_run_init(app, state).await?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
