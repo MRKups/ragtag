@@ -107,9 +107,9 @@ impl VectorDb {
                 .replace(true)
                 .execute()
                 .await
-                .map_err(|e| AppError::VectorDb(format!("FTS Index failed: {}", e)))?;
+                .map_err(|e| AppError::VectorDb(format!("FTS index creation failed: {e}")))?;
 
-            match table
+            table
                 .create_index(
                     &["vector"],
                     lancedb::index::Index::IvfPq(lancedb::index::vector::IvfPqIndexBuilder::default()),
@@ -117,17 +117,48 @@ impl VectorDb {
                 .replace(true)
                 .execute()
                 .await
-            {
-                Ok(_) => {
-                    self.indexes_built.store(true, Ordering::SeqCst);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Vector index creation deferred (will retry after more documents are ingested): {}",
-                        e
-                    );
-                }
+                .map_err(|e| AppError::VectorDb(format!("Vector index creation failed: {e}")))?;
+
+            let index_configs = table
+                .list_indices()
+                .await
+                .map_err(|e| AppError::VectorDb(format!("Failed to list created indexes: {e}")))?;
+            let fts_index_names: Vec<_> = index_configs
+                .iter()
+                .filter(|index| {
+                    index.index_type == lancedb::index::IndexType::FTS
+                        && index.columns.iter().any(|column| column == "content")
+                })
+                .map(|index| index.name.as_str())
+                .collect();
+            let vector_index_names: Vec<_> = index_configs
+                .iter()
+                .filter(|index| {
+                    index.index_type == lancedb::index::IndexType::IvfPq
+                        && index.columns.iter().any(|column| column == "vector")
+                })
+                .map(|index| index.name.as_str())
+                .collect();
+
+            if fts_index_names.is_empty() || vector_index_names.is_empty() {
+                return Err(AppError::VectorDb(
+                    "Created FTS and vector indexes were not found in LanceDB".into(),
+                ));
             }
+
+            let index_names: Vec<_> = fts_index_names
+                .into_iter()
+                .chain(vector_index_names)
+                .collect();
+            table
+                .wait_for_index(
+                    &index_names,
+                    std::time::Duration::from_secs(2 * 60 * 60),
+                )
+                .await
+                .map_err(|e| AppError::VectorDb(format!("Index readiness check failed: {e}")))?;
+
+            self.indexes_built.store(true, Ordering::SeqCst);
         }
 
         Ok(())
