@@ -32,6 +32,7 @@
 <AppInitializer>
   <div class="app-container">
     <header class="header">
+      <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
       <div class="brand">
         <button class="logo-link" onclick={() => navTo('query')}>
           <div class="logo">
@@ -107,7 +108,8 @@
   }
 
   .header {
-    height: 64px;
+    position: relative;
+    height: 48px;
     border-bottom: 1px solid #1e293b;
     display: flex;
     align-items: center;
@@ -116,6 +118,7 @@
     background-color: #0f172a;
     flex-shrink: 0;
     width: 100%;
+    isolation: isolate;
     z-index: 10;
     view-transition-name: app-header;
   }
@@ -125,6 +128,7 @@
     align-items: center;
     gap: 0.75rem;
     width: 300px;
+    padding-left: 4.5rem;
   }
 
   .logo-link {
@@ -142,6 +146,30 @@
 
   .header-spacer {
     width: 300px;
+  }
+
+  .drag-surface {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+  }
+
+  .brand,
+  .nav-menu,
+  .header-spacer {
+    position: relative;
+    z-index: 1;
+  }
+
+  .brand,
+  .nav-menu,
+  .header-spacer {
+    pointer-events: none;
+  }
+
+  .logo-link,
+  .nav-btn {
+    pointer-events: auto;
   }
 
   .logo {
