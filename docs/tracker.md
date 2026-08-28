@@ -1,13 +1,13 @@
 # Ragtag Implementation Tracker
 
-*Global ID Counter: Next item is **B132***
+*Global ID Counter: Next item is **B138***
 
 ## Features (F)
 - [x] F1: Call `invoke('ping')` from Svelte on load and verify the message passes successfully.
 - [x] F2: Implement CRUD repository functions for `documents` (`insert`, `update_status`, `get_by_id`, `reset_embedding_to_queued`).
 - [x] F3: Create Tauri command `upload_document` — accepts `filename` + `file_bytes`, SHA-512 hash (in `spawn_blocking`), copies PDF to `$APPLOCALDATA/documents/`, inserts `queued` row, pushes doc ID via `try_send()`.
 - [x] F4: Implement `execute_query` Tauri command — accepts `query: String`, runs search → prompt → stream, returns via `Channel<TokenEvent>`.
-- [x] F5: Build `SettingsTab.svelte` — full settings form: inference mode toggle, BYO fields (base URL + keyring-backed API key), local model repo, ISQ level, chunk size/overlap.
+- [x] F5: Build `SettingsTab.svelte` — settings form for inference mode, external base URL/model and keyring-backed API key, local model repo/GGUF filename, query enhancement, and chunk size/overlap.
 - [x] F6: Build `QueryInput.svelte` — chat-style textarea with Ctrl+Enter submit, character limit indicator, disabled state during streaming.
 - [x] F7: Build `QueryResult.svelte` — streaming token display that binds to `queryState.text`, scrolls to bottom on new tokens, shows loading spinner during `isStreaming`.
 - [x] F8: Build `CitationList.svelte` — list of citation cards showing filename, page number, and a preview of the chunk content. Clicking a citation sets `queryState.selectedDocument` to drive the PDF viewer.
@@ -15,11 +15,11 @@
 - [x] F10: Build `PdfViewer.svelte` + `PdfPage.svelte` — pdf.js rendered document viewer using `pdfjsLib` from `pdf-init.ts`. Renders visible pages in canvases with prev/next navigation and zoom. PdfPage handles per-page rendering with text layer and citation highlighting.
 - [x] F11: Build `DocumentViewer.svelte` — wrapper component that hosts `PdfViewer` with a placeholder state. Converts `storagePath` to Tauri asset protocol URL via `convertFileSrc`.
 - [x] F12: Build `+page.svelte` (root query page) — composite layout: `QueryInput` at top, `QueryResult` + `CitationList` in center, `DocumentViewer` in right panel. Orchestrates `api.executeQuery()` with channel callbacks feeding into `queryState`. (Later migrated to `src/pages/QueryPage.svelte` in Phase 9.)
-- [x] F13: Create `frontend/src/lib/stores/app-state.svelte.ts` — Svelte 5 `$state` class with `phase` (`'starting' | 'downloading_model' | 'ready' | 'error'`), `downloadProgress`, `errorMessage`. `init()` subscribes via `listen()` to `embedder_ready`, `model_download_progress`, and `llm_ready` events.
+- [x] F13: Create `frontend/src/lib/stores/app-state.svelte.ts` — Svelte 5 `$state` class with boot/download/error state plus independent `embedderAvailable` and `llmReady` availability flags. `init()` listens for `embedder_ready`, `embedder_failed`, `model_download_progress`, and `llm_ready`.
 - [x] F14: Create `frontend/src/lib/components/AppInitializer.svelte` — fullscreen dark overlay (`z-index: 9999`). Phase `'starting'` shows spinner + "Initializing Ragtag...". Phase `'downloading_model'` shows progress bar + filename. Phase `'error'` shows retry button. Phase `'ready'` renders empty (app visible underneath).
 - [x] F15: Gate `+layout.svelte` — wrap the `<div class="app-container">` in `{#if appState.phase === 'ready'}`, render `<AppInitializer />` in `{:else}`. Call `appState.init()` in `onMount`. (Later extracted into `src/App.svelte` in Phase 9.)
 - [x] F16: Add 3 keyring Tauri commands — `set_api_key` (uses `Entry::new("ragtag", "external_api_key").set_password()` in `spawn_blocking`), `has_api_key`, `delete_api_key`. All wrapped in `spawn_blocking`. Register in `invoke_handler`.
-- [x] F17: Implement BYO routing in `execute_query` — read `inference_mode` from `app_settings`. If `"external"`: read `external_base_url`, GET the API key from keyring, POST to `{base_url}/v1/chat/completions` with `{"stream":true}`, parse SSE line-by-line, extract `"choices"[0]["delta"]["content"]`, forward via `channel.send(TokenEvent::Token{...})`, attach citations on `[DONE]`.
+- [x] F17: Implement BYO routing in `execute_query` — read `inference_mode` from `app_settings`. If `"external"`: read `external_base_url`, optional keyring API key, and `external_model` (defaulting to `gpt-4o-mini`); POST to `{base_url}/chat/completions` with `{"stream":true}`, parse SSE line-by-line, forward content deltas via `TokenEvent::Token`, attach citations on `[DONE]`, and surface stream failures as `TokenEvent::Error`.
 - [x] F18: Wire frontend keyring functions — add `setApiKey`, `hasApiKey`, `deleteApiKey` to `api.ts`. Update `SettingsTab.svelte` API key field: replace the disabled placeholder with a real password input + "Save API Key" button + "Clear Key" button + success feedback.
 - [x] F19: Add `get_storage_info` command — returns byte counts for `app.db`, `.lancedb/`, `documents/`, and `models/` (excluding fastembed ONNX cache).
 - [x] F20: Add `compact_vector_store` command — calls `table.optimize()` or equivalent compact/cleanup on the LanceDB chunks table.
@@ -29,14 +29,14 @@
 - [x] F24: Create `src/lib/router.svelte.ts`: hash-based micro-router using `$state` runes. Routes: `query`, `documents`, `settings`.
 - [x] F25: Create `src/App.svelte`: root shell extracted from `+layout.svelte` with header nav, `AppInitializer` boot gate, `{#key}` page switching, `document.startViewTransition()` on navigation.
 - [x] F26: Wire up `chunk_size` and `chunk_overlap` settings to the chunker (`rag_pipeline/lib.rs:31`), replacing the hardcoded `512`/`80` values. Add params to `process_document()` signature; read settings in background worker from `AppSettingsRepository` with hardcoded fallbacks.
-- [x] F27: Add a UI input for `gguf_filename` in `SettingsTab.svelte` so users can change the hardcoded fallback. Backend is fully wired (read/written/validated/used); only missing from frontend store + UI.
-- [x] F28: Implement embedder readiness tracking in AppPhase state machine — add `embedder_failed` phase so vector search failures are caught in the boot overlay. Complements B120 (backend event).
+- [x] F27: Add a `gguf_filename` input in `SettingsTab.svelte` so users can configure the local GGUF file; the frontend store and backend validation/read path are wired.
+- [x] F28: Track embedder readiness in the AppPhase state machine — handle `embedder_failed` by entering the boot error state, while successful `embedder_ready` independently makes ingestion available. Complements B120 (backend event).
 - [x] F29: Add CSS View Transition rules to `App.svelte` — set `view-transition-name` on `.header` (`app-header`) and `.main-content` (`main-content`) to prevent persistent header from flashing during page transitions, add fade animations. Also add `<meta name="view-transition" content="same-origin">` to `index.html`.
 - [x] F30: Surface citation confidence scores to the UI. `SearchResult.score` exists in the backend but is discarded during `execute_query`. Add `score` field to `Citation` struct, plumb through to `CitationList.svelte`, and display with a `ConfidenceBadge` component.
-- [x] F31: Implement granular progress streaming for document ingestion. AGENTS.md specifies `tauri::ipc::Channel<T>` for per-page/per-chunk progress events. Currently only binary `document_indexed` / `document_failed` events fire at completion. Add per-stage events (extraction → chunking → embedding → indexing).
+- [ ] F31: Finish granular document-ingestion progress streaming. The implementation emits `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`), not the promised per-page/per-chunk `Channel<T>` progress; preserve the existing stage events while adding the required granularity.
 - [ ] F32: Fully implement View Transitions between all 3 pages — verify smooth cross-fade animations on hash-based navigation for query/documents/settings routes. Ensure no visual flashes, layout shifts, or header flicker during transitions. The `startViewTransition` feature detection guard is in place (B106); remaining work is full QA across routes.
 - [x] F33: Wire up `QueryResult` error prop — currently always passed `error={null}`. Plumb actual error state from `queryState` through the `QueryResult` component to surface generation failures (e.g., model errors, timeouts) directly in the chat UI instead of only to the console.
-- [ ] F34: Backend stream cancellation — canceling a query on the frontend (resetting `requestId`) stops the Svelte callback from processing chunks, but the Rust-side `Model::stream_chat_request` continues generating and sending through the `Channel`. No mechanism to abort the in-flight LLM generation when the user cancels or navigates away, wasting GPU/CPU cycles.
+- [x] F34: Add frontend stale-stream protection and backend cooperative cancellation. The frontend calls `cancel_query(request_id)` on cancellation, replacement, and page teardown; Rust checks the request ID between local-model responses and external response chunks before returning.
 
 ## Bugfixes (B)
 - [x] B1: Initialize NPM `package.json` at the root for workspace management.
@@ -79,8 +79,8 @@
 - [x] B38: Add `mistralrs = "=0.8.1"` to `src-tauri/Cargo.toml`.
 - [x] B39: Add `reqwest` (rustls-tls, stream, json), `keyring = "3"`, `hf-hub = "0.4"`, `rand = "0.9"`, `lance-index = "2.0.0"` to `src-tauri/Cargo.toml`.
 - [x] B40: Add `Inference(String)` variant to `AppError` in `crates/domain/src/error.rs`.
-- [x] B41: Add `app_settings` get/set functions to `crates/persistence` (for `inference_mode`, `external_base_url`, `generation_model`, `isq_level`, etc.).
-- [x] B42: Initialize `mistralrs::Model` at startup via `TextModelBuilder` + `IsqType::Q4K`, store as `Arc<Model>` in `AppState`, emit `llm_ready` event.
+- [x] B41: Add `app_settings` get/set functions to `crates/persistence` for inference mode, external endpoint/model, local generation model/GGUF filename, query enhancement, and chunk settings.
+- [x] B42: Initialize the optional local `mistralrs::Model` asynchronously with `GgufModelBuilder`, store it as `Arc<Model>` in `AppState`, and emit `llm_ready` after a successful build.
 - [x] B43: Emit `embedder_ready` event after `fastembed` init completes.
 - [x] B44: Implement LanceDB Hybrid Search (FTS + dense vector via Reciprocal Rank Fusion) in `crates/rag_pipeline`.
 - [x] B45: Add vector-only fallback search if FTS index is missing or throws.
@@ -90,7 +90,7 @@
 - [x] B49: Attach structured citations (document_id, filename, page, chunk_content) to `TokenEvent::Done`.
 - [x] B50: Integrate `keyring` for secure storage of `external_api_key` (service=`"ragtag"`, username=`"external_api_key"`).
 - [x] B51: Implement `reqwest`-based BYO inference path (POST to external OpenAI-compatible `/v1/chat/completions` with streaming).
-- [x] B52: Unify local `mistralrs` and external `reqwest` paths behind shared prompt/citation logic (trait or enum dispatch).
+- [ ] B52: Consolidate local `mistralrs` and external `reqwest` streaming behind a shared inference abstraction. They share retrieval, prompt construction, and citation assembly today, but `execute_query` still contains separate local and external stream loops rather than the claimed trait/enum dispatch.
 - [x] B53: Wire up BYO routing: `execute_query` reads `inference_mode` from `app_settings`, routes accordingly.
 - [x] B54: Integrate `hf-hub` for downloading `mistral.rs` model weights on first run with resume support.
 - [x] B55: Implement Staged Availability: unlock document ingest UI on `embedder_ready`, unlock query UI on `llm_ready` (skip LLM download if BYO mode active).
@@ -103,7 +103,7 @@
 - [x] B62: Add `aria-label` to PdfViewer toolbar buttons (prev/next/zoom-in/zoom-out).
 - [x] B63: Remove unused `.source-icon` CSS selector in `CitationList.svelte`.
 - [x] B64: Hardcoded model ID — `lib.rs:104-105` hardcodes `model_id` (`unsloth/Qwen3-1.7B-GGUF`) and `gguf_filename` (`Qwen3-1.7B-Q4_K_M.gguf`). Read `model_id` from `app_settings.generation_model` and `gguf_filename` from a new `app_settings.gguf_filename` key (with hardcoded fallbacks) so users can configure alternative models from the Settings UI.
-- [x] B65: `embedder_ready` fires synchronously on line 358 before the async LLM init can complete. Both events should work with staged availability correctly (the frontend will gate on them).
+- [x] B65: Make frontend staged availability independent: `embedder_ready` enables ingestion and application rendering, while `llm_ready` separately enables querying.
 - [x] B66: Remove unused `tailwind-merge` from `frontend/package.json` — no imports reference it.
 - [x] B67: Clean up unused aspirational types in `types.ts` — `QueryResponse`, `AnswerComponent`, `CitationData`, `ConfidenceLevel`, `Source` have no corresponding Rust structs and are never consumed.
 - [x] B68: Swap `TextModelBuilder` → `GgufModelBuilder` in `lib.rs`. Replace with `GgufModelBuilder::new("unsloth/Qwen3-1.7B-GGUF", vec!["Qwen3-1.7B-Q4_K_M.gguf"])`. Remove `with_isq()` and `from_hf_cache_path()` (GGUF is pre-quantized, no HF cache path method).
@@ -150,16 +150,16 @@
 - [x] B109: Remove `frontend-sveltekit/` after full verification.
 - [x] B110: Add `metal` feature to `mistralrs` on macOS (`Cargo.toml`) to fix CPU out-of-memory errors on M-series chips.
 - [x] B111: Fix `llm_ready` race condition (`lib.rs`): don't emit `llm_ready` when `GgufModelBuilder` fails, preventing the UI from entering a falsely "ready" state with no LLM.
-- [x] B112: Fix model download lockout (`lib.rs`): emit `llm_ready` even on model download failure so the user can reach the Settings page and switch to BYO inference mode instead of being locked out.
+- [ ] B112: Restore a recoverable local-model download failure path. A download error emits `model_download_progress` with an error and does not emit `llm_ready`; once the embedder is ready the Settings UI remains available, but query stays disabled and changing settings does not restart initialization.
 - [x] B113: Replace `.unwrap()` on `gguf_path.parent()` with proper error handling to prevent panics (`lib.rs:153`). Single risky unwrap in 14-file Rust codebase; use `ok_or_else` + emit error event.
 - [x] B114: Persist the `error_message` string to SQLite in `DocumentRepository::mark_failed()` (`persistence/sqlite.rs:171-181`). Add `error_message: &str` param + `error_message = ?` to UPDATE query. Wire call site in `lib.rs:757` to pass `&e.to_string()`. Also display in `DocumentList.svelte` for failed docs.
 - [x] B115: Create `Taskfile.yml` at project root with `setup`, `dev`, `build`, `bundle`, `check`, `clean` commands.
 - [x] B116: Remove redundant `tauri:dev`/`build`/`bundle` scripts from root `package.json`.
 - [x] B117: Update `README.md` to reference `task dev` instead of `npm run tauri:dev` and document `go-task` prerequisite.
 - [x] B118: Document Metal Toolchain requirement in `README.md` — add Prerequisites section explaining `sudo xcodebuild -downloadComponent MetalToolchain` and verification step. No build scripts or env vars needed; precompilation runs naturally via the installed toolchain.
-- [x] B119: Implement streaming cancellation and stale-stream guard — add `requestId` counter to `QueryState`; check `requestId` in the `executeQuery` callback before mutating state to prevent interleaved streams when user navigates away and starts a new query.
+- [x] B119: Implement request-ID stale-stream protection and cooperative backend cancellation. `cancel_query` records a request ID and both local and external loops stop on their next cancellation check.
 - [x] B120: Emit `embedder_failed` Tauri event on embedder init failure (`lib.rs:89-94`) — backend currently only logs the error silently. Complements F28 frontend tracking.
-- [x] B121: Always emit `llm_ready` on model build failure (`lib.rs:164-176`) — currently `llm_ready` is emitted on download failure (to unblock Settings page) but NOT on build failure, causing permanent boot hang if weights download but fail to load.
+- [ ] B121: Provide a recoverable local-model build failure path. A `GgufModelBuilder` error emits `model_download_progress` with an error and does not emit `llm_ready`; the query UI remains unavailable until initialization is retried.
 - [x] B122: Fix "Query Enhancement" toggle in `SettingsTab.svelte` — `Toggle.svelte` only flips the local `$bindable` value but never calls `settingsState.update()`, so changes appear in UI but are lost on reload. Wire up `onchange` to persist the setting to the backend.
 - [x] B123: Fix `DocumentList.executeDelete` to use non-blocking background refresh — currently does a full re-fetch with spinner (blocking UI). Switch to event-based silent refresh like `document_indexed`/`document_failed` listeners, and add the 10s timeout via `Promise.race` that `fetchDocuments` already uses.
 - [x] B124: Replace blocking I/O calls (`std::fs`) in async Tauri commands with `tokio::fs` or `spawn_blocking`: `model_download.rs:98` (`create_dir_all`), `model_download.rs:77-90` (`clean_stale_cache_files`), `lib.rs:579-593` (`dir_size` in `get_storage_info`).
@@ -170,3 +170,9 @@
 - [ ] B129: No `.sqlx/` offline query cache — `SQLX_OFFLINE=true` is set in `.env` but no `.sqlx/` directory exists in `src-tauri/`. AGENTS.md requires this to be checked into version control. Any build without a live SQLite database (CI, fresh clone) will fail at the `sqlx::query!()` / `sqlx::query_as!()` macro expansion step. Run `cargo sqlx prepare` to generate it.
 - [x] B130: `use_query_enhancement` setting has no effect — the toggle exists in `SettingsTab.svelte`, persists to `app_settings` in SQLite, and loads into `SettingsState`, but `execute_query` in `lib.rs` never reads or acts on it. The RAG pipeline has no query enhancement/expansion logic. The toggle is a dead control.
 - [ ] B131: `app.db` binary artifact in source tree — `src-tauri/crates/persistence/app.db` is a development leftover (SQLite database generated during local runs). Should be deleted and its path added to `.gitignore`.
+- [ ] B132: Strengthen page-aware reindex accounting. A global `extraction_version` mismatch requeues every indexed document after the embedder becomes ready, but no extraction version is stored with individual documents or vector rows, so the application cannot show or verify per-document migration completion.
+- [ ] B133: Filter vector candidates by document lifecycle before applying the retrieval limit. `execute_query` discards non-`indexed` documents only after LanceDB returns the top-K rows, so queued, failed, deleted-race, or reindexing chunks can consume all retrieval slots.
+- [ ] B134: Make staged query availability reflect a usable inference path. `llm_ready` is emitted immediately for external mode without validating its endpoint, model, or key; local download/build failures leave querying disabled without an in-app retry or reinitialization after settings changes.
+- [ ] B135: Make cancellation interrupt blocked inference. Current cancellation is cooperative and checked only between local-model responses or external response chunks; it cannot abort an in-flight `stream.next().await`/HTTP read or release compute while the provider is silent.
+- [ ] B136: Define and implement the external-inference error contract. Early external request/status failures reject the IPC command, while stream failures use `TokenEvent::Error`; document or unify this distinction and ensure callers receive actionable endpoint/model configuration failures.
+- [ ] B137: Decide whether chunking needs tokenizer- or structure-aware boundaries, and reindex affected documents when chunk settings change. Current Unicode-character windows use a four-characters-per-token estimate and persist no chunking configuration/version with each document.

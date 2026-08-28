@@ -24,18 +24,18 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 
 ### Rust Core (The Backend)
 - **Commands:** Thin `#[tauri::command]` functions acting as IPC handlers.
-- **State & Setup (`lib.rs`):** The `lib.rs` file acts as the primary orchestrator. It handles application state initialization, SQLite connection pooling, Tauri command registration, and spawning the background `tokio` channels. It also initializes the `fastembed` model inside a `spawn_blocking` task to prevent UI freezing, asynchronously builds the `mistral.rs` `Model` (loading weights and running ISQ quantization), and runs an FTS index health check on LanceDB (rebuilding if missing). With no sidecar to babysit, `lib.rs` is meaningfully simpler — no port binding, no PID lockfiles, no health-check polling, no auth-token generation, no process-group setup.
-- **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). When documents are uploaded, messages are pushed here using `try_send()` at the Tauri IPC boundary (to prevent freezing the UI if the queue is full), returning a `QueueFull` error if rejected. Background tasks use `send().await` for backpressure.
-- **Crash Recovery:** On startup, `lib.rs` queries SQLite for any documents with `status IN ('queued', 'embedding')`. It resets any `'embedding'` rows back to `'queued'` and pushes all recovered IDs back into the `mpsc` channel before the background worker begins, ensuring no jobs are silently lost after an app crash.
-- **LLM Management:** Holds an `Arc<mistralrs::Model>` in `AppState`, built once during the staged-availability boot sequence. There is no process to manage, no socket to monitor, no cleanup hook required on shutdown — when the app process exits, the model drops with it.
-- **RAG Pipeline:** Rust generates query embeddings locally via `fastembed`, searches the LanceDB vector database using Hybrid Search, builds the context prompt, and streams the response from the in-process `mistral.rs` model.
+- **State & Setup (`lib.rs`):** The `lib.rs` file orchestrates state initialization, SQLite pooling, command registration, and background channels. It initializes `fastembed` in `spawn_blocking`; when local inference is selected, it asynchronously downloads and builds a pre-quantized GGUF `mistral.rs` model. LanceDB indexes are created lazily after vector rows are written. Model download/build failures are emitted as progress errors rather than falsely reporting the local model ready.
+- **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). Uploads use `try_send()` at the IPC boundary (returning `QueueFull` rather than blocking the UI); recovery uses `send().await` so recovered jobs are not silently dropped.
+- **Crash Recovery:** After the embedder becomes ready, startup requeues documents left `embedding`, retryable failed documents, and queued documents. It also requeues all indexed documents when the global `extraction_version` marker differs, so page-aware extraction changes are reapplied.
+- **LLM Management:** `AppState` holds an optional `Arc<mistralrs::Model>` behind an async lock. It is populated only after a local build succeeds; external mode has no local model and immediately emits `llm_ready` without contacting the external endpoint.
+- **RAG Pipeline:** Rust generates query embeddings locally, searches LanceDB with hybrid search, builds the context prompt, then branches directly to either the in-process `mistral.rs` stream or an external OpenAI-compatible HTTP stream.
   - **Chunking Defaults:** Documents use character windows estimated at four characters per token: **512 estimated tokens** (about 2,048 characters) per chunk with an **80 estimated-token** (about 320-character) overlap. These settings do not create exact tokenizer boundaries. The effective overlap is capped at half of the window to ensure forward progress. Configure them with the `app_settings` keys `chunk_size` and `chunk_overlap`.
   - **Embedding Prefixes:** Chunks must be prefixed with `"passage: "` during ingest, and user queries with `"query: "` to maximize retrieval quality with Instruction-aware models like EmbeddingGemma.
 
 ### SQLite & Embedded Vectors
-- SQLite stores all document metadata (`filename`, `status`, `page_count`, etc.).
+- SQLite stores document metadata such as filename, status, chunk count, timestamps, and persisted processing errors.
 - Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server.
-- **FTS Index Creation:** Must be created AFTER rows are inserted (empty table creation leads to a silently broken index). Always use `.replace(true)` and `wait_for_index()` to ensure idempotency and observation. Hybrid search without an index *hard fails* (there is no silent fallback to vector-only).
+- **Indexes and Fallbacks:** After an upsert, LanceDB creates/replaces the FTS index and attempts the vector index; vector-index creation may be deferred until enough data exists. If hybrid FTS/dense search fails, the backend logs a one-time warning and falls back to vector-only search.
 
 ## 3. Data Flows
 
@@ -44,22 +44,22 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 2. Svelte passes the raw file bytes or filepath to Rust via IPC.
 3. Rust saves the file to the OS's specific App Data directory.
 4. Rust inserts a `queued` row into SQLite and emits a job down the `tokio` channel.
-5. Svelte receives the new document ID and begins polling/listening for progress events.
+5. Svelte receives the new document ID and listens for `ingestion_progress` stage events plus terminal document events.
 6. A background `tokio` task consumes the job:
    - Extracts text using the `pdf-extract` crate. **Crucial:** Extraction must happen in a per-page loop to preserve physical page boundaries and ensure accurate page numbers are attached to chunks for the citation engine.
    - Chunks text.
    - Generates embeddings locally using `fastembed`.
-   - **Write Order Discipline:** Saves embeddings to the vector DB (LanceDB) *first*.
-   - Updates the SQLite row to `indexed` *second*. (A crash between these steps leaves idempotent vectors in LanceDB to be safely overwritten on restart).
+   - **Vector lifecycle:** Deletes the document's prior chunks, then upserts replacement chunks into LanceDB.
+   - **Write Order Discipline:** Marks the SQLite row `indexed` only after the vector upsert succeeds. A failed replacement can therefore leave a failed document without vectors until a retry, rather than an indexed document with missing vectors.
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to update the UI instantly.
 
 ### Query Execution (RAG)
 1. User types a query in the UI.
 2. Svelte calls `invoke('execute_query', { text: "..." })`.
 3. Rust generates the query embedding locally via `fastembed` (with `"query: "` prefix).
-4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search combined using Reciprocal Rank Fusion) for the top-K matching chunks. If the FTS index is missing or throws an error, it must catch the error and gracefully fall back to a vector-only search (emitting a warning event to the UI).
+4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search). If the FTS path fails, it logs a warning and falls back to vector-only search.
 5. Rust retrieves associated document metadata from SQLite.
-6. Rust builds the chat messages and calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model (or, if `inference_mode = "external"`, POSTs to the user's OpenAI-compatible endpoint via `reqwest`) to synthesize an answer based on the chunks.
+6. Rust builds the chat messages and either calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model or POSTs to the configured OpenAI-compatible endpoint via `reqwest`, including the selected external model.
 7. Rust parses the citations and streams the response to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
 
 **Citation Engine (Retrieval-Grounded)**
@@ -68,9 +68,9 @@ To eliminate hallucination risks, the application uses a retrieval-grounded cita
 ### LLM Lifecycle
 
 `mistral.rs` runs in-process inside the main Rust binary. There is no subprocess, no port, no auth token, no health check. The lifecycle is:
-- **Startup:** During `lib.rs` setup, build the model asynchronously (`GgufModelBuilder::new(repo_dir, vec![filename]).build().await`). This is the only slow step — it loads pre-quantized weights from `$APPLOCALDATA/models`. Wrap the result in `Arc<Model>` and stash it in `AppState`.
-- **Ready Signal:** Once `.build().await` resolves, emit `llm_ready` to the UI to unlock the query interface.
-- **Runtime:** Tauri commands clone the `Arc<Model>` and call `stream_chat_request`. `mistral.rs` handles continuous batching, KV cache, and worker threads internally.
+- **Startup:** During `lib.rs` setup, local mode asynchronously downloads then builds the configured pre-quantized GGUF model (`GgufModelBuilder::new(repo_dir, vec![filename]).build().await`) from `$APPLOCALDATA/models`.
+- **Ready Signal:** A successful local build emits `llm_ready` and unlocks querying. Download or build failures emit `model_download_progress` with an error and leave querying unavailable; ingestion and Settings remain available once the embedder is ready.
+- **Runtime:** Tauri commands clone the optional model and call `stream_chat_request` only when it is present. The model drops with `AppState` at process exit.
 - **Shutdown:** Nothing to do. The `Model` drops when `AppState` drops at process exit.
 
 The previous machinery — ephemeral hex tokens, dynamic port binding, `--port N` arg parsing, `GET /health` polling, `Authorization: Bearer` headers, `command-group` process groups, `killpg`, `llama.lock` PID files, `RunEvent::CloseRequested` cleanup hooks — is all gone.
@@ -78,11 +78,10 @@ The previous machinery — ephemeral hex tokens, dynamic port binding, `--port N
 ### BYO Inference Mode (External LLM)
 
 Users can opt to use an external OpenAI-compatible endpoint instead of the in-process `mistral.rs` model:
-- Managed via `inference_mode = "external"` in `app_settings`.
-- The `external_base_url` is stored in the local SQLite database.
-- The `external_api_key` is securely stored in the OS keychain using the `keyring` crate, not in SQLite. Specifically, the keyring namespace must be set to `service = "ragtag"` and `username = "external_api_key"` to prevent collisions if the user runs multiple profiles.
-- When configured, the RAG pipeline bypasses the local `mistral.rs` model entirely and routes inference requests to the user's endpoint via `reqwest`. The two paths share the same prompt-building logic and are unified behind a small `InferenceClient` trait so the streaming/citation glue is identical.
-- Selecting external mode also skips the LLM weight download on first run (see Staged Availability below).
+- Managed by `inference_mode = "external"` and `external_model` in `app_settings`; an absent model falls back to `gpt-4o-mini`.
+- `external_base_url` is stored in local SQLite, while the optional `external_api_key` is stored in the OS keychain under `service = "ragtag"` and `username = "external_api_key"`.
+- External mode skips local model download/build and emits `llm_ready` immediately. That signal means the external route was selected, not that its endpoint, model, or credentials were verified.
+- Retrieval, prompt construction, and citations are shared before direct local/external stream branches. Request and HTTP-status failures reject the IPC command; failures after the external stream starts send `TokenEvent::Error`.
 
 ### Authentication
 **Removed.** Since this is a local application running under the user's OS profile, cloud-style authentication (cookies, sessions, Postgres tables) is no longer required.
@@ -91,7 +90,13 @@ Users can opt to use an external OpenAI-compatible endpoint instead of the in-pr
 
 ### Model Files and First-Run Staged Availability
 Instead of bundling massive AI model files into the application binary, model files are downloaded on first run. To ensure a good UX, the application uses **Staged Availability**:
-- **Embedding Models:** Downloaded via `fastembed` (or `hf-hub` with resume support). This is relatively small (~500MB). Once complete, the application emits an `embedder_ready` event, **unlocking the document ingestion UI** immediately.
-- **Text Generation:** Model weights for `mistral.rs` (e.g., Qwen3-1.7B GGUF files) are downloaded to the OS application data directory using the `hf-hub` crate in parallel with the embedding model. Because LLMs can be large, the **query interface remains locked** until `mistral.rs`'s `GgufModelBuilder::build().await` completes and an `llm_ready` event fires.
-- **Boot progress:** The local-model download emits byte counts from `hf-hub`; the boot overlay is determinate only while those totals are known and uses an indeterminate state while fetching metadata or constructing the model.
-- **Rationale:** This prevents the user from waiting 10+ minutes on a slow connection before they can even upload a PDF. If BYO inference mode is active, the LLM download and in-process model build are skipped entirely and the query UI unlocks as soon as the embedder is ready.
+- **Embedding Models:** Downloaded via `fastembed`. Once initialized, the application emits `embedder_ready`, makes ingestion available, and lets the main application render.
+- **Text Generation:** In local mode, the GGUF file is downloaded with `hf-hub` and then loaded by `mistral.rs`; querying remains disabled until `llm_ready`. In external mode, local generation initialization is skipped and `llm_ready` is emitted immediately.
+- **Boot progress:** Local-model download emits byte counts from `hf-hub`; the overlay is determinate while totals are known and indeterminate while metadata is fetched or the model is built. A local-model error leaves an actionable query-unavailable message rather than blocking ingestion.
+- **Boundary:** Query availability does not yet validate an external endpoint or retry failed local initialization after settings change.
+
+### Retrieval Lifecycle Limits
+
+- The page-aware migration uses one global `extraction_version` setting. Neither SQLite document rows nor LanceDB chunks record the extraction/chunk configuration that produced them.
+- LanceDB has no query-time join to SQLite document status. Retrieval obtains its top-K candidates first, then `execute_query` discards candidates whose documents are not `indexed`; stale or reindexing chunks can therefore reduce the usable result set.
+- Query cancellation is cooperative: the backend observes `cancel_query` between local-model responses or external HTTP chunks, but cannot interrupt a blocked model/HTTP read.

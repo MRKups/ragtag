@@ -46,12 +46,12 @@ This document explains the core design and technology choices for the applicatio
 
 ## 6. Vector Database & Pipeline (LanceDB)
 
-**Decision:** LanceDB provides embedded vector search capabilities using an idempotent `merge_insert` pipeline and Hybrid Search.
+**Decision:** LanceDB provides embedded vector search with serialized writes, per-document replacement, and hybrid retrieval.
 
 **Rationale:**
 - **Standalone Executable:** LanceDB runs natively inside the compiled Rust binary, requiring no external services or dependencies like Docker.
-- **Idempotency & Crash Recovery:** By using `merge_insert` with a unique constraint (document ID, page, chunk), the ingestion pipeline is perfectly idempotent. If the application crashes mid-ingestion, restarting will overwrite partial data instead of appending duplicates.
-- **Hybrid Search:** LanceDB natively supports combining BM25 full-text search with dense vector similarity via Reciprocal Rank Fusion (RRF), offering superior retrieval quality over vector search alone.
+- **Replacement & Recovery:** Reindexing deletes a document's prior chunks and then merge-inserts replacements using `(document_id, page, chunk_index)` identity. SQLite is marked `indexed` only after the vector write succeeds, preventing indexed rows without vectors. A failure after deletion leaves the document failed and dependent on retry; this is deliberate recovery work, not a transactional cross-store update.
+- **Hybrid Search:** LanceDB combines full-text and dense vector search. If the FTS path is unavailable, the backend falls back to dense vector search and logs a warning.
 
 We explicitly rejected **Chroma** for this role: it requires a Python runtime and a daemon process, directly contradicting the single-executable design tenet.
 
@@ -64,7 +64,7 @@ We explicitly rejected **Chroma** for this role: it requires a Python runtime an
 - **Embedding Model (`EmbeddingGemma-300M`):** Available as `EmbeddingModel::EmbeddingGemma300M` via the ONNX backend in `fastembed`. It is instruction-aware (requiring `passage: ` and `query: ` prefixes), outputs 768 dimensions, and yields strong retrieval performance. *Note:* This is distinct from `nomic-embed-text-v1.5`. `fastembed` lacks CoreML execution providers for the ONNX backend out-of-the-box, so expect CPU inference on Apple Silicon (M-series). We specifically **do not** use Candle-backed embedding models (like Qwen3) because they lack cross-platform quantization support.
 - **Generation Model (`Qwen3-1.7B`):** A highly capable lightweight edge model providing excellent RAG performance within a small RAM footprint (~1.1 GB at Q4_K_M quantization), making it the ideal fast baseline for desktop hardware. Loaded via `mistral.rs`'s `GgufModelBuilder` using pre-quantized weights (Q4_K_M). Any reasoning tokens are explicitly disabled via system prompts to prevent slow overhead during structured RAG tasks.
 - **No Auth Tokens Needed:** Without a localhost HTTP server in the loop, there is no surface to authenticate. The previous ephemeral-token machinery is gone entirely.
-- **BYO Inference Mode:** Users can opt to use external OpenAI-compatible APIs instead of the in-process model. The external API key is securely stored in the OS keychain via the `keyring` crate. Both code paths share the same prompt-building and streaming-citation glue behind a small `InferenceClient` trait.
+- **BYO Inference Mode:** Users can opt to use an external OpenAI-compatible API, select its `external_model` (defaulting to `gpt-4o-mini`), and store an optional API key in the OS keychain. Retrieval, prompt construction, and citations are common before explicit local/external stream branches; there is no `InferenceClient` trait. External mode skips local model initialization, so its readiness signal does not validate the endpoint or credentials.
 - **Reranker Strategy:** We explicitly defer adding a Cross-Encoder or ColBERT reranker (e.g. `answerai-colbert-small-v1`) to the pipeline to save latency and RAM. We rely entirely on LanceDB's Hybrid Search unless user testing proves the recall is insufficient.
 
 ## 8. PDF Text Extraction
@@ -78,15 +78,15 @@ While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior l
 
 **Decision:** Character-level sliding windows sized as 512 estimated tokens (about 2,048 characters), with an 80 estimated-token overlap (about 320 characters).
 
-**Rationale:** The current ingestion path estimates one token as four characters; it does not use or claim exact model-token boundaries. This keeps chunking independent of a model-specific tokenizer while retaining useful, configurable context overlap. To prevent pathological near-duplicate chunks, the effective overlap is capped at half of each character window.
+**Rationale:** The current ingestion path estimates one token as four Unicode characters; it does not use or claim exact model-token boundaries. This keeps chunking independent of a model-specific tokenizer while retaining useful, configurable context overlap. To prevent pathological near-duplicate chunks, the effective overlap is capped at half of each character window. Changing these settings affects future processing only; existing indexed documents are not automatically re-chunked.
 
 ## 10. Streaming AI Responses
 
 **Decision:** The application streams tokens from the LLM back to the frontend using Tauri v2 Channels (`Channel<TokenEvent>`).
 
 **Rationale:**
-- Channels offer ordered delivery, performance improvements, and critical backpressure compared to the older global `app.emit` event system, ensuring the UI does not hang or drop tokens during rapid text generation.
-- `mistral.rs` exposes `model.stream_chat_request(...)` returning a stream of `Response::Chunk` deltas, which maps cleanly onto `TokenEvent::Token` writes into the channel — no glue code required for IPC bridging.
+- Channels offer ordered delivery and backpressure compared to the older global `app.emit` event system, ensuring the UI does not hang or drop tokens during rapid text generation.
+- `mistral.rs` exposes `model.stream_chat_request(...)` as `Response::Chunk` deltas, which map to `TokenEvent::Token`. External SSE stream failures and local model stream errors are emitted as `TokenEvent::Error`; failures before a stream starts reject the IPC command.
 
 ## 11. Model File Sourcing
 
