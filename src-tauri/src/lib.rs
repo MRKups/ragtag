@@ -429,9 +429,15 @@ async fn execute_query(
             .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
     }?;
 
-    let search_results = vector_db
+    let search = vector_db
         .hybrid_search(&retrieval_query, &query_embedding, 10)
         .await?;
+    if search.vector_only {
+        let _ = channel.send(TokenEvent::Warning {
+            message: "Full-text retrieval is temporarily unavailable; this answer uses vector-only retrieval.".into(),
+        });
+    }
+    let search_results = search.results;
 
     let app_local_data = app
         .path()

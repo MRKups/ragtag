@@ -23,6 +23,8 @@
         if (queryState.currentRequestId !== requestId) return;
         if (event.type === 'token') {
           queryState.text += event.text;
+        } else if (event.type === 'warning') {
+          queryState.retrievalWarning = event.message;
         } else if (event.type === 'done') {
           queryState.citations = event.citations;
           queryState.isStreaming = false;
@@ -66,6 +68,9 @@
           <p>Searching manuals...</p>
         </div>
       {:else if queryState.text || queryState.error}
+        {#if queryState.retrievalWarning}
+          <p class="retrieval-warning" role="status">{queryState.retrievalWarning}</p>
+        {/if}
         <QueryResult
           text={queryState.text}
           citations={queryState.citations}
@@ -168,6 +173,15 @@
   .welcome-state p {
     color: #9ca3af;
     font-size: 1.05rem;
+  }
+
+  .retrieval-warning {
+    margin: 0 0 1rem;
+    border-left: 3px solid #f59e0b;
+    padding: 0.75rem 1rem;
+    color: #fde68a;
+    background: #422006;
+    border-radius: 0.25rem;
   }
 
   .spinner {

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEvent {
     Token { text: String },
+    Warning { message: String },
     Done { citations: Vec<Citation> },
     Error { message: String, citations: Vec<Citation> },
 }

@@ -171,7 +171,12 @@ impl VectorDb {
         Ok(())
     }
 
-    pub async fn hybrid_search(&self, query_text: &str, query_vector: &[f32], limit: usize) -> Result<Vec<SearchResult>, AppError> {
+    pub async fn hybrid_search(
+        &self,
+        query_text: &str,
+        query_vector: &[f32],
+        limit: usize,
+    ) -> Result<HybridSearchResult, AppError> {
         let table = self.get_or_create_table().await?;
 
         let query_vector_f32: Vec<f32> = query_vector.to_vec();
@@ -179,7 +184,7 @@ impl VectorDb {
 
         static FTS_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
-        let mut stream = match table.query()
+        let (mut stream, vector_only) = match table.query()
             .full_text_search(fts_query)
             .nearest_to(query_vector_f32.clone())
             .map_err(|e| AppError::VectorDb(e.to_string()))?
@@ -187,19 +192,20 @@ impl VectorDb {
             .execute()
             .await
         {
-            Ok(r) => r,
+            Ok(stream) => (stream, false),
             Err(e) => {
                 if !FTS_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
                     warn!("hybrid search unavailable (FTS index missing) — falling back to vector-only search");
                 }
                 warn!("hybrid search error detail: {e}");
-                table.query()
+                let stream = table.query()
                     .nearest_to(query_vector_f32)
                     .map_err(|e| AppError::VectorDb(e.to_string()))?
                     .limit(limit)
                     .execute()
                     .await
-                    .map_err(|e| AppError::VectorDb(e.to_string()))?
+                    .map_err(|e| AppError::VectorDb(e.to_string()))?;
+                (stream, true)
             }
         };
 
@@ -234,8 +240,16 @@ impl VectorDb {
         out.retain(|r| seen.insert((r.document_id.clone(), r.page, r.content.clone())));
         out.truncate(limit);
         
-        Ok(out)
+        Ok(HybridSearchResult {
+            results: out,
+            vector_only,
+        })
     }
+}
+
+pub struct HybridSearchResult {
+    pub results: Vec<SearchResult>,
+    pub vector_only: bool,
 }
 
 pub struct SearchResult {

@@ -27,8 +27,9 @@ export interface Citation {
   score: number;
 }
 
-export type TokenEvent = 
+export type TokenEvent =
   | { type: "token"; text: string }
+  | { type: "warning"; message: string }
   | { type: "done"; citations: Citation[] }
   | { type: "error"; message: string; citations: Citation[] };
 
