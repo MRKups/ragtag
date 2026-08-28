@@ -27,11 +27,13 @@
           queryState.retrievalWarning = event.message;
         } else if (event.type === 'done') {
           queryState.citations = event.citations;
+          queryState.currentRequestId = null;
           queryState.isStreaming = false;
           queryState.isLoading = false;
         } else if (event.type === 'error') {
           queryState.error = { message: event.message };
           queryState.citations = event.citations;
+          queryState.currentRequestId = null;
           queryState.isStreaming = false;
           queryState.isLoading = false;
         }
@@ -40,6 +42,7 @@
       if (queryState.currentRequestId !== requestId) return;
       const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Query failed';
       queryState.error = { message: msg };
+      queryState.currentRequestId = null;
       queryState.isStreaming = false;
       queryState.isLoading = false;
     }

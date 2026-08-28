@@ -68,11 +68,17 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     }
 }
 
-fn take_query_cancellation(state: &AppState, request_id: &str) -> bool {
-    state
-        .cancelled_queries
-        .lock()
-        .is_ok_and(|mut cancelled| cancelled.remove(request_id))
+struct ActiveQuery {
+    queries: Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+    request_id: String,
+}
+
+impl Drop for ActiveQuery {
+    fn drop(&mut self) {
+        if let Ok(mut queries) = self.queries.lock() {
+            queries.remove(&self.request_id);
+        }
+    }
 }
 
 #[tauri::command]
@@ -400,6 +406,16 @@ async fn execute_query(
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
     let repo = DocumentRepository::new(state.db_pool.clone());
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    state
+        .active_queries
+        .lock()
+        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?
+        .insert(request_id.clone(), cancel_sender);
+    let _active_query = ActiveQuery {
+        queries: state.active_queries.clone(),
+        request_id: request_id.clone(),
+    };
     let embedder_opt = {
         let guard = state.embedder.read().await;
         guard.clone()
@@ -506,28 +522,41 @@ async fn execute_query(
             req = req.bearer_auth(&api_key);
         }
 
-        let response = req.send().await
-            .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
-            .error_for_status()
-            .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
+        let response = tokio::select! {
+            _ = cancel_receiver.changed() => return Ok(()),
+            result = req.send() => result,
+        }
+        .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
+        .error_for_status()
+        .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
 
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
 
-        while let Some(chunk) = stream.next().await {
-            if take_query_cancellation(&state, &request_id) {
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel_receiver.changed() => return Ok(()),
+                chunk = stream.next() => chunk,
+            };
+            let Some(chunk) = chunk else {
+                let _ = channel.send(TokenEvent::Error {
+                    message: "External inference stream ended before its completion marker.".into(),
+                    citations,
+                });
                 return Ok(());
-            }
+            };
             let chunk = match chunk {
-                Ok(c) => c,
+                Ok(chunk) => chunk,
                 Err(e) => {
-                    let _ = channel.send(TokenEvent::Error { message: format!("Stream error: {e}"), citations });
+                    let _ = channel.send(TokenEvent::Error {
+                        message: format!("Stream error: {e}"),
+                        citations,
+                    });
                     return Ok(());
                 }
             };
-            let text = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&text);
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
 
             while let Some((pos, delimiter_len)) = buffer
                 .find("\r\n\r\n")
@@ -537,27 +566,23 @@ async fn execute_query(
                 let line = buffer[..pos].trim_end_matches('\r').to_string();
                 buffer = buffer[pos + delimiter_len..].to_string();
 
-                if line.starts_with("data: ") {
-                    let data = &line[6..];
+                if let Some(data) = line.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         let _ = channel.send(TokenEvent::Done { citations });
                         return Ok(());
                     }
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !token.is_empty() {
-                                if channel.send(TokenEvent::Token { text: token.to_string() }).is_err() {
-                                    return Ok(());
-                                }
+                            if !token.is_empty()
+                                && channel.send(TokenEvent::Token { text: token.to_string() }).is_err()
+                            {
+                                return Ok(());
                             }
                         }
                     }
                 }
             }
         }
-
-        let _ = channel.send(TokenEvent::Done { citations });
-        return Ok(());
     }
 
     let model = {
@@ -570,46 +595,59 @@ async fn execute_query(
             .add_message(mistralrs::TextMessageRole::System, system_prompt.to_string())
             .add_message(mistralrs::TextMessageRole::User, context);
 
-        match model.stream_chat_request(request).await {
-            Ok(mut stream) => {
-                loop {
-                    if take_query_cancellation(&state, &request_id) {
-                        return Ok(());
-                    }
-                    match stream.next().await {
-                        Some(mistralrs::Response::Chunk(chunk)) => {
-                            if let Some(choice) = chunk.choices.first() {
-                                if let Some(token) = &choice.delta.content {
-                                    if !token.is_empty() {
-                                        if channel.send(TokenEvent::Token { text: token.clone() }).is_err() {
-                                            return Ok(());
-                                        }
-                                    }
+        let stream_result = tokio::select! {
+            _ = cancel_receiver.changed() => return Ok(()),
+            result = model.stream_chat_request(request) => result,
+        };
+        match stream_result {
+            Ok(mut stream) => loop {
+                let response = tokio::select! {
+                    _ = cancel_receiver.changed() => return Ok(()),
+                    response = stream.next() => response,
+                };
+                match response {
+                    Some(mistralrs::Response::Chunk(chunk)) => {
+                        if let Some(choice) = chunk.choices.first() {
+                            if let Some(token) = &choice.delta.content {
+                                if !token.is_empty()
+                                    && channel.send(TokenEvent::Token { text: token.clone() }).is_err()
+                                {
+                                    return Ok(());
                                 }
                             }
                         }
-                        Some(mistralrs::Response::Done(_response)) => {
-                            let _ = channel.send(TokenEvent::Done { citations });
-                            return Ok(());
-                        }
-                        Some(mistralrs::Response::ModelError(message, _)) => {
-                            let _ = channel.send(TokenEvent::Error { message, citations });
-                            return Ok(());
-                        }
-                        Some(mistralrs::Response::InternalError(error))
-                        | Some(mistralrs::Response::ValidationError(error)) => {
-                            let _ = channel.send(TokenEvent::Error {
-                                message: error.to_string(),
-                                citations,
-                            });
-                            return Ok(());
-                        }
-                        _ => {}
                     }
+                    Some(mistralrs::Response::Done(_response)) => {
+                        let _ = channel.send(TokenEvent::Done { citations });
+                        return Ok(());
+                    }
+                    Some(mistralrs::Response::ModelError(message, _)) => {
+                        let _ = channel.send(TokenEvent::Error { message, citations });
+                        return Ok(());
+                    }
+                    Some(mistralrs::Response::InternalError(error))
+                    | Some(mistralrs::Response::ValidationError(error)) => {
+                        let _ = channel.send(TokenEvent::Error {
+                            message: error.to_string(),
+                            citations,
+                        });
+                        return Ok(());
+                    }
+                    None => {
+                        let _ = channel.send(TokenEvent::Error {
+                            message: "Local inference stream ended before completion.".into(),
+                            citations,
+                        });
+                        return Ok(());
+                    }
+                    Some(_) => {}
                 }
-            }
+            },
             Err(e) => {
-                let _ = channel.send(TokenEvent::Error { message: format!("LLM request failed: {e}"), citations });
+                let _ = channel.send(TokenEvent::Error {
+                    message: format!("LLM request failed: {e}"),
+                    citations,
+                });
             }
         }
     } else {
@@ -664,7 +702,7 @@ async fn delete_document(
     let _ = app.emit("document_deleted", serde_json::json!({
         "document_id": &id,
     }));
-    
+
     Ok(())
 }
 
@@ -673,11 +711,13 @@ async fn cancel_query(
     state: tauri::State<'_, AppState>,
     request_id: String,
 ) -> Result<(), AppError> {
-    state
-        .cancelled_queries
+    let queries = state
+        .active_queries
         .lock()
-        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?
-        .insert(request_id);
+        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?;
+    if let Some(sender) = queries.get(&request_id) {
+        let _ = sender.send(true);
+    }
     Ok(())
 }
 
@@ -941,7 +981,7 @@ pub fn run() {
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
-            let cancelled_queries = Arc::new(std::sync::Mutex::new(HashSet::new()));
+            let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             app.manage(AppState {
                 db_pool: pool.clone(),
@@ -950,7 +990,7 @@ pub fn run() {
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
                 document_operations: document_operations.clone(),
-                cancelled_queries: cancelled_queries.clone(),
+                active_queries: active_queries.clone(),
                 http_client: reqwest::Client::builder()
                     .use_rustls_tls()
                     .build()
