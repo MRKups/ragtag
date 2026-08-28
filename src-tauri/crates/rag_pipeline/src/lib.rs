@@ -2,7 +2,7 @@ pub mod chunker;
 pub mod extractor;
 
 use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
-use domain::{AppError, DocumentStatus};
+use domain::AppError;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use persistence::{DocumentRepository, VectorDb};
 use std::path::Path;
@@ -29,6 +29,8 @@ pub async fn process_document(
     vector_db: &VectorDb,
     on_progress: impl Fn(&str) + Send + Sync + 'static,
 ) -> Result<(), AppError> {
+    repo.mark_embedding(document_id).await?;
+
     on_progress("extracting");
     let pages = extractor::extract_pages(pdf_path)?;
 
@@ -37,9 +39,6 @@ pub async fn process_document(
     if chunks.is_empty() {
         return Err(AppError::Internal("No text chunks produced".into()));
     }
-
-    repo.update_status(document_id, DocumentStatus::Embedding)
-        .await?;
 
     on_progress("embedding");
     let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
@@ -65,7 +64,8 @@ pub async fn process_document(
         .upsert_chunks(std::iter::once(batch))
         .await?;
 
-    repo.update_status(document_id, DocumentStatus::Indexed)
+    repo
+        .mark_indexed(document_id, chunks.len(), "EmbeddingGemma-300M")
         .await?;
 
     Ok(())
@@ -134,6 +134,54 @@ pub fn embed_query(
         .into_iter()
         .next()
         .ok_or_else(|| AppError::Internal("No embedding returned".into()))
+}
+
+pub fn enhance_query(query: &str) -> String {
+    const EXPANSIONS: &[(&str, &str)] = &[
+        ("api", "application programming interface"),
+        ("cpu", "central processing unit"),
+        ("gpu", "graphics processing unit"),
+        ("llm", "large language model"),
+        ("sdk", "software development kit"),
+        ("ui", "user interface"),
+    ];
+
+    let mut expansions = Vec::new();
+    for token in query.split_whitespace() {
+        let token = token.trim_matches(|c: char| !c.is_alphanumeric());
+        if let Some((_, expansion)) = EXPANSIONS
+            .iter()
+            .find(|(abbreviation, _)| token.eq_ignore_ascii_case(abbreviation))
+        {
+            if !expansions.contains(expansion) {
+                expansions.push(*expansion);
+            }
+        }
+    }
+
+    if expansions.is_empty() {
+        query.to_string()
+    } else {
+        format!("{query} ({})", expansions.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enhance_query;
+
+    #[test]
+    fn adds_unique_technical_expansions() {
+        assert_eq!(
+            enhance_query("GPU API gpu"),
+            "GPU API gpu (graphics processing unit, application programming interface)"
+        );
+    }
+
+    #[test]
+    fn preserves_queries_without_known_abbreviations() {
+        assert_eq!(enhance_query("installation guide"), "installation guide");
+    }
 }
 
 pub fn build_rag_prompt(

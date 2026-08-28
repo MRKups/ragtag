@@ -330,16 +330,26 @@ async fn execute_query(
     let http_client = state.http_client.clone();
     let settings_repo = AppSettingsRepository::new(state.db_pool.clone());
 
+    let use_query_enhancement = settings_repo
+        .get("use_query_enhancement")
+        .await?
+        .map_or(true, |value| value == "true");
+    let retrieval_query = if use_query_enhancement {
+        rag_pipeline::enhance_query(&query)
+    } else {
+        query.clone()
+    };
+
     let query_embedding = {
         let embedder = embedder.clone();
-        let q = query.clone();
-        tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&embedder, &q))
+        let retrieval_query = retrieval_query.clone();
+        tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&embedder, &retrieval_query))
             .await
             .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
     }?;
 
     let search_results = vector_db
-        .hybrid_search(&query, &query_embedding, 10)
+        .hybrid_search(&retrieval_query, &query_embedding, 10)
         .await?;
 
     let app_local_data = app

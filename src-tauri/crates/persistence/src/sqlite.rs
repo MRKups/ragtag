@@ -98,6 +98,51 @@ impl DocumentRepository {
         Ok(())
     }
 
+    pub async fn mark_embedding(&self, id: &str) -> Result<(), AppError> {
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'embedding',
+                 processing_started_at = CURRENT_TIMESTAMP,
+                 embedding_attempts = embedding_attempts + 1,
+                 error_message = NULL
+             WHERE id = ?",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(())
+    }
+
+    pub async fn mark_indexed(
+        &self,
+        id: &str,
+        chunk_count: usize,
+        embedding_model: &str,
+    ) -> Result<(), AppError> {
+        let chunk_count = i32::try_from(chunk_count)
+            .map_err(|_| AppError::Database("Chunk count exceeds SQLite integer range".into()))?;
+
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'indexed',
+                 chunk_count = ?,
+                 embedding_model = ?,
+                 indexed_at = CURRENT_TIMESTAMP,
+                 error_message = NULL
+             WHERE id = ?",
+        )
+        .bind(chunk_count)
+        .bind(embedding_model)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(())
+    }
+
     pub async fn get_by_id(&self, id: &str) -> Result<Option<Document>, AppError> {
         let row = sqlx::query_as!(
             DocumentRow,

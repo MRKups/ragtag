@@ -78,7 +78,7 @@ Example keys:
 - `setup_state`: Tracking first-run downloads (`'embedder_pending'`, `'embedder_ready'`, `'llm_pending'`, `'ready'`).
 - `inference_mode`: `"local"` or `"external"`
 - `external_base_url`: URL for an OpenAI-compatible endpoint (used if mode is external).
-- `use_query_enhancement`: `"true"` or `"false"`
+- `use_query_enhancement`: `"true"` or `"false"`; expands recognized technical abbreviations only for retrieval, leaving the user prompt unchanged.
 - `embedding_model`: `"EmbeddingGemma-300M"`
 - `generation_model`: HF repo ID consumed by `mistral.rs` (e.g., `"unsloth/Qwen3-1.7B-GGUF"`).
 - `gguf_filename`: Filename of the GGUF file within the generation model repo (e.g., `"Qwen3-1.7B-Q4_K_M.gguf"`).
