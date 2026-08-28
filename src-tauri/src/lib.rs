@@ -7,20 +7,30 @@ use persistence::{init_pool, DocumentRepository, AppSettingsRepository, VectorDb
 use sha2::{Digest, Sha512};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
 use log::{debug, error, info, warn};
 
-static INIT_STARTED: AtomicBool = AtomicBool::new(false);
+static EMBEDDER_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 async fn begin_first_run_init(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
-    if INIT_STARTED.swap(true, Ordering::SeqCst) {
-        debug!("begin_first_run_init called but init already in progress — no-op");
+    let embedder_ready = state.embedder.read().await.is_some();
+    let llm_ready = state.local_llm.read().await.is_some();
+
+    if embedder_ready {
+        let _ = app.emit("embedder_ready", ());
+    }
+    if llm_ready {
+        let _ = app.emit("llm_ready", ());
+    }
+
+    if embedder_ready && llm_ready {
         return Ok(());
     }
 
@@ -29,6 +39,7 @@ async fn begin_first_run_init(
         .map_err(|e| AppError::Io(e.to_string()))?
         .join("models");
 
+    if !embedder_ready && !EMBEDDER_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
     let embedder_state = state.embedder.clone();
     let embedder_handle = app.clone();
     let models_dir_embedder = models_dir.clone();
@@ -45,49 +56,46 @@ async fn begin_first_run_init(
                 *embedder_state.write().await = Some(Arc::new(std::sync::Mutex::new(emb)));
                 let _ = embedder_handle.emit("embedder_ready", ());
 
-                // Crash recovery: re-enqueue docs now that embedder is ready
+                // Recovery runs after the embedder is ready. Awaiting sends applies
+                // producer backpressure instead of silently dropping recovered work.
                 let repo = persistence::DocumentRepository::new(embedder_pool.clone());
-                if let Ok(recovered) = repo.reset_embedding_to_queued().await {
-                    let count = recovered.len();
-                    for id in recovered {
-                        let _ = embedder_job_queue.try_send(id);
-                    }
-                    if count > 0 {
-                        warn!("startup recovery — re-queued {count} documents stuck in 'embedding' status");
-                    } else {
-                        debug!("startup recovery — no documents stuck in 'embedding' status");
+                let mut recovered_ids = HashSet::new();
+
+                match repo.reset_embedding_to_queued().await {
+                    Ok(ids) => recovered_ids.extend(ids),
+                    Err(e) => error!("startup recovery — failed to reset embedding documents: {e}"),
+                }
+                match repo.reset_failed_to_queued(3).await {
+                    Ok(ids) => recovered_ids.extend(ids),
+                    Err(e) => error!("startup recovery — failed to reset retryable documents: {e}"),
+                }
+                match repo.get_queued_ids().await {
+                    Ok(ids) => recovered_ids.extend(ids),
+                    Err(e) => error!("startup recovery — failed to list queued documents: {e}"),
+                }
+
+                let recovered_count = recovered_ids.len();
+                for id in recovered_ids {
+                    if let Err(e) = embedder_job_queue.send(id).await {
+                        error!("startup recovery — document worker stopped before recovery completed: {e}");
+                        break;
                     }
                 }
-                if let Ok(recovered) = repo.reset_failed_to_queued(3).await {
-                    let count = recovered.len();
-                    for id in recovered {
-                        let _ = embedder_job_queue.try_send(id);
-                    }
-                    if count > 0 {
-                        info!("startup recovery — re-queued {count} failed documents for retry");
-                    } else {
-                        debug!("startup recovery — no failed documents eligible for retry");
-                    }
-                }
-                if let Ok(queued) = repo.get_queued_ids().await {
-                    let count = queued.len();
-                    for id in queued {
-                        let _ = embedder_job_queue.try_send(id);
-                    }
-                    if count > 0 {
-                        info!("startup recovery — re-queued {count} pending documents");
-                    } else {
-                        debug!("startup recovery — no pending documents to resume");
-                    }
+                if recovered_count > 0 {
+                    info!("startup recovery — re-queued {recovered_count} documents");
+                } else {
+                    debug!("startup recovery — no documents to resume");
                 }
             }
             Ok(Err(e)) => {
+                EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
                 error!("embedder initialization failed: {e}");
                 let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
                     "message": e.to_string(),
                 }));
             }
             Err(e) => {
+                EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
                 error!("embedder initialization task panicked: {e}");
                 let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
                     "message": format!("Embedder task panicked: {e}"),
@@ -95,7 +103,9 @@ async fn begin_first_run_init(
             }
         }
     });
+    }
 
+    if !llm_ready && !LLM_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
     let llm_state = state.local_llm.clone();
     let llm_handle = app.clone();
     let pool = state.db_pool.clone();
@@ -143,6 +153,7 @@ async fn begin_first_run_init(
                     total_files: 0,
                     stage: model_download::DownloadStage::Error { message: e.to_string() },
                 });
+                LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
                 let _ = llm_handle.emit("llm_ready", ());
                 return;
             }
@@ -179,6 +190,7 @@ async fn begin_first_run_init(
                 stage: model_download::DownloadStage::Error { message: msg },
             });
             let _ = llm_handle.emit("llm_ready", ());
+            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             return;
         };
 
@@ -207,9 +219,11 @@ async fn begin_first_run_init(
                     stage: model_download::DownloadStage::Error { message: msg },
                 });
                 let _ = llm_handle.emit("llm_ready", ());
+                LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             }
         }
     });
+    }
 
     Ok(())
 }
@@ -682,7 +696,10 @@ async fn reset_all_data(
     let payload = serde_json::json!({"delete_models": delete_models});
     tokio::fs::write(&sentinel, payload.to_string()).await?;
 
-    Ok(serde_json::json!({"requires_restart": true}))
+    info!("reset requested — restarting application");
+    app.request_restart();
+
+    Ok(serde_json::json!({"restarting": true}))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

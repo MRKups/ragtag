@@ -100,9 +100,8 @@ let apiKeyValue = $state('');
 
   async function doReset() {
     try {
+      storageMessage = 'Restarting to reset local data...';
       await api.resetAllData(resetDeleteModels);
-      storageMessage = 'Reset pending. Restarting...';
-      setTimeout(() => window.location.reload(), 1500);
     } catch (e) {
       storageMessage = `Reset failed: ${e}`;
     }
