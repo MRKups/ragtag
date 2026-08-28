@@ -29,7 +29,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 - **Crash Recovery:** On startup, `lib.rs` queries SQLite for any documents with `status IN ('queued', 'embedding')`. It resets any `'embedding'` rows back to `'queued'` and pushes all recovered IDs back into the `mpsc` channel before the background worker begins, ensuring no jobs are silently lost after an app crash.
 - **LLM Management:** Holds an `Arc<mistralrs::Model>` in `AppState`, built once during the staged-availability boot sequence. There is no process to manage, no socket to monitor, no cleanup hook required on shutdown — when the app process exits, the model drops with it.
 - **RAG Pipeline:** Rust generates query embeddings locally via `fastembed`, searches the LanceDB vector database using Hybrid Search, builds the context prompt, and streams the response from the in-process `mistral.rs` model.
-  - **Chunking Defaults:** Documents are chunked into **512 tokens per chunk, with an 80-token overlap**. This is configurable via `app_settings` keys `chunk_size` and `chunk_overlap`.
+  - **Chunking Defaults:** Documents use character windows estimated at four characters per token: **512 estimated tokens** (about 2,048 characters) per chunk with an **80 estimated-token** (about 320-character) overlap. These settings do not create exact tokenizer boundaries. The effective overlap is capped at half of the window to ensure forward progress. Configure them with the `app_settings` keys `chunk_size` and `chunk_overlap`.
   - **Embedding Prefixes:** Chunks must be prefixed with `"passage: "` during ingest, and user queries with `"query: "` to maximize retrieval quality with Instruction-aware models like EmbeddingGemma.
 
 ### SQLite & Embedded Vectors

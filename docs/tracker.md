@@ -66,7 +66,7 @@
 - [x] B25: Write initial SQLite `queued` row and push job to the MPSC channel.
 - [x] B26: Integrate `pdf-extract` into `crates/rag_pipeline`.
 - [x] B27: Write extraction loop (MUST be page-by-page to preserve citation boundaries).
-- [x] B28: Implement token chunking logic (512 size / 80 overlap, `"passage: "` prefix).
+- [x] B28: Implement character-estimate sliding-window chunking (four characters per estimated token; default 512 estimated tokens / 80 estimated-token overlap, `"passage: "` prefix), with overlap capped at half a window for forward progress.
 - [x] B29: Integrate `fastembed-rs` (v5).
 - [x] B30: Initialize `EmbeddingModel::EmbeddingGemma300M` inside a `spawn_blocking` thread on app startup.
 - [x] B31: Hook embedding generation into the chunking pipeline.

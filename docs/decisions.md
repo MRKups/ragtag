@@ -76,9 +76,9 @@ While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior l
 
 ## 9. Text Chunking Strategy
 
-**Decision:** 512 tokens per chunk with an 80-token overlap.
+**Decision:** Character-level sliding windows sized as 512 estimated tokens (about 2,048 characters), with an 80 estimated-token overlap (about 320 characters).
 
-**Rationale:** Token-based chunking balances context retention with LLM context windows. 512 tokens provides enough density for semantic meaning without diluting the chunk. The 80-token overlap ensures concepts crossing chunk boundaries are not lost during retrieval.
+**Rationale:** The current ingestion path estimates one token as four characters; it does not use or claim exact model-token boundaries. This keeps chunking independent of a model-specific tokenizer while retaining useful, configurable context overlap. To prevent pathological near-duplicate chunks, the effective overlap is capped at half of each character window.
 
 ## 10. Streaming AI Responses
 

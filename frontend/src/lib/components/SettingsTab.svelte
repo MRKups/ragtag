@@ -240,7 +240,7 @@ let apiKeyValue = $state('');
 
         <div class="pipeline-fields">
           <div class="setting-field">
-            <label for="chunk_size">Chunk size <span>(tokens)</span></label>
+            <label for="chunk_size">Chunk size <span>(estimated tokens)</span></label>
             <input
               id="chunk_size"
               type="number"
@@ -249,7 +249,7 @@ let apiKeyValue = $state('');
             />
           </div>
           <div class="setting-field">
-            <label for="chunk_overlap">Chunk overlap</label>
+            <label for="chunk_overlap">Chunk overlap <span>(estimated tokens)</span></label>
             <input
               id="chunk_overlap"
               type="number"
@@ -258,7 +258,7 @@ let apiKeyValue = $state('');
             />
           </div>
         </div>
-        <p class="help-text pipeline-note">Changes only apply to documents uploaded after the change.</p>
+        <p class="help-text pipeline-note">Each estimated token is about 4 characters; overlap is capped at half of the chunk size. Changes only apply to documents uploaded after the change.</p>
       </section>
 
       <section class="setting-group" aria-labelledby="storage-heading">
