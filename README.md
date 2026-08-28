@@ -1,130 +1,186 @@
-# Ragtag: Local-First RAG Desktop App
+# Ragtag
 
-## What This Is
-
-A localized, zero-configuration desktop application for querying technical manuals and other documents. It acts as an intelligent, personalized brain for technical manuals, allowing users to ask questions in natural language and receive synthesized answers with precise page citations.
-
-It is a standalone executable that processes PDFs, generates embeddings, stores data, and searches vectors entirely on the user's local machine, ensuring absolute data privacy, instantaneous file retrieval, and zero cloud hosting costs.
-
-### Core Features
-
-- Fully offline/local document processing and storage
-- Natural language queries about your documents
-- Fast, secure desktop UI powered by Tauri v2
-- Instantaneous document viewing directly from the local disk
-- Citation engine matching AI answers to exact PDF pages
-- Background processing for document ingestion without blocking the UI
-- **BYO Inference Mode:** Option to securely connect to external OpenAI-compatible endpoints instead of local models
-
-## Tech Stack
-
-**App Shell & UI:**
-- **Framework:** Tauri v2
-- **Frontend:** Svelte 5 (Vite) / TypeScript
-- **UI & Styling:** Svelte 5 (Native component-scoped CSS, no Tailwind)
-
-**Backend Engine:**
-- **Language:** Rust (Edition 2024+)
-- **Async Runtime:** Tokio
-- **IPC:** Tauri Commands & Events (using Tauri v2 Channels for streaming)
-- **Database:** SQLite (via `sqlx`)
-- **Vector DB:** LanceDB (Embedded, native Rust vector database)
-- **Local Embeddings:** `fastembed-rs` (Runs ONNX models natively in Rust)
-- **Local LLM (Generation):** `mistral.rs` (In-process, pure-Rust inference engine using Qwen3-1.7B — no sidecar)
-- **Model Downloads:** `hf-hub` (Downloads model files safely on first-run with resume support)
+Ragtag is a local-first desktop RAG application for querying user-provided PDFs and technical manuals. It copies documents into app-local storage, builds local search indexes, and answers questions with retrieved page citations. By default, document processing, embeddings, vector search, and generation run on the user's machine; an external OpenAI-compatible inference endpoint is an optional user-selected mode.
 
 ## Prerequisites
 
-- **Rust** (edition 2024+, install via [rustup](https://rustup.rs))
-- **Node.js** 20+ and npm
-- **Xcode** (macOS only) — required for the Metal GPU acceleration layer used by `mistralrs`. Without Xcode, the build will fail with an obscure Metal compiler error.
-- **Tauri CLI** — `cargo install tauri-cli --version "^2"`
-- **Task (go-task)** — `brew install go-task` (build orchestration)
+Ragtag is configured for macOS development and distribution. Before the first native build, install:
 
-### macOS: Installing the Metal Toolchain
+- **Node.js 20+** and npm.
+- **Rust 2024 edition**, installed through [rustup](https://rustup.rs/).
+- **Xcode** and the Metal Toolchain. The macOS build enables `mistralrs` Metal support for local generation.
+- **Tauri CLI v2**:
 
-`mistralrs` compiles GPU shaders at build time using Apple's `metal` compiler. This requires the Metal Toolchain component from Xcode:
+  ```sh
+  cargo install tauri-cli --version "^2"
+  ```
 
-```
+- **go-task** for the repository build tasks:
+
+  ```sh
+  brew install go-task
+  ```
+
+Install the Metal Toolchain if Xcode does not already provide it:
+
+```sh
 sudo xcodebuild -downloadComponent MetalToolchain
 ```
 
-If the command reports "No components found," the toolchain is already integrated into your Xcode installation and no further action is needed.
+Confirm the required tools are available:
 
-Verify with:
-```
+```sh
+node --version
+npm --version
+rustc --version
+cargo --version
+task --version
 xcrun metal --version
 ```
 
-#### Troubleshooting: Build Fails with Metal Compiler Error
+If Metal shader precompilation is unavailable, set `MISTRALRS_METAL_PRECOMPILE=0` for the Cargo or Tauri build command. This defers shader compilation to first model load.
 
-If you cannot install the toolchain (e.g., no admin access), you can skip build-time shader precompilation by prefixing cargo commands with:
+## Install dependencies
 
-```
-MISTRALRS_METAL_PRECOMPILE=0
-```
+Run this from the repository root after cloning, or after deliberately removing frontend dependencies:
 
-This defers shader compilation to runtime (adds a few seconds on first model load). Example:
-
-```bash
-MISTRALRS_METAL_PRECOMPILE=0 cargo build
-```
-
-Precompiled shaders are stored in the platform-agnostic `.metallib` format — the Metal driver handles final GPU-specific compilation at runtime, so shaders built on one macOS version are portable to others.
-
-## How to Run
-
-### First-Time Setup
-
-```bash
+```sh
 task setup
 ```
 
-The first launch of the app will download model weights (~2.8GB total):
-- Qwen3-1.7B GGUF (~2GB, for local LLM generation)
-- Gemma 300M ONNX (~800MB, for embeddings)
+`task setup` runs `npm install` in `frontend/` and verifies that `cargo` and `rustc` are available. The frontend package owns Svelte, Vite, TypeScript, and the frontend Tauri API; Rust dependencies are managed by the workspace in `src-tauri/Cargo.toml`.
 
-Downloads are one-time and resume if interrupted. Progress is shown in the app's boot overlay.
+Use `npm install` only when intentionally changing frontend dependencies. This repository's Taskfile is the supported entry point for application setup, development, checks, and builds.
 
-### Development Build
+## Local data and inference
 
-```bash
+Ragtag requires no local `.env` file or cloud account for its default mode. It stores the following in the operating system's application-local data directory:
+
+- copied uploaded PDFs;
+- the `app.db` SQLite document registry and non-secret settings;
+- the `.lancedb` vector store containing derived document chunks and embeddings;
+- downloaded embedding and local-generation model files.
+
+The first local launch downloads the model artifacts needed for offline use: approximately 800 MB for EmbeddingGemma-300M embeddings and approximately 2 GB for the default Qwen3-1.7B GGUF generator. Downloads resume after interruption and report progress in the app boot overlay.
+
+The **Settings** page can select external inference instead. It stores the endpoint URL as a local setting and stores the API key in the operating system keychain, never in SQLite or frontend storage. External inference skips the local generation-model download, but document ingestion and retrieval remain local.
+
+## Documents and citations
+
+Ragtag currently accepts PDF documents. Ingestion preserves page boundaries, extracts text, creates overlapping chunks, and writes 768-dimensional embeddings to the local LanceDB store. Query results combine dense vector and full-text retrieval; the response cites the retrieved document/page metadata rather than model-generated page numbers.
+
+Deleting a document removes its derived vectors, registry entry, and stored copy. The **Settings** page also exposes maintenance actions for SQLite vacuuming, vector-store compaction, and an explicitly confirmed reset of local data.
+
+## Development
+
+### Full native app with live reload
+
+```sh
 task dev
 ```
 
-HMR development mode — best for prototyping and UI refinement:
+Use this for normal Ragtag development. It runs `cargo tauri dev`, starts the Vite development server at `http://localhost:5173`, compiles the Rust workspace in debug mode, and opens the native Ragtag window.
 
-- Vite dev server starts on `http://localhost:5173` with full HMR support
-- Rust compiles in debug mode (fast iteration, slower runtime)
-- Edit any Svelte/TS/CSS file and changes appear instantly in the app window
-- Rust changes require an app restart (re-run the command)
+Frontend Svelte, TypeScript, and CSS changes update through Vite hot-module reload. Rust, Tauri configuration, capability, model, and persistence changes require the native process to rebuild or restart. Stop the development stack with `Ctrl-C`.
 
-Uses the installed Metal Toolchain for GPU shader precompilation at build time.
+### Frontend only
 
-### Release Binary
+```sh
+npm run dev --prefix frontend
+```
 
-```bash
+Use this for Svelte markup, styling, or browser-oriented UI work. It starts Vite at `http://localhost:5173`, but does not compile Rust or open a native window. Tauri IPC, filesystem access, keychain calls, and the local PDF asset protocol are unavailable in this mode.
+
+## Checks and tests
+
+### Frontend type and Svelte checks
+
+```sh
+task check
+```
+
+Run this after changing Svelte, TypeScript, or Vite configuration. It runs `svelte-check` against `frontend/`.
+
+### Rust workspace checks
+
+The Taskfile does not define a Rust test task. For a Rust-only compilation or test pass, run the narrowest applicable Cargo command from the workspace manifest, for example:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml -p domain
+cargo test --manifest-path src-tauri/Cargo.toml -p persistence
+cargo test --manifest-path src-tauri/Cargo.toml -p rag_pipeline
+```
+
+Use a full workspace test command only when changes span multiple crates or application composition:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --workspace
+```
+
+## Builds
+
+### Frontend production output only
+
+```sh
+task build-frontend
+```
+
+Use this to validate the Vite production build or regenerate `frontend/dist/` without compiling Rust. Tauri bundles these files for native builds.
+
+### Release binary
+
+```sh
 task build
 ```
 
-Binary: `src-tauri/target/release/mrk-ragtag-app` (~110MB, arm64)
+This runs the frontend checks and production build, then creates the optimized unbundled binary:
 
-Self-contained — no runtime dependencies beyond macOS system libraries. The binary includes precompiled Metal shaders for instant first-launch GPU acceleration. Model downloads still occur on first run via the in-app progress overlay.
+```text
+src-tauri/target/release/mrk-ragtag-app
+```
 
-### App Bundle (Distributable)
+### macOS application bundle
 
-```bash
+```sh
 task bundle
 ```
 
-App bundle: `src-tauri/target/release/bundle/macos/Ragtag.app`
+This runs the frontend checks and production build, then produces the distributable macOS application bundle:
 
-Full macOS application bundle with Info.plist, icons, and bundled frontend assets. This is what you'd distribute to end users. Includes the same release binary as `tauri:build`.
-
-### Other Commands
-
-```bash
-task check              # TypeScript type-checking + Svelte diagnostics
-task build-frontend     # Frontend-only Vite build (output in frontend/dist/)
-task clean              # Remove all build artifacts
+```text
+src-tauri/target/release/bundle/macos/Ragtag.app
 ```
+
+The bundle includes the native application and frontend assets. Local model artifacts are intentionally downloaded on first run rather than embedded in the application bundle.
+
+## Cleanup
+
+### Remove frontend build output
+
+```sh
+rm -rf frontend/dist
+```
+
+Safe to run whenever a clean Vite output is needed; the next frontend or Tauri build recreates it.
+
+### Remove Rust artifacts and Tauri bundles
+
+```sh
+task clean-rust
+```
+
+This runs `cargo clean` from `src-tauri/` and removes `src-tauri/target/`, including compiled dependencies, release binaries, and native bundles. The next native build will take longer because Cargo must compile them again.
+
+### Remove all generated build output
+
+```sh
+task clean
+```
+
+This removes frontend build output, the Vite cache, and Rust build artifacts. It does not remove application-local documents, databases, vector indexes, model files, or OS-keychain credentials.
+
+Do not use `git clean -fdX` as a general cleanup command. Ignored files can include local build state and developer configuration that you intend to keep.
+
+## Project layout
+
+See [the repository layout](docs/file-structure.md) for code ownership and entry points. Read [the application architecture](docs/app-architecture.md) for runtime boundaries and data flows, [the data schema](docs/data-schema.md) for local persistence and IPC contracts, and [the design decisions](docs/decisions.md) for the rationale behind the local-first stack.
