@@ -96,3 +96,9 @@ While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior l
 - Avoids the massive binary size bloat (~500MB for embeddings, several GBs for LLMs).
 - Allows users to seamlessly pause, resume, update, and manage their models.
 - `mistral.rs`'s builders resolve repo IDs against the same Hugging Face cache that `hf-hub` populates, so we control the download UX while letting the inference engine load weights normally.
+
+## 12. macOS Window Chrome
+
+**Decision:** Use Tauri's native macOS overlay titlebar with hidden title text and retained traffic-light controls.
+
+**Rationale:** Overlay removes the visually separate native title strip while keeping native close, minimize, zoom, and window-drag behavior. A compact WebView header supplies the visual bar and reserves only the space required by traffic lights, avoiding a frameless custom-control implementation.
