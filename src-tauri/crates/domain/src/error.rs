@@ -18,6 +18,8 @@ pub enum AppError {
     Inference(String),
     #[error("A document with this content already exists: {0}")]
     DuplicateDocument(String),
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 impl From<std::io::Error> for AppError {
@@ -40,6 +42,7 @@ impl serde::Serialize for AppError {
             AppError::Internal(_) => "Internal",
             AppError::Inference(_) => "Inference",
             AppError::DuplicateDocument(_) => "DuplicateDocument",
+            AppError::InvalidInput(_) => "InvalidInput",
         };
         map.serialize_entry("kind", kind)?;
         map.serialize_entry("message", &self.to_string())?;

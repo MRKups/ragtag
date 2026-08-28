@@ -15,6 +15,41 @@ use log::{debug, error, info, warn};
 static EMBEDDER_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+
+fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
+    let name = std::path::Path::new(filename);
+    if filename.is_empty()
+        || filename.len() > 255
+        || name.file_name().and_then(|name| name.to_str()) != Some(filename)
+        || !filename.to_ascii_lowercase().ends_with(".pdf")
+    {
+        return Err(AppError::InvalidInput("Upload filename must be a PDF filename".into()));
+    }
+    if bytes.len() > MAX_UPLOAD_BYTES {
+        return Err(AppError::InvalidInput("PDF exceeds the 50 MiB upload limit".into()));
+    }
+    if !bytes.get(..1024).is_some_and(|prefix| prefix.windows(5).any(|window| window == b"%PDF-")) {
+        return Err(AppError::InvalidInput("Upload is not a PDF".into()));
+    }
+    Ok(())
+}
+
+fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
+    match key {
+        "inference_mode" if matches!(value, "local" | "external") => Ok(()),
+        "use_query_enhancement" if matches!(value, "true" | "false") => Ok(()),
+        "chunk_size" => value.parse::<usize>().ok().filter(|size| (128..=2048).contains(size))
+            .map(|_| ()).ok_or_else(|| AppError::InvalidInput("chunk_size must be 128–2048".into())),
+        "chunk_overlap" => value.parse::<usize>().ok().filter(|size| *size <= 1024)
+            .map(|_| ()).ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
+        "external_base_url" if reqwest::Url::parse(value).ok().is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some() && url.username().is_empty() && url.password().is_none()) => Ok(()),
+        "generation_model" if value.split('/').count() == 2 && !value.contains(char::is_whitespace) => Ok(()),
+        "gguf_filename" if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") => Ok(()),
+        _ => Err(AppError::InvalidInput(format!("Unsupported or invalid setting: {key}"))),
+    }
+}
+
 #[tauri::command]
 async fn begin_first_run_init(
     app: tauri::AppHandle,
@@ -242,6 +277,8 @@ async fn upload_document(
         tauri::ipc::InvokeBody::Raw(b) => b.clone(),
         tauri::ipc::InvokeBody::Json(_) => return Err(AppError::Io("Expected raw binary body".into())),
     };
+
+    validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
     let repo = DocumentRepository::new(state.db_pool.clone());
 
@@ -519,11 +556,20 @@ async fn delete_document(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), AppError> {
+    let id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| AppError::InvalidInput("Document ID must be a UUID".into()))?
+        .to_string();
     let repo = DocumentRepository::new(state.db_pool.clone());
     
     if let Some(doc) = repo.get_by_id(&id).await? {
         let app_local_data = app.path().app_local_data_dir().map_err(|e| AppError::Io(e.to_string()))?;
-        let pdf_path = app_local_data.join(&doc.storage_path);
+        let stored_path = std::path::Path::new(&doc.storage_path);
+        if stored_path.is_absolute()
+            || stored_path.components().any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(AppError::Internal("Document has an unsafe storage path".into()));
+        }
+        let pdf_path = app_local_data.join(stored_path);
         
         if tokio::fs::metadata(&pdf_path).await.is_ok() {
             tokio::fs::remove_file(pdf_path).await.map_err(|e| AppError::Io(e.to_string()))?;
@@ -565,11 +611,10 @@ async fn set_setting(
     key: String,
     value: String,
 ) -> Result<(), AppError> {
-    if (key == "generation_model" || key == "gguf_filename") && value.trim().is_empty() {
-        return Err(AppError::Io(format!("{} cannot be empty", key)));
-    }
-    let repo = AppSettingsRepository::new(state.db_pool.clone());
-    repo.set(&key, &value).await
+    validate_setting(&key, &value)?;
+    AppSettingsRepository::new(state.db_pool.clone())
+        .set(&key, &value)
+        .await
 }
 
 #[tauri::command]
