@@ -184,6 +184,35 @@ impl DocumentRepository {
         Ok(rows.into_iter().filter_map(|r| r.id).collect())
     }
 
+    pub async fn requeue_indexed_for_reindex(&self) -> Result<Vec<String>, AppError> {
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM documents WHERE status = 'indexed'",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
+
+        if !ids.is_empty() {
+            sqlx::query(
+                "UPDATE documents
+                 SET status = 'queued',
+                     chunk_count = NULL,
+                     embedding_model = NULL,
+                     indexed_at = NULL,
+                     error_message = NULL
+                 WHERE status = 'indexed'",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_err)?;
+        }
+
+        transaction.commit().await.map_err(sql_err)?;
+        Ok(ids)
+    }
+
     pub async fn list_all(&self) -> Result<Vec<Document>, AppError> {
         let rows = sqlx::query_as!(
             DocumentRow,

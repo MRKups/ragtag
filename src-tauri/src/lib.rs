@@ -17,6 +17,8 @@ static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 
+const EXTRACTION_VERSION: &str = "page-aware-v1";
+
 fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
     let name = std::path::Path::new(filename);
     if filename.is_empty()
@@ -94,7 +96,22 @@ async fn begin_first_run_init(
                 // Recovery runs after the embedder is ready. Awaiting sends applies
                 // producer backpressure instead of silently dropping recovered work.
                 let repo = persistence::DocumentRepository::new(embedder_pool.clone());
+
                 let mut recovered_ids = HashSet::new();
+                let settings = AppSettingsRepository::new(embedder_pool.clone());
+                match settings.get("extraction_version").await {
+                    Ok(Some(version)) if version == EXTRACTION_VERSION => {}
+                    Ok(_) => match repo.requeue_indexed_for_reindex().await {
+                        Ok(ids) => {
+                            recovered_ids.extend(ids);
+                            if let Err(e) = settings.set("extraction_version", EXTRACTION_VERSION).await {
+                                error!("citation reindex — failed to record extraction version: {e}");
+                            }
+                        }
+                        Err(e) => error!("citation reindex — failed to requeue indexed documents: {e}"),
+                    },
+                    Err(e) => error!("citation reindex — failed to read extraction version: {e}"),
+                }
 
                 match repo.reset_embedding_to_queued().await {
                     Ok(ids) => recovered_ids.extend(ids),
@@ -852,6 +869,7 @@ pub fn run() {
                         warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
                         continue;
                     };
+
 
                     let result = match repo.get_by_id(&doc_id).await {
                         Ok(Some(doc)) => {
