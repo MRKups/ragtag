@@ -354,10 +354,11 @@ async fn upload_document(
         return Err(e);
     }
 
-    state
-        .job_queue
-        .try_send(doc_id.clone())
-        .map_err(|_| AppError::QueueFull)?;
+    if state.job_queue.try_send(doc_id.clone()).is_err() {
+        repo.delete_by_id(&doc_id).await?;
+        let _ = tokio::fs::remove_file(&storage_path).await;
+        return Err(AppError::QueueFull);
+    }
 
     Ok(doc_id)
 }
@@ -635,9 +636,31 @@ async fn set_setting(
     value: String,
 ) -> Result<(), AppError> {
     validate_setting(&key, &value)?;
-    AppSettingsRepository::new(state.db_pool.clone())
-        .set(&key, &value)
-        .await
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+
+    let chunk_size = if key == "chunk_size" {
+        value.parse::<usize>()
+            .map_err(|_| AppError::InvalidInput("Invalid chunk_size".into()))?
+    } else {
+        repo.get("chunk_size").await?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(512)
+    };
+    let chunk_overlap = if key == "chunk_overlap" {
+        value.parse::<usize>()
+            .map_err(|_| AppError::InvalidInput("Invalid chunk_overlap".into()))?
+    } else {
+        repo.get("chunk_overlap").await?
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(80)
+    };
+    if chunk_overlap >= chunk_size {
+        return Err(AppError::InvalidInput(
+            "chunk_overlap must be smaller than chunk_size".into(),
+        ));
+    }
+
+    repo.set(&key, &value).await
 }
 
 #[tauri::command]

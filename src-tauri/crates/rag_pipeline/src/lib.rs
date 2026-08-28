@@ -32,13 +32,19 @@ pub async fn process_document(
     repo.mark_embedding(document_id).await?;
 
     on_progress("extracting");
-    let pages = extractor::extract_pages(pdf_path)?;
+    let pdf_path = pdf_path.to_path_buf();
+    let chunks = tokio::task::spawn_blocking(move || {
+        let pages = extractor::extract_pages(&pdf_path)?;
+        let chunks = chunker::chunk_pages(pages, chunk_size, chunk_overlap);
+        if chunks.is_empty() {
+            return Err(AppError::Internal("No text chunks produced".into()));
+        }
+        Ok(chunks)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
 
     on_progress("chunking");
-    let chunks = chunker::chunk_pages(pages, chunk_size, chunk_overlap);
-    if chunks.is_empty() {
-        return Err(AppError::Internal("No text chunks produced".into()));
-    }
 
     on_progress("embedding");
     let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
