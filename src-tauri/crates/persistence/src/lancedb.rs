@@ -9,6 +9,9 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use futures::stream::StreamExt;
 use log::warn;
 
+static VECTOR_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
+
 pub struct VectorDb {
     pub conn: Connection,
     indexes_built: AtomicBool,
@@ -55,6 +58,11 @@ impl VectorDb {
     }
 
     pub async fn delete_chunks(&self, document_id: &str) -> Result<(), AppError> {
+        let _permit = VECTOR_WRITE_LOCK
+            .acquire()
+            .await
+            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
+
         let table_names = self.conn.table_names().execute().await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
         
@@ -78,13 +86,10 @@ impl VectorDb {
             return Ok(());
         }
 
-        use tokio::sync::Semaphore;
-        use std::sync::OnceLock;
-        
-        static WRITE_LOCK: OnceLock<Semaphore> = OnceLock::new();
-        let semaphore = WRITE_LOCK.get_or_init(|| Semaphore::new(1));
-        
-        let _permit = semaphore.acquire().await.map_err(|_| AppError::Internal("Failed to acquire write lock".into()))?;
+        let _permit = VECTOR_WRITE_LOCK
+            .acquire()
+            .await
+            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
 
         let schema = Self::schema();
 

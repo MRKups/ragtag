@@ -411,18 +411,23 @@ async fn execute_query(
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
 
-    let mut citations: Vec<Citation> = Vec::new();
+    let mut citations = Vec::new();
     for result in &search_results {
-        if let Ok(Some(doc)) = repo.get_by_id(&result.document_id).await {
-            citations.push(Citation {
-                document_id: result.document_id.clone(),
-                filename: doc.filename.clone(),
-                storage_path: app_local_data.join(&doc.storage_path).to_string_lossy().to_string(),
-                page: result.page as i32,
-                chunk_content: result.content.clone(),
-                score: 1.0 / (1.0 + result.score),
-            });
+        let Some(doc) = repo.get_by_id(&result.document_id).await? else {
+            continue;
+        };
+        if doc.status != DocumentStatus::Indexed {
+            continue;
         }
+
+        citations.push(Citation {
+            document_id: result.document_id.clone(),
+            filename: doc.filename,
+            storage_path: app_local_data.join(&doc.storage_path).to_string_lossy().to_string(),
+            page: result.page as i32,
+            chunk_content: result.content.clone(),
+            score: 1.0 / (1.0 + result.score),
+        });
     }
 
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
@@ -576,9 +581,10 @@ async fn delete_document(
     let id = uuid::Uuid::parse_str(&id)
         .map_err(|_| AppError::InvalidInput("Document ID must be a UUID".into()))?
         .to_string();
+    let _document_operation = state.document_operations.write().await;
     let repo = DocumentRepository::new(state.db_pool.clone());
-    
-    if let Some(doc) = repo.get_by_id(&id).await? {
+    let document = repo.get_by_id(&id).await?;
+    let pdf_path = if let Some(doc) = document.as_ref() {
         let app_local_data = app.path().app_local_data_dir().map_err(|e| AppError::Io(e.to_string()))?;
         let stored_path = std::path::Path::new(&doc.storage_path);
         if stored_path.is_absolute()
@@ -586,16 +592,19 @@ async fn delete_document(
         {
             return Err(AppError::Internal("Document has an unsafe storage path".into()));
         }
-        let pdf_path = app_local_data.join(stored_path);
-        
+        Some(app_local_data.join(stored_path))
+    } else {
+        None
+    };
+
+    state.vector_db.delete_chunks(&id).await?;
+    repo.delete_by_id(&id).await?;
+
+    if let Some(pdf_path) = pdf_path {
         if tokio::fs::metadata(&pdf_path).await.is_ok() {
             tokio::fs::remove_file(pdf_path).await.map_err(|e| AppError::Io(e.to_string()))?;
         }
     }
-    
-    state.vector_db.delete_chunks(&id).await?;
-    repo.delete_by_id(&id).await?;
-    
     let _ = app.emit("document_deleted", serde_json::json!({
         "document_id": &id,
     }));
@@ -838,6 +847,7 @@ pub fn run() {
             let vector_db = Arc::new(vector_db);
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
+            let document_operations = Arc::new(tokio::sync::RwLock::new(()));
 
             app.manage(AppState {
                 db_pool: pool.clone(),
@@ -845,6 +855,7 @@ pub fn run() {
                 embedder: embedder.clone(),
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
+                document_operations: document_operations.clone(),
                 http_client: reqwest::Client::builder()
                     .use_rustls_tls()
                     .build()
@@ -856,6 +867,7 @@ pub fn run() {
 
             // Background worker: processes documents from the channel
             let embedder_worker = embedder.clone();
+            let document_operations_worker = document_operations.clone();
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
@@ -869,6 +881,8 @@ pub fn run() {
                         warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
                         continue;
                     };
+
+                    let _document_operation = document_operations_worker.read().await;
 
 
                     let result = match repo.get_by_id(&doc_id).await {
