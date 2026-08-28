@@ -41,8 +41,10 @@ mistralrs = { version = "=0.8.1", features = ["metal"] }
 mistralrs = "=0.8.1"
 
 [profile.dev]
+# Keep source locations and backtraces while avoiding full debug metadata for
+# mistralrs, LanceDB, Arrow, and their large dependency graphs.
 opt-level = 1
-
+debug = 1
 [profile.release]
 panic = "abort"
 codegen-units = 1
