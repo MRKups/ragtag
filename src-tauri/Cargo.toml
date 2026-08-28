@@ -34,10 +34,10 @@ futures-util = "0.3.34"
 log = "0.4.34"
 env_logger = "0.11.11"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 mistralrs = { version = "=0.8.1", features = ["metal"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 mistralrs = "=0.8.1"
 
 [profile.dev]
