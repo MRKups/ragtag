@@ -5,6 +5,7 @@
   import DocumentViewer from '$lib/components/DocumentViewer.svelte';
   import { api } from '$lib/api';
   import { queryState } from '$lib/stores/query.svelte';
+  import { appState } from '$lib/stores/app-state.svelte';
   import type { TokenEvent } from '$lib/types';
 
   async function handleQuery(text: string) {
@@ -82,6 +83,8 @@
         <QueryInput
           isLoading={queryState.isLoading}
           isStreaming={queryState.isStreaming}
+          unavailable={!appState.queryAvailable}
+          unavailableMessage={appState.modelError || 'The selected inference model is still preparing.'}
           onSubmit={handleQuery}
           onCancel={handleCancel}
           bind:text={queryState.queryText}

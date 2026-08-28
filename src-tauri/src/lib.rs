@@ -206,7 +206,6 @@ async fn begin_first_run_init(
                     stage: model_download::DownloadStage::Error { message: e.to_string() },
                 });
                 LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-                let _ = llm_handle.emit("llm_ready", ());
                 return;
             }
         };
@@ -241,7 +240,6 @@ async fn begin_first_run_init(
                 total_files: 0,
                 stage: model_download::DownloadStage::Error { message: msg },
             });
-            let _ = llm_handle.emit("llm_ready", ());
             LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             return;
         };
@@ -270,7 +268,6 @@ async fn begin_first_run_init(
                     total_files: 0,
                     stage: model_download::DownloadStage::Error { message: msg },
                 });
-                let _ = llm_handle.emit("llm_ready", ());
                 LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             }
         }

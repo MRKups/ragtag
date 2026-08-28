@@ -30,6 +30,7 @@ export class AppState {
   errorMessage = $state('');
   embedderAvailable = $state(false);
   llmReady = $state(false);
+  modelError = $state('');
 
   private unlisten: Array<() => void> = [];
 
@@ -52,14 +53,17 @@ export class AppState {
         console.log('[AppState] download progress:', p);
 
         if (p.type === 'error') {
-          this.phase = 'error';
+          this.modelError = p.message || `Model download failed: ${p.model_id}`;
           this.downloadIsIndeterminate = false;
-          this.errorMessage = p.message || `Model download failed: ${p.model_id}`;
+          if (!this.embedderAvailable) {
+            this.phase = 'error';
+            this.errorMessage = this.modelError;
+          }
           return;
         }
 
         if (p.type === 'fetching_info') {
-          if (this.phase !== 'error') this.phase = 'downloading_model';
+          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
           this.downloadProgress = 0;
           this.downloadIsIndeterminate = true;
           this.downloadMessage = `Fetching model info for ${p.model_id}...`;
@@ -67,7 +71,7 @@ export class AppState {
         }
 
         if (p.type === 'downloading') {
-          if (this.phase !== 'error') this.phase = 'downloading_model';
+          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
           if (p.file_total > 0) {
             this.downloadProgress = Math.min(100, Math.round((p.file_downloaded / p.file_total) * 100));
             this.downloadIsIndeterminate = false;
@@ -82,7 +86,7 @@ export class AppState {
         }
 
         if (p.type === 'complete' || p.type === 'loading_model') {
-          if (this.phase !== 'error') this.phase = 'downloading_model';
+          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
           this.downloadProgress = 100;
           this.downloadIsIndeterminate = true;
           this.downloadMessage = 'Download complete. Loading the local model...';
@@ -115,8 +119,16 @@ export class AppState {
     }
   }
 
+  get ingestionAvailable() {
+    return this.embedderAvailable;
+  }
+
+  get queryAvailable() {
+    return this.llmReady;
+  }
+
   #tryBecomeReady() {
-    if (this.phase !== 'error' && this.embedderAvailable && this.llmReady) {
+    if (this.phase !== 'error' && this.ingestionAvailable) {
       this.phase = 'ready';
     }
   }

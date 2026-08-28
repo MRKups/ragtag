@@ -4,19 +4,23 @@
   let {
     isLoading = false,
     isStreaming = false,
+    unavailable = false,
+    unavailableMessage = 'Inference is unavailable.',
     onSubmit = () => {},
     onCancel = () => {},
     text = $bindable('')
   } = $props<{
     isLoading?: boolean;
     isStreaming?: boolean;
+    unavailable?: boolean;
+    unavailableMessage?: string;
     onSubmit?: (text: string) => void;
     onCancel?: () => void;
     text?: string;
   }>();
 
   let textarea: HTMLTextAreaElement;
-  let disabled = $derived(isLoading || isStreaming);
+  let disabled = $derived(isLoading || isStreaming || unavailable);
 
   function handleSubmit() {
     if (!text.trim() || disabled) return;
@@ -54,7 +58,7 @@
       bind:this={textarea}
       bind:value={text}
       onkeydown={handleKeydown}
-      placeholder="Ask a question about your technical manuals..."
+      placeholder={unavailable ? unavailableMessage : 'Ask a question about your technical manuals...'}
       rows="1"
       disabled={disabled}
       class="query-textarea"
