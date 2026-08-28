@@ -392,7 +392,19 @@ async fn upload_document(
     }
 
     if state.job_queue.try_send(doc_id.clone()).is_err() {
-        repo.delete_by_id(&doc_id).await?;
+        if let Err(cleanup_error) = repo.delete_by_id(&doc_id).await {
+            warn!(
+                "queue-full upload rollback could not delete document {doc_id}; scheduling durable enqueue: {cleanup_error}"
+            );
+            let queue = state.job_queue.clone();
+            let queued_document_id = doc_id.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(send_error) = queue.send(queued_document_id).await {
+                    error!("queue-full upload recovery producer stopped: {send_error}");
+                }
+            });
+            return Err(AppError::QueueFull);
+        }
         let _ = tokio::fs::remove_file(&storage_path).await;
         return Err(AppError::QueueFull);
     }
