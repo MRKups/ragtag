@@ -3,6 +3,7 @@ import { api } from '../api';
 export class SettingsState {
   inference_mode = $state('local');
   external_base_url = $state('');
+  external_model = $state('gpt-4o-mini');
   generation_model = $state('');
   gguf_filename = $state('Qwen3-1.7B-Q4_K_M.gguf');
   use_query_enhancement = $state(true);
@@ -19,6 +20,7 @@ export class SettingsState {
       const settings = await api.getSettings();
       if (settings.inference_mode) this.inference_mode = settings.inference_mode;
       if (settings.external_base_url) this.external_base_url = settings.external_base_url;
+      if (settings.external_model) this.external_model = settings.external_model;
       if (settings.generation_model) this.generation_model = settings.generation_model;
       if (settings.gguf_filename) this.gguf_filename = settings.gguf_filename;
       if (settings.use_query_enhancement) this.use_query_enhancement = settings.use_query_enhancement === 'true';
@@ -40,6 +42,7 @@ export class SettingsState {
       if (key === 'use_query_enhancement') this.use_query_enhancement = value === 'true';
       if (key === 'inference_mode') this.inference_mode = value;
       if (key === 'external_base_url') this.external_base_url = value;
+      if (key === 'external_model') this.external_model = value;
       if (key === 'generation_model') this.generation_model = value;
       if (key === 'gguf_filename') this.gguf_filename = value;
       if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);

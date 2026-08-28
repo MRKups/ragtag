@@ -163,6 +163,21 @@ let apiKeyValue = $state('');
             </div>
 
             <div class="setting-field">
+              <label for="external_model">
+                <BrainCircuit size={14} class="field-label-icon" />
+                External model
+              </label>
+              <input
+                id="external_model"
+                type="text"
+                placeholder="gpt-4o-mini"
+                bind:value={settingsState.external_model}
+                onblur={() => { const v = settingsState.external_model.trim(); if (v) updateSetting('external_model', v); }}
+              />
+              <p class="help-text">The model name accepted by your OpenAI-compatible endpoint.</p>
+            </div>
+
+            <div class="setting-field">
               <label for="external_api_key">
                 <Key size={14} class="field-label-icon" />
                 API key

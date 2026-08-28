@@ -16,6 +16,8 @@ static EMBEDDER_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+const DEFAULT_EXTERNAL_MODEL: &str = "gpt-4o-mini";
+
 
 const EXTRACTION_VERSION: &str = "page-aware-v1";
 
@@ -46,6 +48,8 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
         "chunk_overlap" => value.parse::<usize>().ok().filter(|size| *size <= 1024)
             .map(|_| ()).ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
         "external_base_url" if reqwest::Url::parse(value).ok().is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some() && url.username().is_empty() && url.password().is_none()) => Ok(()),
+        "external_model" if !value.trim().is_empty() => Ok(()),
+
         "generation_model" if value.split('/').count() == 2 && !value.contains(char::is_whitespace) => Ok(()),
         "gguf_filename" if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") => Ok(()),
         _ => Err(AppError::InvalidInput(format!("Unsupported or invalid setting: {key}"))),
@@ -444,6 +448,11 @@ async fn execute_query(
         .unwrap_or_else(|| "local".to_string());
 
     if mode == "external" {
+        let model = settings_repo.get("external_model").await
+            .unwrap_or_default()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_EXTERNAL_MODEL.to_string());
+
         let base_url = settings_repo.get("external_base_url").await
             .unwrap_or_default()
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
@@ -460,6 +469,8 @@ async fn execute_query(
         let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
         let body = serde_json::json!({
+            "model": model,
+
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": context}
@@ -653,9 +664,10 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<Strin
     
     let mut settings = HashMap::new();
     let keys = vec![
-        "inference_mode", "external_base_url", "generation_model", 
+        "inference_mode", "external_base_url", "external_model", "generation_model",
         "gguf_filename", "use_query_enhancement", "chunk_size", "chunk_overlap"
     ];
+
     
     for key in keys {
         if let Some(val) = repo.get(key).await? {
@@ -1025,4 +1037,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_setting;
+
+    #[test]
+    fn validates_external_model() {
+        assert!(validate_setting("external_model", "gpt-4o-mini").is_ok());
+        assert!(validate_setting("external_model", "").is_err());
+        assert!(validate_setting("external_model", "   ").is_err());
+    }
 }
