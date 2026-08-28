@@ -52,6 +52,13 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     }
 }
 
+fn take_query_cancellation(state: &AppState, request_id: &str) -> bool {
+    state
+        .cancelled_queries
+        .lock()
+        .is_ok_and(|mut cancelled| cancelled.remove(request_id))
+}
+
 #[tauri::command]
 async fn begin_first_run_init(
     app: tauri::AppHandle,
@@ -368,6 +375,7 @@ async fn execute_query(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     query: String,
+    request_id: String,
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
     let repo = DocumentRepository::new(state.db_pool.clone());
@@ -465,6 +473,8 @@ async fn execute_query(
         }
 
         let response = req.send().await
+            .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
+            .error_for_status()
             .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
 
         use futures_util::StreamExt;
@@ -472,6 +482,9 @@ async fn execute_query(
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
+            if take_query_cancellation(&state, &request_id) {
+                return Ok(());
+            }
             let chunk = match chunk {
                 Ok(c) => c,
                 Err(e) => {
@@ -522,6 +535,9 @@ async fn execute_query(
         match model.stream_chat_request(request).await {
             Ok(mut stream) => {
                 loop {
+                    if take_query_cancellation(&state, &request_id) {
+                        return Ok(());
+                    }
                     match stream.next().await {
                         Some(mistralrs::Response::Chunk(chunk)) => {
                             if let Some(choice) = chunk.choices.first() {
@@ -607,6 +623,19 @@ async fn delete_document(
         "document_id": &id,
     }));
     
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_query(
+    state: tauri::State<'_, AppState>,
+    request_id: String,
+) -> Result<(), AppError> {
+    state
+        .cancelled_queries
+        .lock()
+        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?
+        .insert(request_id);
     Ok(())
 }
 
@@ -868,6 +897,7 @@ pub fn run() {
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
+            let cancelled_queries = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
             app.manage(AppState {
                 db_pool: pool.clone(),
@@ -876,6 +906,7 @@ pub fn run() {
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
                 document_operations: document_operations.clone(),
+                cancelled_queries: cancelled_queries.clone(),
                 http_client: reqwest::Client::builder()
                     .use_rustls_tls()
                     .build()
@@ -971,6 +1002,7 @@ pub fn run() {
             begin_first_run_init, 
             upload_document, 
             execute_query,
+            cancel_query,
             list_documents,
             delete_document,
             get_settings,

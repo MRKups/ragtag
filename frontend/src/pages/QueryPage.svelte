@@ -7,8 +7,10 @@
   import { queryState } from '$lib/stores/query.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import type { TokenEvent } from '$lib/types';
-
   async function handleQuery(text: string) {
+    if (queryState.currentRequestId) {
+      void api.cancelQuery(queryState.currentRequestId);
+    }
     queryState.cancel();
     const requestId = crypto.randomUUID();
     queryState.currentRequestId = requestId;
@@ -17,7 +19,7 @@
     queryState.isStreaming = true;
 
     try {
-      await api.executeQuery(text, (event: TokenEvent) => {
+      await api.executeQuery(text, requestId, (event: TokenEvent) => {
         if (queryState.currentRequestId !== requestId) return;
         if (event.type === 'token') {
           queryState.text += event.text;
@@ -42,6 +44,9 @@
   }
 
   function handleCancel() {
+    if (queryState.currentRequestId) {
+      void api.cancelQuery(queryState.currentRequestId);
+    }
     queryState.cancel();
   }
 
@@ -49,9 +54,7 @@
     queryState.selectedDocument = detail;
   }
 
-  onDestroy(() => {
-    queryState.cancel();
-  });
+  onDestroy(handleCancel);
 </script>
 
 <div class="page-container">

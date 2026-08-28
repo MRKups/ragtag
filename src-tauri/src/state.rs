@@ -3,6 +3,7 @@ use persistence::VectorDb;
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::mpsc::Sender;
+use std::collections::HashSet;
 use tokio::sync::RwLock;
 
 pub struct AppState {
@@ -13,4 +14,5 @@ pub struct AppState {
     pub local_llm: Arc<RwLock<Option<Arc<mistralrs::Model>>>>,
     pub http_client: reqwest::Client,
     pub document_operations: Arc<RwLock<()>>,
+    pub cancelled_queries: Arc<StdMutex<HashSet<String>>>,
 }

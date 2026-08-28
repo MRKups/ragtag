@@ -16,15 +16,18 @@ export const api = {
     });
   },
   
-  executeQuery: (query: string, onEvent: (e: TokenEvent) => void): Promise<void> => {
+  executeQuery: (query: string, requestId: string, onEvent: (e: TokenEvent) => void): Promise<void> => {
     const channel = new Channel<TokenEvent>();
     channel.onmessage = (event) => onEvent(event);
     
     return invoke<void>('execute_query', {
       query,
+      requestId,
       channel
     });
   },
+
+  cancelQuery: (requestId: string) => invoke<void>('cancel_query', { requestId }),
   
   listDocuments: () => invoke<Document[]>('list_documents'),
   
