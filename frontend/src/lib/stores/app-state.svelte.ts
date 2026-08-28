@@ -14,10 +14,19 @@ interface DownloadProgress {
   message?: string;
 }
 
+function formatBytes(bytes: number) {
+  const megabyte = 1024 * 1024;
+  const gigabyte = megabyte * 1024;
+
+  if (bytes >= gigabyte) return `${(bytes / gigabyte).toFixed(1)} GB`;
+  return `${(bytes / megabyte).toFixed(0)} MB`;
+}
+
 export class AppState {
   phase = $state<AppPhase>('starting');
   downloadMessage = $state('');
   downloadProgress = $state(0);
+  downloadIsIndeterminate = $state(true);
   errorMessage = $state('');
   embedderAvailable = $state(false);
   llmReady = $state(false);
@@ -44,12 +53,15 @@ export class AppState {
 
         if (p.type === 'error') {
           this.phase = 'error';
+          this.downloadIsIndeterminate = false;
           this.errorMessage = p.message || `Model download failed: ${p.model_id}`;
           return;
         }
 
         if (p.type === 'fetching_info') {
           if (this.phase !== 'error') this.phase = 'downloading_model';
+          this.downloadProgress = 0;
+          this.downloadIsIndeterminate = true;
           this.downloadMessage = `Fetching model info for ${p.model_id}...`;
           return;
         }
@@ -57,16 +69,23 @@ export class AppState {
         if (p.type === 'downloading') {
           if (this.phase !== 'error') this.phase = 'downloading_model';
           if (p.file_total > 0) {
-            this.downloadProgress = Math.round((p.file_downloaded / p.file_total) * 100);
+            this.downloadProgress = Math.min(100, Math.round((p.file_downloaded / p.file_total) * 100));
+            this.downloadIsIndeterminate = false;
+          } else {
+            this.downloadIsIndeterminate = true;
           }
-          const mb = (p.file_downloaded / (1024 * 1024)).toFixed(0);
-          this.downloadMessage = `Downloading ${p.current_file} (${mb} MB)`;
+          const transferred = formatBytes(p.file_downloaded);
+          const total = p.file_total > 0 ? ` of ${formatBytes(p.file_total)}` : '';
+          const percentage = p.file_total > 0 ? ` (${this.downloadProgress}%)` : '';
+          this.downloadMessage = `Downloading ${p.current_file} (${transferred}${total}${percentage})`;
           return;
         }
 
-        if (p.type === 'complete') {
+        if (p.type === 'complete' || p.type === 'loading_model') {
           if (this.phase !== 'error') this.phase = 'downloading_model';
-          this.downloadMessage = 'Download complete, loading model...';
+          this.downloadProgress = 100;
+          this.downloadIsIndeterminate = true;
+          this.downloadMessage = 'Download complete. Loading the local model...';
           return;
         }
       });

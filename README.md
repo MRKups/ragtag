@@ -14,7 +14,7 @@ Ragtag is configured for macOS development and Apple Silicon distribution. Befor
   ```
 
 - **Rust 1.98.0**, installed through [rustup](https://rustup.rs/). `rust-toolchain.toml` selects this version because the current LanceDB and SQLx releases require Rust 1.91 and 1.94 respectively.
-- **Xcode** and the Metal Toolchain. The macOS build enables `mistralrs` Metal support for local generation.
+- **Xcode Command Line Tools** for macOS builds. Apple Silicon builds use Metal for local generation; Intel development builds use CPU inference.
 - **Protocol Buffers** for LanceDB's generated protocol types:
 
   ```sh
@@ -33,7 +33,7 @@ Ragtag is configured for macOS development and Apple Silicon distribution. Befor
   brew install go-task
   ```
 
-Install the Metal Toolchain if Xcode does not already provide it:
+Install the Metal Toolchain for Apple Silicon development if Xcode does not already provide it:
 
 ```sh
 sudo xcodebuild -downloadComponent MetalToolchain
@@ -87,13 +87,13 @@ Deleting a document removes its derived vectors, registry entry, and stored copy
 
 ## Development
 
-### Full native app with live reload
+### Apple Silicon native app with live reload
 
 ```sh
 task dev
 ```
 
-Use this for normal Ragtag development. It runs `cargo tauri dev`, starts the Vite development server at `http://localhost:5173`, compiles the Rust workspace in debug mode, and opens the native Ragtag window.
+Use this for normal Apple Silicon development. It runs `cargo tauri dev`, starts the Vite development server at `http://localhost:5173`, compiles the Rust workspace in debug mode, and opens the native Ragtag window.
 
 Frontend Svelte, TypeScript, and CSS changes update through Vite hot-module reload. Rust, Tauri configuration, capability, model, and persistence changes require the native process to rebuild or restart. Stop the development stack with `Ctrl-C`.
 
@@ -110,18 +110,19 @@ cd "$ORT_ROOT"
 ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
   --cmake_extra_defines CMAKE_DISABLE_FIND_PACKAGE_Protobuf=TRUE
 
+```
+
 This CMake definition deliberately builds ONNX Runtime's pinned Protobuf source instead of mixing its bundled protoc 21.12 with Homebrew's newer Protobuf headers. It is required when `brew install protobuf` is present for LanceDB.
 
-For each Intel development shell, link the external dylib and launch Ragtag:
+Use the Intel tasks after the one-time runtime build:
 
 ```sh
-export ORT_LIB_LOCATION="$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0/build/MacOS/Release"
-export ORT_PREFER_DYNAMIC_LINK=1
-export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-task dev
+task dev-intel
+# Or compile the native debug application without launching it:
+task build-intel
+```
 
-`ORT_LIB_LOCATION` and `ORT_PREFER_DYNAMIC_LINK` make `ort-sys` link the external `libonnxruntime.dylib` before attempting its unsupported Intel binary download. The rpath and `DYLD_LIBRARY_PATH` apply only to the shell-launched development app. Confirm the link with `file "$ORT_LIB_LOCATION/libonnxruntime.dylib"` and `otool -L src-tauri/target/debug/mrk-ragtag-app`. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
+The tasks validate the external x86_64 dylib, set `ORT_LIB_LOCATION`, dynamic-linking, and runtime rpath environment variables, then launch or compile the application. The default path is `$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0`; set `RAGTAG_INTEL_ORT_ROOT` to use another external location. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
 
 The local LLM runs on CPU in Intel development builds; Metal remains enabled only for Apple Silicon. This is development-only and does not add Intel release support.
 

@@ -5,6 +5,7 @@ This document outlines the current layout of the application.
 ## Root Directory
 
 - `package.json`: NPM workspace / scripts for driving both Svelte and Tauri builds.
+- `Taskfile.yml`: Root development-task entry point. Defines normal Apple Silicon tasks plus `dev-intel` and `build-intel`, which validate and dynamically link the externally maintained Intel ONNX Runtime.
 - `opencode.jsonc`: Agent tooling configuration.
 - `docs/`: Architecture, specification documentation, and implementation tracker.
 - `frontend/`: Plain Svelte 5 SPA (no SvelteKit) built with Vite.
@@ -38,7 +39,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `query.svelte.ts` — exports `QueryState` class and `queryState` singleton.
     - `settings.svelte.ts` — exports `SettingsState` class and `settingsState` singleton.
   - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`.
-- `static/`: Static assets including `pdf.worker.mjs`.
+- `static/`: Static frontend assets.
 
 ## `src-tauri/` (Tauri App Shell)
 
@@ -57,8 +58,8 @@ The binary crate — entry point and thin command wrappers.
 
 - `main.rs`: Barebones entry point calling `mrk_ragtag_app::run()`.
 - `lib.rs`: Core setup logic. Initializes `SqlitePool` and `AppState` (db pool, job queue, embedder, vector db, local LLM) inside `tauri::async_runtime::block_on`. Uses an `AtomicBool` (`INIT_STARTED`) to guard against duplicate first-run initializations. Initializes the `fastembed` model (`EmbeddingGemma300M`) in `spawn_blocking` during startup, with cache dir at `$APPLOCALDATA/models`. Runs startup recovery (resets stale `embedding` → `queued`, re-queues `queued` docs) *after* the embedder successfully initializes. Spawns background LLM init task (reads `model_id`/`gguf_filename` from `app_settings` with hardcoded fallbacks, downloads model weights via `hf-hub` with progress events, builds `mistralrs::Model` using a pre-quantized GGUF, stores in `Arc<RwLock<Option<Arc<Model>>>>`). Spawns background worker task that consumes doc IDs from the MPSC channel, runs the full `rag_pipeline::process_document` (extract → chunk → embed → LanceDB write → SQLite status update), and emits `document_indexed` / `document_failed` Tauri events. Registers commands: `upload_document`, `execute_query`, `list_documents`, `delete_document`, `get_settings`, `set_setting`.
-- `state.rs`: Defines `AppState` — the Tauri managed state holding `SqlitePool`, a job queue `Sender<String>`, the `fastembed::TextEmbedding` model (wrapped in `Arc<std::sync::Mutex<TextEmbedding>>`), the LanceDB `VectorDb` connection (wrapped in `Arc`), and the `mistralrs::Model` (wrapped in `Arc<RwLock<Option<Arc<Model>>>>` for late initialization).
-- `model_download.rs`: `hf-hub` model download logic with resume support, stale file cleanup, and a 3-attempt retry loop. Emits Tauri progress events (`model_download_progress`) and implements the `hf_hub::api::tokio::Progress` trait on a `ProgressReporter` struct to stream per-file download progress to the frontend.
+- `state.rs`: Defines `AppState`, the Tauri managed state holding the SQLite pool, document-work queue, late-initialized embedder, vector database, local MistralRS model, and shared HTTP client.
+- `model_download.rs`: `hf-hub` 1.0 model-download logic with resume support and a 3-attempt retry loop. Emits byte-level `model_download_progress` lifecycle events through its synchronous `ProgressHandler`.
 
 ### `src-tauri/crates/` (Business Logic Workspace)
 

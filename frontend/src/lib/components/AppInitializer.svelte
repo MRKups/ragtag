@@ -27,11 +27,19 @@
         </div>
       {:else if appState.phase === 'downloading_model'}
         <div class="init-progress">
-          <div class="progress-bar-track">
-            <div 
-              class="progress-bar-fill" 
-              style="width: {appState.downloadProgress}%"
-            ></div>
+          <div
+            class="progress-bar-track"
+            role="progressbar"
+            aria-label="Model initialization progress"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow={appState.downloadIsIndeterminate ? undefined : appState.downloadProgress}
+          >
+            {#if appState.downloadIsIndeterminate}
+              <div class="progress-bar-fill indeterminate"></div>
+            {:else}
+              <div class="progress-bar-fill" style="width: {appState.downloadProgress}%"></div>
+            {/if}
           </div>
           <p class="progress-text">{appState.downloadMessage || 'Downloading model...'}</p>
         </div>
@@ -122,6 +130,16 @@
     background-color: #3b82f6;
     border-radius: 3px;
     transition: width 0.3s ease;
+  }
+
+  .progress-bar-fill.indeterminate {
+    width: 40%;
+    animation: indeterminate-progress 1.2s ease-in-out infinite;
+  }
+
+  @keyframes indeterminate-progress {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(350%); }
   }
 
   .progress-text {

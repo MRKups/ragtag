@@ -3,6 +3,10 @@ use hf_hub::progress::{DownloadEvent, ProgressEvent, ProgressHandler};
 use log::warn;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize, Debug)]
@@ -23,6 +27,7 @@ pub enum DownloadStage {
     FetchingInfo,
     Downloading,
     Complete,
+    LoadingModel,
     Error { message: String },
 }
 
@@ -31,6 +36,7 @@ struct ProgressReporter {
     app_handle: AppHandle,
     model_id: String,
     filename: String,
+    total_bytes: Arc<AtomicU64>,
 }
 
 impl ProgressHandler for ProgressReporter {
@@ -39,49 +45,62 @@ impl ProgressHandler for ProgressReporter {
             ProgressEvent::Download(DownloadEvent::Start {
                 total_files,
                 total_bytes,
-            }) => Some(ModelDownloadProgress {
-                model_id: self.model_id.clone(),
-                current_file: self.filename.clone(),
-                file_downloaded: 0,
-                file_total: *total_bytes,
-                files_completed: 0,
-                total_files: *total_files,
-                stage: DownloadStage::Downloading,
-            }),
+            }) => {
+                self.total_bytes.store(*total_bytes, Ordering::Relaxed);
+                Some(ModelDownloadProgress {
+                    model_id: self.model_id.clone(),
+                    current_file: self.filename.clone(),
+                    file_downloaded: 0,
+                    file_total: *total_bytes,
+                    files_completed: 0,
+                    total_files: *total_files,
+                    stage: DownloadStage::Downloading,
+                })
+            }
             ProgressEvent::Download(DownloadEvent::Progress { files }) => files
                 .iter()
                 .find(|file| file.filename == self.filename)
-                .map(|file| ModelDownloadProgress {
-                    model_id: self.model_id.clone(),
-                    current_file: file.filename.clone(),
-                    file_downloaded: file.bytes_completed,
-                    file_total: file.total_bytes,
-                    files_completed: 0,
-                    total_files: 1,
-                    stage: DownloadStage::Downloading,
+                .or_else(|| files.first())
+                .map(|file| {
+                    self.total_bytes.store(file.total_bytes, Ordering::Relaxed);
+                    ModelDownloadProgress {
+                        model_id: self.model_id.clone(),
+                        current_file: file.filename.clone(),
+                        file_downloaded: file.bytes_completed,
+                        file_total: file.total_bytes,
+                        files_completed: 0,
+                        total_files: 1,
+                        stage: DownloadStage::Downloading,
+                    }
                 }),
             ProgressEvent::Download(DownloadEvent::AggregateProgress {
                 bytes_completed,
                 total_bytes,
                 ..
-            }) => Some(ModelDownloadProgress {
-                model_id: self.model_id.clone(),
-                current_file: self.filename.clone(),
-                file_downloaded: *bytes_completed,
-                file_total: *total_bytes,
-                files_completed: 0,
-                total_files: 1,
-                stage: DownloadStage::Downloading,
-            }),
-            ProgressEvent::Download(DownloadEvent::Complete) => Some(ModelDownloadProgress {
-                model_id: self.model_id.clone(),
-                current_file: self.filename.clone(),
-                file_downloaded: 0,
-                file_total: 0,
-                files_completed: 1,
-                total_files: 1,
-                stage: DownloadStage::Complete,
-            }),
+            }) => {
+                self.total_bytes.store(*total_bytes, Ordering::Relaxed);
+                Some(ModelDownloadProgress {
+                    model_id: self.model_id.clone(),
+                    current_file: self.filename.clone(),
+                    file_downloaded: *bytes_completed,
+                    file_total: *total_bytes,
+                    files_completed: 0,
+                    total_files: 1,
+                    stage: DownloadStage::Downloading,
+                })
+            }
+            ProgressEvent::Download(DownloadEvent::Complete) => {
+                let total_bytes = self.total_bytes.load(Ordering::Relaxed);
+                Some(ModelDownloadProgress {
+                    model_id: self.model_id.clone(),
+                    current_file: self.filename.clone(),
+                    file_downloaded: total_bytes,
+                    file_total: total_bytes,
+                    files_completed: 1,
+                    total_files: 1,
+                    stage: DownloadStage::Complete,
+                })
+            }
             _ => None,
         };
 
@@ -129,6 +148,7 @@ pub async fn download_model(
             app_handle: app_handle.clone(),
             model_id: model_id.to_string(),
             filename: filename.to_string(),
+            total_bytes: Arc::new(AtomicU64::new(0)),
         };
 
         match repo
