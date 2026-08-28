@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
-  import { Cpu, Database, Link, Key, BrainCircuit } from 'lucide-svelte';
+  import { Cpu, Database, Link, Key, BrainCircuit } from '@lucide/svelte';
   import Toggle from './Toggle.svelte';
 
 const modes = [

@@ -3,6 +3,9 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
+	"engines": {
+		"node": ">=24 <25"
+	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
@@ -11,17 +14,17 @@
 		"check:watch": "svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {
-		"@sveltejs/vite-plugin-svelte": "^7.0.0",
-		"svelte": "^5.55.2",
-		"svelte-check": "^4.4.6",
-		"typescript": "^6.0.2",
-		"vite": "^8.0.7"
+		"@sveltejs/vite-plugin-svelte": "^7.3.0",
+		"svelte": "^5.56.10",
+		"svelte-check": "^4.7.6",
+		"typescript": "^6.0.3",
+		"vite": "^8.2.2"
 	},
 	"dependencies": {
-		"@tauri-apps/api": "^2.11.0",
-		"dompurify": "^3.4.7",
-		"lucide-svelte": "^1.0.1",
-		"marked": "^18.0.4",
-		"pdfjs-dist": "^5.7.284"
+		"@lucide/svelte": "^1.35.0",
+		"@tauri-apps/api": "^2.11.1",
+		"dompurify": "^3.4.14",
+		"marked": "^18.0.11",
+		"pdfjs-dist": "^6.2.108"
 	}
 }

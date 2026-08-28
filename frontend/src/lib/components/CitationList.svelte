@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FileText, BookOpen } from 'lucide-svelte';
+  import { FileText, BookOpen } from '@lucide/svelte';
   import type { Citation } from '$lib/types';
   import ConfidenceBadge from './ConfidenceBadge.svelte';
 

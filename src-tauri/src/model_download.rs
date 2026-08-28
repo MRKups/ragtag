@@ -1,8 +1,9 @@
 use domain::AppError;
+use hf_hub::progress::{DownloadEvent, ProgressEvent, ProgressHandler};
+use log::warn;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
-use log::warn;
 
 #[derive(Clone, Serialize, Debug)]
 pub struct ModelDownloadProgress {
@@ -30,61 +31,62 @@ struct ProgressReporter {
     app_handle: AppHandle,
     model_id: String,
     filename: String,
-    file_total: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-impl hf_hub::api::tokio::Progress for ProgressReporter {
-    async fn init(&mut self, size: usize, _filename: &str) {
-        let total = size as u64;
-        self.file_total.store(total, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.app_handle.emit("model_download_progress", ModelDownloadProgress {
-            model_id: self.model_id.clone(),
-            current_file: self.filename.clone(),
-            file_downloaded: 0,
-            file_total: total,
-            files_completed: 0,
-            total_files: 1,
-            stage: DownloadStage::Downloading,
-        });
-    }
+impl ProgressHandler for ProgressReporter {
+    fn on_progress(&self, event: &ProgressEvent) {
+        let progress = match event {
+            ProgressEvent::Download(DownloadEvent::Start {
+                total_files,
+                total_bytes,
+            }) => Some(ModelDownloadProgress {
+                model_id: self.model_id.clone(),
+                current_file: self.filename.clone(),
+                file_downloaded: 0,
+                file_total: *total_bytes,
+                files_completed: 0,
+                total_files: *total_files,
+                stage: DownloadStage::Downloading,
+            }),
+            ProgressEvent::Download(DownloadEvent::Progress { files }) => files
+                .iter()
+                .find(|file| file.filename == self.filename)
+                .map(|file| ModelDownloadProgress {
+                    model_id: self.model_id.clone(),
+                    current_file: file.filename.clone(),
+                    file_downloaded: file.bytes_completed,
+                    file_total: file.total_bytes,
+                    files_completed: 0,
+                    total_files: 1,
+                    stage: DownloadStage::Downloading,
+                }),
+            ProgressEvent::Download(DownloadEvent::AggregateProgress {
+                bytes_completed,
+                total_bytes,
+                ..
+            }) => Some(ModelDownloadProgress {
+                model_id: self.model_id.clone(),
+                current_file: self.filename.clone(),
+                file_downloaded: *bytes_completed,
+                file_total: *total_bytes,
+                files_completed: 0,
+                total_files: 1,
+                stage: DownloadStage::Downloading,
+            }),
+            ProgressEvent::Download(DownloadEvent::Complete) => Some(ModelDownloadProgress {
+                model_id: self.model_id.clone(),
+                current_file: self.filename.clone(),
+                file_downloaded: 0,
+                file_total: 0,
+                files_completed: 1,
+                total_files: 1,
+                stage: DownloadStage::Complete,
+            }),
+            _ => None,
+        };
 
-    async fn update(&mut self, size: usize) {
-        let total = self.file_total.load(std::sync::atomic::Ordering::Relaxed);
-        let _ = self.app_handle.emit("model_download_progress", ModelDownloadProgress {
-            model_id: self.model_id.clone(),
-            current_file: self.filename.clone(),
-            file_downloaded: size as u64,
-            file_total: total,
-            files_completed: 0,
-            total_files: 1,
-            stage: DownloadStage::Downloading,
-        });
-    }
-
-    async fn finish(&mut self) {
-        let _ = self.app_handle.emit("model_download_progress", ModelDownloadProgress {
-            model_id: self.model_id.clone(),
-            current_file: String::new(),
-            file_downloaded: 0,
-            file_total: 0,
-            files_completed: 1,
-            total_files: 1,
-            stage: DownloadStage::Complete,
-        });
-    }
-}
-
-fn clean_stale_cache_files(cache_dir: &std::path::Path, model_id: &str) {
-    // hf-hub folder naming: models--org--repo_name
-    let repo_folder = format!("models--{}", model_id.replace('/', "--"));
-    let blobs_dir = cache_dir.join(&repo_folder).join("blobs");
-    if let Ok(entries) = std::fs::read_dir(&blobs_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str());
-            if matches!(ext, Some("sync.part" | "part" | "lock")) {
-                let _ = std::fs::remove_file(&path);
-            }
+        if let Some(progress) = progress {
+            let _ = self.app_handle.emit("model_download_progress", progress);
         }
     }
 }
@@ -97,45 +99,25 @@ pub async fn download_model(
 ) -> Result<PathBuf, AppError> {
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    let _ = tokio::task::spawn_blocking({
-        let cache_dir = cache_dir.to_path_buf();
-        let model_id = model_id.to_string();
-        move || clean_stale_cache_files(&cache_dir, &model_id)
-    })
-    .await;
+    let client = hf_hub::HFClient::builder()
+        .cache_dir(cache_dir)
+        .build()
+        .map_err(|e| AppError::Internal(format!("hf-hub client init: {e}")))?;
+    let (owner, name) = hf_hub::split_id(model_id);
+    let repo = client.model(owner, name);
 
-    // Fast path: check if the file is already cached
-    let cache = hf_hub::Cache::new(cache_dir.to_path_buf());
-    let repo_cache = cache.repo(hf_hub::Repo::model(model_id.to_string()));
-    if let Some(path) = repo_cache.get(filename) {
-        let _ = app_handle.emit("model_download_progress", ModelDownloadProgress {
+    let _ = app_handle.emit(
+        "model_download_progress",
+        ModelDownloadProgress {
             model_id: model_id.to_string(),
-            current_file: filename.to_string(),
+            current_file: String::new(),
             file_downloaded: 0,
             file_total: 0,
-            files_completed: 1,
+            files_completed: 0,
             total_files: 1,
-            stage: DownloadStage::Complete,
-        });
-        return Ok(path);
-    }
-
-    let api = hf_hub::api::tokio::ApiBuilder::new()
-        .with_cache_dir(cache_dir.to_path_buf())
-        .build()
-        .map_err(|e| AppError::Internal(format!("hf-hub api init: {e}")))?;
-
-    let repo = api.model(model_id.to_string());
-
-    let _ = app_handle.emit("model_download_progress", ModelDownloadProgress {
-        model_id: model_id.to_string(),
-        current_file: String::new(),
-        file_downloaded: 0,
-        file_total: 0,
-        files_completed: 0,
-        total_files: 1,
-        stage: DownloadStage::FetchingInfo,
-    });
+            stage: DownloadStage::FetchingInfo,
+        },
+    );
 
     let mut attempts = 0u32;
     let max_attempts = 3u32;
@@ -147,19 +129,18 @@ pub async fn download_model(
             app_handle: app_handle.clone(),
             model_id: model_id.to_string(),
             filename: filename.to_string(),
-            file_total: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
-        match repo.download_with_progress(filename, reporter).await {
-            Ok(p) => break p,
+        match repo
+            .download_file()
+            .filename(filename)
+            .progress(reporter)
+            .send()
+            .await
+        {
+            Ok(path) => break path,
             Err(e) if attempts < max_attempts => {
-                warn!("download attempt {attempts}/{max_attempts} failed — cleaning stale files and retrying ({e})");
-                let _ = tokio::task::spawn_blocking({
-                    let cache_dir = cache_dir.to_path_buf();
-                    let model_id = model_id.to_string();
-                    move || clean_stale_cache_files(&cache_dir, &model_id)
-                })
-                .await;
+                warn!("download attempt {attempts}/{max_attempts} failed — retrying ({e})");
             }
             Err(e) => {
                 return Err(AppError::Internal(format!(

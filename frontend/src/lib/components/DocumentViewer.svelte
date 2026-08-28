@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FileText } from 'lucide-svelte';
+  import { FileText } from '@lucide/svelte';
   import { convertFileSrc } from '@tauri-apps/api/core';
   import PdfViewer from './PdfViewer.svelte';
 

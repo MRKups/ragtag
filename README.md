@@ -4,15 +4,27 @@ Ragtag is a local-first desktop RAG application for querying user-provided PDFs 
 
 ## Prerequisites
 
-Ragtag is configured for macOS development and distribution. Before the first native build, install:
+Ragtag is configured for macOS development and Apple Silicon distribution. Before the first native build, install:
 
-- **Node.js 20+** and npm.
-- **Rust 2024 edition**, installed through [rustup](https://rustup.rs/).
-- **Xcode** and the Metal Toolchain. The macOS build enables `mistralrs` Metal support for local generation.
-- **Tauri CLI v2**:
+- **Node.js 24.20.0 LTS** and npm. The repository root `.nvmrc` and package `engines` range enforce Node 24:
 
   ```sh
-  cargo install tauri-cli --version "^2"
+  nvm install
+  nvm use
+  ```
+
+- **Rust 1.98.0**, installed through [rustup](https://rustup.rs/). `rust-toolchain.toml` selects this version because the current LanceDB and SQLx releases require Rust 1.91 and 1.94 respectively.
+- **Xcode** and the Metal Toolchain. The macOS build enables `mistralrs` Metal support for local generation.
+- **Protocol Buffers** for LanceDB's generated protocol types:
+
+  ```sh
+  brew install protobuf
+  ```
+
+- **Tauri CLI 2.11.4**:
+
+  ```sh
+  cargo install tauri-cli --version 2.11.4 --locked
   ```
 
 - **go-task** for the repository build tasks:
@@ -34,6 +46,8 @@ node --version
 npm --version
 rustc --version
 cargo --version
+protoc --version
+cargo tauri --version
 task --version
 xcrun metal --version
 ```
@@ -82,6 +96,36 @@ task dev
 Use this for normal Ragtag development. It runs `cargo tauri dev`, starts the Vite development server at `http://localhost:5173`, compiles the Rust workspace in debug mode, and opens the native Ragtag window.
 
 Frontend Svelte, TypeScript, and CSS changes update through Vite hot-module reload. Rust, Tauri configuration, capability, model, and persistence changes require the native process to rebuild or restart. Stop the development stack with `Ctrl-C`.
+
+### Intel macOS development only
+
+Ragtag releases support Apple Silicon only. An Intel Mac may still compile and run the development build by linking the current FastEmbed/ORT stack against an **external**, x86_64 ONNX Runtime 1.28.0 shared library. Do not add this dylib, its build output, environment variables, entitlements, or an Intel target to the repository or release bundle.
+
+The current ONNX Runtime release does not provide a prebuilt Intel macOS archive. Build the matching runtime outside the checkout once:
+
+```sh
+ORT_ROOT="$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0"
+git clone --depth 1 --branch v1.28.0 https://github.com/microsoft/onnxruntime.git "$ORT_ROOT"
+cd "$ORT_ROOT"
+./build.sh --config Release --build_shared_lib --parallel --skip_tests \
+  --cmake_extra_defines \
+  CMAKE_DISABLE_FIND_PACKAGE_Protobuf=TRUE \
+  CMAKE_DISABLE_FIND_PACKAGE_protobuf=TRUE
+```
+
+The two CMake definitions deliberately build ONNX Runtime's pinned Protobuf source instead of mixing its bundled protoc 21.12 with Homebrew's newer Protobuf headers. They are required when `brew install protobuf` is present for LanceDB.
+
+For each Intel development shell, link the external dylib and launch Ragtag:
+
+```sh
+export ORT_LIB_LOCATION="$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0/build/MacOS/Release"
+export ORT_PREFER_DYNAMIC_LINK=1
+export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
+MISTRALRS_METAL_PRECOMPILE=0 task dev
+```
+
+`ORT_LIB_LOCATION` and `ORT_PREFER_DYNAMIC_LINK` make `ort-sys` link the external `libonnxruntime.dylib` before attempting its unsupported Intel binary download. The rpath and `DYLD_LIBRARY_PATH` apply only to the shell-launched development app. Confirm the link with `file "$ORT_LIB_LOCATION/libonnxruntime.dylib"` and `otool -L src-tauri/target/debug/mrk-ragtag-app`. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
 
 ### Frontend only
 

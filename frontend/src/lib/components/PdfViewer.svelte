@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { pdfjsLib } from '$lib/pdf-init';
-  import type { PDFDocumentProxy } from 'pdfjs-dist';
+  import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
   import PdfPage from './PdfPage.svelte';
   import 'pdfjs-dist/web/pdf_viewer.css';
 
@@ -18,6 +18,7 @@
   }>();
 
   let pdfDoc: PDFDocumentProxy | null = $state(null);
+  let loadingTask: PDFDocumentLoadingTask | null = $state(null);
   let pageNum = $state(1);
   let scale = $state(1.0);
   let totalPages = $state(0);
@@ -64,13 +65,19 @@
 
   async function loadDocument(docUrl: string) {
     const myLoadId = ++loadId;
+    void loadingTask?.destroy();
     loading = true;
     error = null;
+    const task = pdfjsLib.getDocument({ url: docUrl, withCredentials: false });
+    loadingTask = task;
     try {
-      const loadingTask = pdfjsLib.getDocument({ url: docUrl, withCredentials: false });
-      pdfDoc = await loadingTask.promise;
-      if (myLoadId !== loadId) return;
-      totalPages = pdfDoc.numPages;
+      const document = await task.promise;
+      if (myLoadId !== loadId) {
+        await task.destroy();
+        return;
+      }
+      pdfDoc = document;
+      totalPages = document.numPages;
       pageNum = (page && page <= totalPages) ? page : 1;
       loading = false;
       await tick();
@@ -102,7 +109,8 @@
   }
 
   onDestroy(() => {
-    pdfDoc?.destroy();
+    ++loadId;
+    void loadingTask?.destroy();
   });
 </script>
 

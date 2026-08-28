@@ -5,11 +5,10 @@ edition = "2024"
 
 [dependencies]
 domain = { path = "../domain" }
-sqlx = { version = "=0.8.6", features = ["sqlite", "runtime-tokio", "migrate"] }
-tokio = { version = "1", features = ["full"] }
-lancedb = "=0.26.2"
-arrow-array = "57.2"
-arrow-schema = "57.2"
-futures = "0.3.32"
-lance-index = "=2.0.0"
-log = "0.4"
+sqlx = { version = "=0.9.0", features = ["sqlite", "runtime-tokio", "migrate"] }
+tokio = { version = "1.53.1", features = ["full"] }
+lancedb = "=0.37.1"
+arrow-array = "=58.4.0"
+arrow-schema = "=58.4.0"
+futures = "0.3.34"
+log = "0.4.34"

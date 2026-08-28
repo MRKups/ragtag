@@ -347,7 +347,7 @@ async fn execute_query(
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
 
         let api_key = tokio::task::spawn_blocking(|| {
-            keyring::Entry::new("ragtag", "external_api_key")
+            keyring::v1::Entry::new("ragtag", "external_api_key")
                 .ok()
                 .and_then(|e| e.get_password().ok())
         })
@@ -538,7 +538,7 @@ async fn set_setting(
 #[tauri::command]
 async fn set_api_key(key: String) -> Result<bool, AppError> {
     tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new("ragtag", "external_api_key")
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
         entry.set_password(&key)
             .map_err(|e| AppError::Internal(format!("keyring set: {e}")))?;
@@ -551,7 +551,7 @@ async fn set_api_key(key: String) -> Result<bool, AppError> {
 #[tauri::command]
 async fn has_api_key() -> Result<bool, AppError> {
     tokio::task::spawn_blocking(|| {
-        match keyring::Entry::new("ragtag", "external_api_key") {
+        match keyring::v1::Entry::new("ragtag", "external_api_key") {
             Ok(entry) => match entry.get_password() {
                 Ok(pwd) => Ok(!pwd.is_empty()),
                 Err(_) => Ok(false),
@@ -566,7 +566,7 @@ async fn has_api_key() -> Result<bool, AppError> {
 #[tauri::command]
 async fn delete_api_key() -> Result<bool, AppError> {
     tokio::task::spawn_blocking(|| {
-        let entry = keyring::Entry::new("ragtag", "external_api_key")
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
         entry.delete_credential()
             .map_err(|e| AppError::Internal(format!("keyring delete: {e}")))?;

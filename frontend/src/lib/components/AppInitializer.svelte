@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LoaderCircle } from 'lucide-svelte';
+  import { LoaderCircle } from '@lucide/svelte';
   import { appState } from '$lib/stores/app-state.svelte';
 
   let { children } = $props();

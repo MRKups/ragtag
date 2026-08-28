@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
-  import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from 'lucide-svelte';
+  import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { Document, IngestionProgressEvent } from '$lib/types';
 

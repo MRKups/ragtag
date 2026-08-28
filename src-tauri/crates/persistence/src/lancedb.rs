@@ -139,7 +139,7 @@ impl VectorDb {
         let table = self.get_or_create_table().await?;
 
         let query_vector_f32: Vec<f32> = query_vector.to_vec();
-        let fts_query = lance_index::scalar::FullTextSearchQuery::new(query_text.to_string());
+        let fts_query = lancedb::index::scalar::FullTextSearchQuery::new(query_text.to_string());
 
         static FTS_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 

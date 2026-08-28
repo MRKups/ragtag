@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Upload, FileText, CheckCircle, AlertCircle, X } from 'lucide-svelte';
+  import { Upload, FileText, CheckCircle, AlertCircle, X } from '@lucide/svelte';
   import { api } from '$lib/api';
 
   let { onUploadComplete }: { onUploadComplete?: () => void } = $props();

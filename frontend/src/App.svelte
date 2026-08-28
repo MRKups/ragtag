@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from 'lucide-svelte';
+  import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from '@lucide/svelte';
   import { settingsState } from '$lib/stores/settings.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import AppInitializer from '$lib/components/AppInitializer.svelte';

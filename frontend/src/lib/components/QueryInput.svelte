@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Send, Loader2, Square } from 'lucide-svelte';
+  import { Send, Loader2, Square } from '@lucide/svelte';
 
   let {
     isLoading = false,
