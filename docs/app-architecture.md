@@ -35,7 +35,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 ### SQLite & Embedded Vectors
 - SQLite stores document metadata such as filename, status, chunk count, timestamps, and persisted processing errors.
 - Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server.
-- **Indexes and Fallbacks:** After an upsert, LanceDB creates/replaces the FTS index and attempts the vector index; vector-index creation may be deferred until enough data exists. If hybrid FTS/dense search fails, the backend logs a one-time warning and falls back to vector-only search.
+- **Indexes and Fallbacks:** After an upsert, LanceDB creates/replaces the FTS index, attempts the vector index, and waits for created indexes before SQLite marks the document indexed. If hybrid FTS/dense search fails, the backend falls back to vector-only search and sends a request-scoped warning to the query UI.
 
 ## 3. Data Flows
 
@@ -57,7 +57,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 1. User types a query in the UI.
 2. Svelte calls `invoke('execute_query', { text: "..." })`.
 3. Rust generates the query embedding locally via `fastembed` (with `"query: "` prefix).
-4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search). If the FTS path fails, it logs a warning and falls back to vector-only search.
+4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search). If the FTS path fails, it falls back to vector-only search and streams a visible request-scoped warning before the answer.
 5. Rust retrieves associated document metadata from SQLite.
 6. Rust builds the chat messages and either calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model or POSTs to the configured OpenAI-compatible endpoint via `reqwest`, including the selected external model.
 7. Rust parses the citations and streams the response to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.

@@ -51,7 +51,7 @@ This document explains the core design and technology choices for the applicatio
 **Rationale:**
 - **Standalone Executable:** LanceDB runs natively inside the compiled Rust binary, requiring no external services or dependencies like Docker.
 - **Replacement & Recovery:** Reindexing deletes a document's prior chunks and then merge-inserts replacements using `(document_id, page, chunk_index)` identity. SQLite is marked `indexed` only after the vector write succeeds, preventing indexed rows without vectors. A failure after deletion leaves the document failed and dependent on retry; this is deliberate recovery work, not a transactional cross-store update.
-- **Hybrid Search:** LanceDB combines full-text and dense vector search. If the FTS path is unavailable, the backend falls back to dense vector search and logs a warning.
+- **Hybrid Search:** LanceDB combines full-text and dense vector search. Index creation is awaited before a document is marked indexed. If the FTS path is unavailable at query time, the backend falls back to dense vector search and streams a visible request-scoped warning.
 
 We explicitly rejected **Chroma** for this role: it requires a Python runtime and a daemon process, directly contradicting the single-executable design tenet.
 
