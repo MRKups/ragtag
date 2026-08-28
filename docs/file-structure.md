@@ -73,7 +73,7 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 - `src/lib.rs`: Re-exports all public types.
 - `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, error tracking) and `DocumentStatus` enum (`Queued | Embedding | Indexed | Failed`).
 - `src/error.rs`: `AppError` enum with variants `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`. Includes manual `Serialize` impl for Tauri IPC (structured `{ kind, message }`). `From<std::io::Error>` impl for `?` convenience.
-- `src/events.rs`: `TokenEvent` enum (`Token | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels.
+- `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels.
 
 #### `crates/persistence/` — Data Layer
 

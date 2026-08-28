@@ -101,6 +101,7 @@ These types define the shape of data sent from Rust to the frontend, specificall
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEvent {
     Token   { text: String },
+    Warning { message: String },
     Done    { citations: Vec<Citation> },
     Error   { message: String, citations: Vec<Citation> },
 }
@@ -116,4 +117,4 @@ pub struct Citation {
 }
 
 ```
-`TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—for example retrieval failures or an external request/status error—reject the `execute_query` IPC command instead.
+`TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—for example retrieval failures or an external request/status error—reject the `execute_query` IPC command instead.
