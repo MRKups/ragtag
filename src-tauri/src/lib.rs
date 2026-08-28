@@ -495,9 +495,13 @@ async fn execute_query(
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let line = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
+            while let Some((pos, delimiter_len)) = buffer
+                .find("\r\n\r\n")
+                .map(|pos| (pos, 4))
+                .or_else(|| buffer.find("\n\n").map(|pos| (pos, 2)))
+            {
+                let line = buffer[..pos].trim_end_matches('\r').to_string();
+                buffer = buffer[pos + delimiter_len..].to_string();
 
                 if line.starts_with("data: ") {
                     let data = &line[6..];
@@ -554,12 +558,16 @@ async fn execute_query(
                             let _ = channel.send(TokenEvent::Done { citations });
                             return Ok(());
                         }
-                        Some(mistralrs::Response::ModelError(msg, _)) => {
-                            let _ = channel.send(TokenEvent::Error { message: msg, citations });
+                        Some(mistralrs::Response::ModelError(message, _)) => {
+                            let _ = channel.send(TokenEvent::Error { message, citations });
                             return Ok(());
                         }
-                        None => {
-                            let _ = channel.send(TokenEvent::Done { citations });
+                        Some(mistralrs::Response::InternalError(error))
+                        | Some(mistralrs::Response::ValidationError(error)) => {
+                            let _ = channel.send(TokenEvent::Error {
+                                message: error.to_string(),
+                                citations,
+                            });
                             return Ok(());
                         }
                         _ => {}
