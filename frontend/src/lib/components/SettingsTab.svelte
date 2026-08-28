@@ -223,6 +223,20 @@ let apiKeyValue = $state('');
               <p class="help-text">GGUF models are pre-quantized — ISQ does not apply in local mode.</p>
             </div>
             <div class="setting-field">
+              <label for="tokenizer_model">
+                <BrainCircuit size={14} class="field-label-icon" />
+                Tokenizer model
+              </label>
+              <input
+                id="tokenizer_model"
+                type="text"
+                placeholder="Qwen/Qwen3-1.7B"
+                bind:value={settingsState.tokenizer_model}
+                onblur={() => { const v = settingsState.tokenizer_model.trim(); if (v) updateSetting('tokenizer_model', v); }}
+              />
+              <p class="help-text">Hugging Face tokenizer repository compatible with the local GGUF model. Restart to apply changes.</p>
+            </div>
+            <div class="setting-field">
               <label for="gguf_filename">GGUF filename</label>
               <input
                 id="gguf_filename"

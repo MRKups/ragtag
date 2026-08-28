@@ -5,6 +5,7 @@ export class SettingsState {
   external_base_url = $state('');
   external_model = $state('gpt-4o-mini');
   generation_model = $state('');
+  tokenizer_model = $state('Qwen/Qwen3-1.7B');
   gguf_filename = $state('Qwen3-1.7B-Q4_K_M.gguf');
   use_query_enhancement = $state(true);
   chunk_size = $state(512);
@@ -22,6 +23,7 @@ export class SettingsState {
       if (settings.external_base_url) this.external_base_url = settings.external_base_url;
       if (settings.external_model) this.external_model = settings.external_model;
       if (settings.generation_model) this.generation_model = settings.generation_model;
+      if (settings.tokenizer_model) this.tokenizer_model = settings.tokenizer_model;
       if (settings.gguf_filename) this.gguf_filename = settings.gguf_filename;
       if (settings.use_query_enhancement) this.use_query_enhancement = settings.use_query_enhancement === 'true';
       if (settings.chunk_size) this.chunk_size = parseInt(settings.chunk_size, 10);
@@ -44,6 +46,7 @@ export class SettingsState {
       if (key === 'external_base_url') this.external_base_url = value;
       if (key === 'external_model') this.external_model = value;
       if (key === 'generation_model') this.generation_model = value;
+      if (key === 'tokenizer_model') this.tokenizer_model = value;
       if (key === 'gguf_filename') this.gguf_filename = value;
       if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);
       if (key === 'chunk_overlap') this.chunk_overlap = parseInt(value, 10);

@@ -17,6 +17,8 @@ static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_EXTERNAL_MODEL: &str = "gpt-4o-mini";
+const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
+
 
 
 const EXTRACTION_VERSION: &str = "page-aware-v1";
@@ -39,6 +41,15 @@ fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
     Ok(())
 }
 
+fn is_valid_hugging_face_model_id(value: &str) -> bool {
+    value.split_once('/').is_some_and(|(organization, model)| {
+        !organization.is_empty()
+            && !model.is_empty()
+            && !model.contains('/')
+            && !value.contains(char::is_whitespace)
+    })
+}
+
 fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     match key {
         "inference_mode" if matches!(value, "local" | "external") => Ok(()),
@@ -51,6 +62,7 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
         "external_model" if !value.trim().is_empty() => Ok(()),
 
         "generation_model" if value.split('/').count() == 2 && !value.contains(char::is_whitespace) => Ok(()),
+        "tokenizer_model" if is_valid_hugging_face_model_id(value) => Ok(()),
         "gguf_filename" if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") => Ok(()),
         _ => Err(AppError::InvalidInput(format!("Unsupported or invalid setting: {key}"))),
     }
@@ -191,6 +203,11 @@ async fn begin_first_run_init(
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
 
+        let tokenizer_model = app_settings.get("tokenizer_model").await
+            .unwrap_or_default()
+            .filter(|model| is_valid_hugging_face_model_id(model))
+            .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
+
         let gguf_filename = app_settings.get("gguf_filename").await
             .unwrap_or_default()
             .filter(|s| !s.is_empty())
@@ -259,7 +276,7 @@ async fn begin_first_run_init(
             parent_dir.to_string_lossy().to_string(),
             vec![gguf_filename.to_string()],
         )
-        .with_tok_model_id("Qwen/Qwen3-1.7B");
+        .with_tok_model_id(tokenizer_model);
 
         match builder.build().await {
             Ok(model) => {
@@ -665,7 +682,8 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<Strin
     let mut settings = HashMap::new();
     let keys = vec![
         "inference_mode", "external_base_url", "external_model", "generation_model",
-        "gguf_filename", "use_query_enhancement", "chunk_size", "chunk_overlap"
+        "tokenizer_model", "gguf_filename", "use_query_enhancement", "chunk_size",
+        "chunk_overlap"
     ];
 
     
@@ -1048,5 +1066,13 @@ mod tests {
         assert!(validate_setting("external_model", "gpt-4o-mini").is_ok());
         assert!(validate_setting("external_model", "").is_err());
         assert!(validate_setting("external_model", "   ").is_err());
+    }
+
+    #[test]
+    fn validates_tokenizer_model() {
+        assert!(validate_setting("tokenizer_model", "Qwen/Qwen3-1.7B").is_ok());
+        for invalid in ["", "Qwen", "Qwen/", "/Qwen3-1.7B", "Qwen/Qwen3/1.7B", "Qwen /Qwen3-1.7B"] {
+            assert!(validate_setting("tokenizer_model", invalid).is_err());
+        }
     }
 }
