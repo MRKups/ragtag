@@ -797,7 +797,6 @@ async fn set_setting(
     repo.set(&key, &value).await?;
     if key == "inference_mode" {
         if value == "external" {
-            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
             let _ = app.emit("llm_ready", ());
         } else {
             let _ = app.emit("llm_unready", ());
