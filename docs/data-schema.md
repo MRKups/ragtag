@@ -90,7 +90,7 @@ Example keys:
 
 `chunk_size` and `chunk_overlap` are validated together when a setting changes, but changing either setting does not itself requeue already indexed documents. They are character estimates (four characters per estimated token), not exact tokenizer settings.
 
-The Settings UI keeps local and external configuration independent. Its Local model and Remote provider cards both persist the default route through `inference_mode`; each card opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
+The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
 
 *Note:* Sensitive data like the `external_api_key` for BYO inference must **never** be stored in SQLite. Instead, it is managed securely in the OS keychain using the `keyring` crate.
 

@@ -71,6 +71,22 @@
     }
   }
 
+  function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfig) {
+    let nextMode: InferenceConfig | null = null;
+
+    if (event.key === 'Home') nextMode = 'local';
+    else if (event.key === 'End') nextMode = 'external';
+    else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+      nextMode = mode === 'local' ? 'external' : 'local';
+    }
+
+    if (!nextMode) return;
+
+    event.preventDefault();
+    void setDefaultInference(nextMode);
+    document.querySelector<HTMLButtonElement>(`[data-inference-mode="${nextMode}"]`)?.focus();
+  }
+
   async function saveApiKey() {
     if (!apiKeyValue.trim()) return;
     try {
@@ -157,30 +173,43 @@
       {/if}
 
       <section class="setting-group" aria-labelledby="inference-heading">
-        <div class="section-heading">
+        <div class="section-heading inference-heading">
           <div class="section-icon"><Cpu size={18} /></div>
-          <div>
-            <h3 id="inference-heading">Inference configuration</h3>
-            <p>Select the default source for new queries, then configure each source independently.</p>
+          <div class="inference-heading-content">
+            <div>
+              <h3 id="inference-heading">Inference configuration</h3>
+              <p>Select and configure each source independently.</p>
+            </div>
+            <div class="inference-status" role="status">
+              <span class="inference-status-label">Active inference</span>
+              <strong>
+                {#if settingsState.inference_mode === 'local'}
+                  <HardDrive size={14} aria-hidden="true" /> Local model
+                {:else}
+                  <Cloud size={14} aria-hidden="true" /> Remote provider
+                {/if}
+              </strong>
+            </div>
           </div>
         </div>
 
-        <div class="inference-picker" aria-label="Inference configurations">
+        <div class="inference-picker" role="radiogroup" aria-labelledby="inference-heading">
           <article class="inference-card" class:active={settingsState.inference_mode === 'local'}>
             <button
               type="button"
               class="inference-card-select"
-              aria-pressed={settingsState.inference_mode === 'local'}
+              role="radio"
+              aria-checked={settingsState.inference_mode === 'local'}
+              tabindex={settingsState.inference_mode === 'local' ? 0 : -1}
+              data-inference-mode="local"
               onclick={() => setDefaultInference('local')}
+              onkeydown={(event) => handleInferenceSelectionKeydown(event, 'local')}
             >
               <div class="inference-card-icon"><HardDrive size={18} /></div>
               <div class="inference-card-copy">
                 <span>Local model</span>
                 <small>On this device</small>
               </div>
-              {#if settingsState.inference_mode === 'local'}
-                <span class="default-badge">Default</span>
-              {/if}
             </button>
             <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'local')}>
               Configure
@@ -191,17 +220,18 @@
             <button
               type="button"
               class="inference-card-select"
-              aria-pressed={settingsState.inference_mode === 'external'}
+              role="radio"
+              aria-checked={settingsState.inference_mode === 'external'}
+              tabindex={settingsState.inference_mode === 'external' ? 0 : -1}
+              data-inference-mode="external"
               onclick={() => setDefaultInference('external')}
+              onkeydown={(event) => handleInferenceSelectionKeydown(event, 'external')}
             >
               <div class="inference-card-icon"><Cloud size={18} /></div>
               <div class="inference-card-copy">
                 <span>Remote provider</span>
                 <small>OpenAI-compatible endpoint</small>
               </div>
-              {#if settingsState.inference_mode === 'external'}
-                <span class="default-badge">Default</span>
-              {/if}
             </button>
             <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'external')}>
               Configure
@@ -617,6 +647,47 @@
     line-height: 1.45;
   }
 
+  .inference-heading {
+    align-items: center;
+  }
+
+  .inference-heading-content {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+    gap: 1rem;
+  }
+
+  .inference-status {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.625rem;
+    background: var(--page-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .inference-status-label {
+    color: var(--text-subtle);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .inference-status strong {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: var(--primary-ring);
+    font-size: 0.8125rem;
+    font-weight: 650;
+  }
+
   .pipeline-fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -717,19 +788,6 @@
     white-space: nowrap;
   }
 
-  .default-badge {
-    flex: 0 0 auto;
-    margin-left: auto;
-    padding: 0.25rem 0.375rem;
-    color: var(--primary-ring);
-    font-size: 0.625rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    background: var(--primary-soft);
-    border: 1px solid var(--primary-border);
-    border-radius: 999px;
-  }
 
   .configure-btn {
     flex: 0 0 auto;
@@ -1216,6 +1274,16 @@
   @media (max-width: 42rem) {
     .inference-picker {
       grid-template-columns: 1fr;
+    }
+
+    .inference-heading-content {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+
+    .inference-status {
+      width: 100%;
+      justify-content: space-between;
     }
   }
 

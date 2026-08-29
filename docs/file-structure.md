@@ -38,7 +38,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `app-state.svelte.ts` — exports `AppState` and the `appState` singleton; tracks staged embedder/model readiness and model-load status.
     - `query.svelte.ts` — exports `QueryState` and the `queryState` singleton.
     - `settings.svelte.ts` — exports `SettingsState`, the `settingsState` singleton, and the shared local-inference defaults.
-  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `SettingsTab` presents local and remote inference cards; each opens a configuration modal while the selected card persists the default route.
+  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `SettingsTab` presents local and remote inference cards as an accessible radio group; its header reports the active inference route, while each card opens an independent configuration modal.
 - `static/`: Static frontend assets.
 
 ## `src-tauri/` (Tauri App Shell)
