@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
-  import { Cpu, Database, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
+  import { Cpu, Database, HardDrive, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
   import Toggle from './Toggle.svelte';
 
   type InferenceConfig = 'local' | 'external';
@@ -173,10 +173,10 @@
               aria-pressed={settingsState.inference_mode === 'local'}
               onclick={() => setDefaultInference('local')}
             >
-              <div class="inference-card-icon"><Cpu size={18} /></div>
+              <div class="inference-card-icon"><HardDrive size={18} /></div>
               <div class="inference-card-copy">
                 <span>Local model</span>
-                <small>Run fully on this device</small>
+                <small>On this device</small>
               </div>
               {#if settingsState.inference_mode === 'local'}
                 <span class="default-badge">Default</span>
