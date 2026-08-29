@@ -18,6 +18,14 @@ debug/
 # Databases
 *.db
 
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+.lancedb/
+
+# Test and coverage output
+coverage/
 # Frontend & Vite
 frontend/dist/
 frontend/node_modules/
