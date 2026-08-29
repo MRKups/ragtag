@@ -35,10 +35,10 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
   - `router.svelte.ts`: Hash-based micro-router using Svelte 5 `$state` runes. Routes: `query`, `documents`, `settings`.
   - `assets/`: Static assets bundled by Vite (e.g., `favicon.svg`).
   - `stores/`: Svelte 5 `$state` stores:
-    - `app-state.svelte.ts` — exports `AppState` class and `appState` singleton.
-    - `query.svelte.ts` — exports `QueryState` class and `queryState` singleton.
-    - `settings.svelte.ts` — exports `SettingsState` class and `settingsState` singleton.
-  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`.
+    - `app-state.svelte.ts` — exports `AppState` and the `appState` singleton; tracks staged embedder/model readiness and model-load status.
+    - `query.svelte.ts` — exports `QueryState` and the `queryState` singleton.
+    - `settings.svelte.ts` — exports `SettingsState`, the `settingsState` singleton, and the shared local-inference defaults.
+  - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `SettingsTab` presents local and remote inference cards; each opens a configuration modal while the selected card persists the default route.
 - `static/`: Static frontend assets.
 
 ## `src-tauri/` (Tauri App Shell)

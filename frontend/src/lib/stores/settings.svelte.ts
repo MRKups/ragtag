@@ -1,12 +1,18 @@
 import { api } from '../api';
 
+export const DEFAULT_LOCAL_INFERENCE = {
+  generation_model: 'unsloth/Qwen3-1.7B-GGUF',
+  tokenizer_model: 'Qwen/Qwen3-1.7B',
+  gguf_filename: 'Qwen3-1.7B-Q4_K_M.gguf'
+} as const;
+
 export class SettingsState {
   inference_mode = $state('local');
   external_base_url = $state('');
   external_model = $state('gpt-4o-mini');
-  generation_model = $state('');
-  tokenizer_model = $state('Qwen/Qwen3-1.7B');
-  gguf_filename = $state('Qwen3-1.7B-Q4_K_M.gguf');
+  generation_model = $state<string>(DEFAULT_LOCAL_INFERENCE.generation_model);
+  tokenizer_model = $state<string>(DEFAULT_LOCAL_INFERENCE.tokenizer_model);
+  gguf_filename = $state<string>(DEFAULT_LOCAL_INFERENCE.gguf_filename);
   use_query_enhancement = $state(true);
   chunk_size = $state(512);
   chunk_overlap = $state(80);
@@ -37,7 +43,7 @@ export class SettingsState {
     }
   }
 
-  async update(key: string, value: string) {
+  async update(key: string, value: string): Promise<boolean> {
     try {
       await api.setSetting(key, value);
       // Update local state based on key
@@ -50,11 +56,13 @@ export class SettingsState {
       if (key === 'gguf_filename') this.gguf_filename = value;
       if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);
       if (key === 'chunk_overlap') this.chunk_overlap = parseInt(value, 10);
+      return true;
     } catch (e) {
       const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
       this.saveError = `Failed to save ${key}: ${msg}`;
       console.error(`Failed to update setting ${key}`, e);
       setTimeout(() => { this.saveError = null; }, 5000);
+      return false;
     }
   }
 }

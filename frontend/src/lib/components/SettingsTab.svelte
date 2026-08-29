@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { settingsState } from '$lib/stores/settings.svelte';
+  import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
-  import { Cpu, Database, Link, Key, BrainCircuit } from '@lucide/svelte';
+  import { Cpu, Database, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
   import Toggle from './Toggle.svelte';
 
-const modes = [
-  { value: 'local', label: 'Local (In-process)' },
-  { value: 'external', label: 'External (OpenAI-compatible)' }
-];
+  type InferenceConfig = 'local' | 'external';
 
-let apiKeyValue = $state('');
+
+  let apiKeyValue = $state('');
   let apiKeyExists = $state(false);
   let apiKeySaved = $state(false);
+
+  let configuringInference = $state<InferenceConfig | null>(null);
+  let isRestoringLocalDefaults = $state(false);
+  const pendingSettingUpdates = new Map<string, Promise<boolean>>();
 
   // Storage management
   let storageInfo = $state<{
@@ -34,8 +36,39 @@ let apiKeyValue = $state('');
     await loadStorageInfo();
   });
 
-  function updateSetting(key: string, value: string) {
-    settingsState.update(key, value);
+  function updateSetting(key: string, value: string): Promise<boolean> {
+    const previous = pendingSettingUpdates.get(key);
+    const pending = (async () => {
+      if (previous) await previous;
+      return settingsState.update(key, value);
+    })();
+    pendingSettingUpdates.set(key, pending);
+    void pending.finally(() => {
+      if (pendingSettingUpdates.get(key) === pending) pendingSettingUpdates.delete(key);
+    });
+    return pending;
+  }
+
+  async function restoreLocalDefaults() {
+    isRestoringLocalDefaults = true;
+    try {
+      await Promise.all(
+        Object.keys(DEFAULT_LOCAL_INFERENCE).map(
+          (key) => pendingSettingUpdates.get(key) ?? Promise.resolve(true)
+        )
+      );
+      await Promise.all(
+        Object.entries(DEFAULT_LOCAL_INFERENCE).map(([key, value]) => updateSetting(key, value))
+      );
+    } finally {
+      isRestoringLocalDefaults = false;
+    }
+  }
+
+  async function setDefaultInference(mode: InferenceConfig) {
+    if (settingsState.inference_mode !== mode) {
+      await updateSetting('inference_mode', mode);
+    }
   }
 
   async function saveApiKey() {
@@ -128,124 +161,196 @@ let apiKeyValue = $state('');
           <div class="section-icon"><Cpu size={18} /></div>
           <div>
             <h3 id="inference-heading">Inference configuration</h3>
-            <p>Choose where generation runs and configure its connection or model.</p>
+            <p>Select the default source for new queries, then configure each source independently.</p>
           </div>
         </div>
 
-        <div class="setting-field field-wide">
-          <label for="inference_mode">Inference mode</label>
-          <select
-            id="inference_mode"
-            bind:value={settingsState.inference_mode}
-            onchange={() => updateSetting('inference_mode', settingsState.inference_mode)}
-          >
-            {#each modes as mode}
-              <option value={mode.value}>{mode.label}</option>
-            {/each}
-          </select>
-          <p class="help-text">Local uses your computer's CPU/GPU; external connects to an OpenAI-compatible service.</p>
+        <div class="inference-picker" aria-label="Inference configurations">
+          <article class="inference-card" class:active={settingsState.inference_mode === 'local'}>
+            <button
+              type="button"
+              class="inference-card-select"
+              aria-pressed={settingsState.inference_mode === 'local'}
+              onclick={() => setDefaultInference('local')}
+            >
+              <div class="inference-card-icon"><Cpu size={18} /></div>
+              <div class="inference-card-copy">
+                <span>Local model</span>
+                <small>Run fully on this device</small>
+              </div>
+              {#if settingsState.inference_mode === 'local'}
+                <span class="default-badge">Default</span>
+              {/if}
+            </button>
+            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'local')}>
+              Configure
+            </button>
+          </article>
+
+          <article class="inference-card" class:active={settingsState.inference_mode === 'external'}>
+            <button
+              type="button"
+              class="inference-card-select"
+              aria-pressed={settingsState.inference_mode === 'external'}
+              onclick={() => setDefaultInference('external')}
+            >
+              <div class="inference-card-icon"><Cloud size={18} /></div>
+              <div class="inference-card-copy">
+                <span>Remote provider</span>
+                <small>OpenAI-compatible endpoint</small>
+              </div>
+              {#if settingsState.inference_mode === 'external'}
+                <span class="default-badge">Default</span>
+              {/if}
+            </button>
+            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'external')}>
+              Configure
+            </button>
+          </article>
         </div>
 
-        {#if settingsState.inference_mode === 'external'}
-          <div class="field-grid">
-            <div class="setting-field">
-              <label for="external_base_url">
-                <Link size={14} class="field-label-icon" />
-                External base URL
-              </label>
-              <input
-                id="external_base_url"
-                type="text"
-                placeholder="http://localhost:11434/v1"
-                bind:value={settingsState.external_base_url}
-                onblur={() => { const v = settingsState.external_base_url.trim(); if (v) updateSetting('external_base_url', v); }}
-              />
-            </div>
+        {#if configuringInference}
+          <div class="config-modal-overlay">
+            <button type="button" class="config-modal-backdrop" aria-label="Close inference configuration" onclick={() => (configuringInference = null)}></button>
+            <div
+              class="config-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="config-modal-title"
+              tabindex="-1"
+              onkeydown={(event) => event.key === 'Escape' && (configuringInference = null)}
+            >
+              {#if configuringInference === 'local'}
+                <p class="panel-eyebrow">Local inference</p>
+                <h4 id="config-modal-title">Local model configuration</h4>
+                <p class="config-modal-intro">Configure the GGUF model and tokenizer used for private, on-device generation.</p>
 
-            <div class="setting-field">
-              <label for="external_model">
-                <BrainCircuit size={14} class="field-label-icon" />
-                External model
-              </label>
-              <input
-                id="external_model"
-                type="text"
-                placeholder="gpt-4o-mini"
-                bind:value={settingsState.external_model}
-                onblur={() => { const v = settingsState.external_model.trim(); if (v) updateSetting('external_model', v); }}
-              />
-              <p class="help-text">The model name accepted by your OpenAI-compatible endpoint.</p>
-            </div>
+                <div class="inference-fields">
+                  <div class="setting-field">
+                    <label for="generation_model">
+                      <BrainCircuit size={14} class="field-label-icon" />
+                      Hugging Face model repo
+                    </label>
+                    <input
+                      id="generation_model"
+                      type="text"
+                      placeholder={DEFAULT_LOCAL_INFERENCE.generation_model}
+                      bind:value={settingsState.generation_model}
+                      onblur={() => { const value = settingsState.generation_model.trim(); if (value) updateSetting('generation_model', value); }}
+                    />
+                    <p class="help-text">GGUF models are pre-quantized — ISQ does not apply in local mode.</p>
+                  </div>
 
-            <div class="setting-field">
-              <label for="external_api_key">
-                <Key size={14} class="field-label-icon" />
-                API key
-              </label>
-              {#if apiKeyExists}
-                <div class="keyring-row">
-                  <span class="keyring-status">Stored in OS keychain</span>
-                  <button type="button" class="btn btn-small btn-danger" onclick={clearApiKey}>Clear key</button>
+                  <div class="setting-field">
+                    <label for="tokenizer_model">
+                      <BrainCircuit size={14} class="field-label-icon" />
+                      Tokenizer model
+                    </label>
+                    <input
+                      id="tokenizer_model"
+                      type="text"
+                      placeholder={DEFAULT_LOCAL_INFERENCE.tokenizer_model}
+                      bind:value={settingsState.tokenizer_model}
+                      onblur={() => { const value = settingsState.tokenizer_model.trim(); if (value) updateSetting('tokenizer_model', value); }}
+                    />
+                    <p class="help-text">Use a tokenizer repository compatible with the selected GGUF model.</p>
+                  </div>
+
+                  <div class="setting-field">
+                    <label for="gguf_filename">GGUF filename</label>
+                    <input
+                      id="gguf_filename"
+                      type="text"
+                      placeholder={DEFAULT_LOCAL_INFERENCE.gguf_filename}
+                      bind:value={settingsState.gguf_filename}
+                      onblur={() => { const value = settingsState.gguf_filename.trim(); if (value) updateSetting('gguf_filename', value); }}
+                    />
+                    <p class="help-text">Filename of the GGUF file within the repository above.</p>
+                  </div>
+                </div>
+
+                <div class="restore-defaults">
+                  <button
+                    type="button"
+                    class="btn btn-small btn-secondary"
+                    disabled={isRestoringLocalDefaults}
+                    onclick={restoreLocalDefaults}
+                  >
+                    <RotateCcw size={14} />
+                    {isRestoringLocalDefaults ? 'Restoring...' : 'Restore local defaults'}
+                  </button>
+                  <p class="help-text">Restores Ragtag’s recommended Qwen model. Restart to apply model changes.</p>
                 </div>
               {:else}
-                <div class="keyring-row">
-                  <input
-                    id="external_api_key"
-                    type="password"
-                    placeholder="sk-..."
-                    autocomplete="off"
-                    bind:value={apiKeyValue}
-                    onkeydown={(e) => e.key === 'Enter' && saveApiKey()}
-                  />
-                  <button type="button" class="btn btn-small" onclick={saveApiKey}>Save key</button>
+                <p class="panel-eyebrow">Remote inference</p>
+                <h4 id="config-modal-title">Remote provider configuration</h4>
+                <p class="config-modal-intro">Configure an OpenAI-compatible provider independently from the default selection.</p>
+
+                <div class="inference-fields">
+                  <div class="setting-field">
+                    <label for="external_base_url">
+                      <Link size={14} class="field-label-icon" />
+                      External base URL
+                    </label>
+                    <input
+                      id="external_base_url"
+                      type="text"
+                      placeholder="http://localhost:11434/v1"
+                      bind:value={settingsState.external_base_url}
+                      onblur={() => { const value = settingsState.external_base_url.trim(); if (value) updateSetting('external_base_url', value); }}
+                    />
+                  </div>
+
+                  <div class="setting-field">
+                    <label for="external_model">
+                      <BrainCircuit size={14} class="field-label-icon" />
+                      External model
+                    </label>
+                    <input
+                      id="external_model"
+                      type="text"
+                      placeholder="gpt-4o-mini"
+                      bind:value={settingsState.external_model}
+                      onblur={() => { const value = settingsState.external_model.trim(); if (value) updateSetting('external_model', value); }}
+                    />
+                    <p class="help-text">The model name accepted by your OpenAI-compatible endpoint.</p>
+                  </div>
+
+                  <div class="setting-field">
+                    <span class="field-label">
+                      <Key size={14} class="field-label-icon" />
+                      API key
+                    </span>
+                    {#if apiKeyExists}
+                      <div class="keyring-row">
+                        <span class="keyring-status">Stored in OS keychain</span>
+                        <button type="button" class="btn btn-small btn-danger" onclick={clearApiKey}>Clear key</button>
+                      </div>
+                    {:else}
+                      <div class="keyring-row">
+                        <input
+                          id="external_api_key"
+                          type="password"
+                          placeholder="sk-..."
+                          autocomplete="off"
+                          aria-label="External API key"
+                          bind:value={apiKeyValue}
+                          onkeydown={(event) => event.key === 'Enter' && saveApiKey()}
+                        />
+                        <button type="button" class="btn btn-small" onclick={saveApiKey}>Save key</button>
+                      </div>
+                    {/if}
+                    {#if apiKeySaved}
+                      <p class="success-text" role="status">API key saved securely.</p>
+                    {/if}
+                    <p class="help-text">Stored in the OS keychain, never in the database or on disk.</p>
+                  </div>
                 </div>
               {/if}
-              {#if apiKeySaved}
-                <p class="success-text" role="status">API key saved securely.</p>
-              {/if}
-              <p class="help-text">Stored in the OS keychain, never in the database or on disk.</p>
-            </div>
-          </div>
-        {:else}
-          <div class="field-grid">
-            <div class="setting-field">
-              <label for="generation_model">
-                <BrainCircuit size={14} class="field-label-icon" />
-                Hugging Face model repo
-              </label>
-              <input
-                id="generation_model"
-                type="text"
-                placeholder="Qwen/Qwen3-1.7B-Instruct"
-                bind:value={settingsState.generation_model}
-                onblur={() => { const v = settingsState.generation_model.trim(); if (v) updateSetting('generation_model', v); }}
-              />
-              <p class="help-text">GGUF models are pre-quantized — ISQ does not apply in local mode.</p>
-            </div>
-            <div class="setting-field">
-              <label for="tokenizer_model">
-                <BrainCircuit size={14} class="field-label-icon" />
-                Tokenizer model
-              </label>
-              <input
-                id="tokenizer_model"
-                type="text"
-                placeholder="Qwen/Qwen3-1.7B"
-                bind:value={settingsState.tokenizer_model}
-                onblur={() => { const v = settingsState.tokenizer_model.trim(); if (v) updateSetting('tokenizer_model', v); }}
-              />
-              <p class="help-text">Hugging Face tokenizer repository compatible with the local GGUF model. Restart to apply changes.</p>
-            </div>
-            <div class="setting-field">
-              <label for="gguf_filename">GGUF filename</label>
-              <input
-                id="gguf_filename"
-                type="text"
-                placeholder="Qwen3-1.7B-Q4_K_M.gguf"
-                bind:value={settingsState.gguf_filename}
-                onblur={() => { const v = settingsState.gguf_filename.trim(); if (v) updateSetting('gguf_filename', v); }}
-              />
-              <p class="help-text">Filename of the GGUF file within the repository above.</p>
+
+              <div class="config-modal-actions">
+                <button type="button" class="btn" onclick={() => (configuringInference = null)}>Done</button>
+              </div>
             </div>
           </div>
         {/if}
@@ -512,7 +617,6 @@ let apiKeyValue = $state('');
     line-height: 1.45;
   }
 
-  .field-grid,
   .pipeline-fields {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -526,10 +630,204 @@ let apiKeyValue = $state('');
     min-width: 0;
   }
 
-  .field-wide {
-    max-width: 28rem;
+
+  .inference-picker {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
     margin-bottom: 1rem;
   }
+
+  .inference-card {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    min-height: 5rem;
+    padding: 0.5rem;
+    background: var(--page-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: border-color 160ms ease-out, background-color 160ms ease-out, box-shadow 160ms ease-out;
+  }
+
+  .inference-card:hover {
+    border-color: var(--border-strong);
+    background: var(--surface-soft);
+  }
+
+  .inference-card.active {
+    background: var(--primary-soft);
+    border-color: var(--primary-ring);
+    box-shadow: 0 0 0 3px var(--focus-ring);
+  }
+
+  .inference-card-select {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+    min-height: 4rem;
+    padding: 0.375rem;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .inference-card-select:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--focus-ring-strong);
+  }
+
+  .inference-card-icon {
+    display: grid;
+    flex: 0 0 auto;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin-right: 0.75rem;
+    place-items: center;
+    color: var(--primary-ring);
+    background: var(--primary-soft);
+    border: 1px solid var(--primary-border);
+    border-radius: var(--radius-sm);
+  }
+
+  .inference-card-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 0.1875rem;
+  }
+
+  .inference-card-copy > span {
+    color: var(--text-strong);
+    font-size: 0.875rem;
+    font-weight: 650;
+  }
+
+  .inference-card-copy small {
+    overflow: hidden;
+    color: var(--text-subtle);
+    font-size: 0.75rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .default-badge {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 0.25rem 0.375rem;
+    color: var(--primary-ring);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--primary-soft);
+    border: 1px solid var(--primary-border);
+    border-radius: 999px;
+  }
+
+  .configure-btn {
+    flex: 0 0 auto;
+  }
+
+  .panel-eyebrow {
+    margin: 0 0 0.25rem;
+    color: var(--primary-ring);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .inference-fields {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .field-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .restore-defaults {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .restore-defaults .help-text {
+    max-width: 24rem;
+  }
+
+  .config-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: var(--overlay);
+  }
+
+  .config-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    cursor: default;
+    background: transparent;
+    border: 0;
+  }
+
+  .config-modal {
+    position: relative;
+    z-index: 1;
+    width: min(100%, 38rem);
+    max-height: calc(100vh - 2rem);
+    padding: 1.5rem;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--primary-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-modal);
+  }
+
+  .config-modal h4 {
+    margin-bottom: 0.5rem;
+    color: var(--text-strong);
+    font-size: 1.25rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+
+  .config-modal-intro {
+    margin-bottom: 1.25rem;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    line-height: 1.55;
+  }
+
+  .config-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border);
+  }
+
 
   label {
     display: flex;
@@ -551,8 +849,7 @@ let apiKeyValue = $state('');
 
   input[type="text"],
   input[type="password"],
-  input[type="number"],
-  select {
+  input[type="number"] {
     width: 100%;
     min-height: 2.75rem;
     padding: 0.625rem 0.75rem;
@@ -567,30 +864,16 @@ let apiKeyValue = $state('');
     transition: border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out;
   }
 
-  select {
-    appearance: none;
-    padding-right: 2.5rem;
-    background-image:
-      linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
-      linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
-    background-position:
-      calc(100% - 1rem) calc(50% - 0.125rem),
-      calc(100% - 0.75rem) calc(50% - 0.125rem);
-    background-size: 0.3125rem 0.3125rem, 0.3125rem 0.3125rem;
-    background-repeat: no-repeat;
-  }
 
   input::placeholder {
     color: var(--text-subtle);
   }
 
-  input:hover,
-  select:hover {
+  input:hover {
     border-color: var(--border-strong);
   }
 
-  input:focus,
-  select:focus {
+  input:focus {
     border-color: var(--primary-ring);
     box-shadow: 0 0 0 3px var(--focus-ring);
   }
@@ -930,14 +1213,21 @@ let apiKeyValue = $state('');
     }
   }
 
+  @media (max-width: 42rem) {
+    .inference-picker {
+      grid-template-columns: 1fr;
+    }
+  }
+
   @media (max-width: 34rem) {
-    .field-grid,
     .pipeline-fields {
       grid-template-columns: 1fr;
     }
 
-    .field-wide {
-      max-width: none;
+
+    .restore-defaults {
+      align-items: flex-start;
+      flex-direction: column;
     }
 
     .keyring-row,

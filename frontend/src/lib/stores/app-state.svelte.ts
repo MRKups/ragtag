@@ -85,11 +85,15 @@ export class AppState {
           return;
         }
 
-        if (p.type === 'complete' || p.type === 'loading_model') {
+        if (p.type === 'complete') {
+          return;
+        }
+
+        if (p.type === 'loading_model') {
           if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
           this.downloadProgress = 100;
           this.downloadIsIndeterminate = true;
-          this.downloadMessage = 'Download complete. Loading the local model...';
+          this.downloadMessage = 'Loading the local model...';
           return;
         }
       });

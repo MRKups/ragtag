@@ -77,17 +77,20 @@ CREATE TABLE app_settings (
 );
 ```
 Example keys:
-- `inference_mode`: `"local"` or `"external"`.
+- `inference_mode`: `"local"` or `"external"`; selects the default generation route for new queries.
 - `external_base_url`: URL for an OpenAI-compatible endpoint, used in external mode.
 - `external_model`: Model name sent to that endpoint; absent values fall back to `"gpt-4o-mini"`.
 - `use_query_enhancement`: `"true"` or `"false"`; expands recognized technical abbreviations only for retrieval, leaving the user prompt unchanged.
-- `generation_model`: Hugging Face repo ID used for local GGUF download (for example, `"unsloth/Qwen3-1.7B-GGUF"`).
-- `gguf_filename`: Filename of the GGUF file within the generation-model repo (for example, `"Qwen3-1.7B-Q4_K_M.gguf"`).
+- `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
+- `tokenizer_model`: Hugging Face tokenizer repository compatible with the local GGUF model. Default: `"Qwen/Qwen3-1.7B"`.
+- `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
 - `chunk_size`: Estimated-token character-window size (default `"512"`).
 - `chunk_overlap`: Estimated-token overlap (default `"80"`).
 - `extraction_version`: Internal global marker used to requeue indexed documents after an extraction change.
 
 `chunk_size` and `chunk_overlap` are validated together when a setting changes, but changing either setting does not itself requeue already indexed documents. They are character estimates (four characters per estimated token), not exact tokenizer settings.
+
+The Settings UI keeps local and external configuration independent. Its Local model and Remote provider cards both persist the default route through `inference_mode`; each card opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
 
 *Note:* Sensitive data like the `external_api_key` for BYO inference must **never** be stored in SQLite. Instead, it is managed securely in the OS keychain using the `keyring` crate.
 
