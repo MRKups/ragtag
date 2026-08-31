@@ -46,12 +46,12 @@ This document explains the core design and technology choices for the applicatio
 
 ## 6. Vector Database & Pipeline (LanceDB)
 
-**Decision:** LanceDB provides embedded vector search with serialized writes, per-document replacement, and hybrid retrieval.
+**Decision:** LanceDB provides embedded vector search with serialized table creation and writes, per-document replacement, and hybrid retrieval.
 
 **Rationale:**
 - **Standalone Executable:** LanceDB runs natively inside the compiled Rust binary, requiring no external services or dependencies like Docker.
 - **Replacement & Recovery:** Reindexing deletes a document's prior chunks and then merge-inserts replacements using `(document_id, page, chunk_index)` identity. SQLite is marked `indexed` only after vector storage succeeds. Document deletion first changes the registry state to durable `deleting`, so retrieval excludes it until vector rows, the stored PDF, and the registry row are all removed; startup retries interrupted deletions.
-- **Indexes and Search:** FTS is created after rows exist. The default 8-bit IVF-PQ index is deferred until LanceDB has its required 256 training vectors; smaller stores use flat vector search. LanceDB combines full-text and dense retrieval once FTS is available, and falls back to dense vector-only search with a request-scoped warning when FTS fails. Reciprocal-rank-fusion relevance drives ordering but is not presented as calibrated citation confidence.
+- **First Access, Indexes, and Search:** A short table-creation lock prevents concurrent first upload/query callers from racing `create_empty_table`; regular reads remain concurrent after it exists. FTS is created after rows exist. The default 8-bit IVF-PQ index is deferred until LanceDB has its required 256 training vectors; smaller stores use flat vector search. LanceDB combines full-text and dense retrieval once FTS is available, and falls back to dense vector-only search with a request-scoped warning when FTS fails. Reciprocal-rank-fusion relevance drives ordering but is not presented as calibrated citation confidence.
 
 We explicitly rejected **Chroma** for this role: it requires a Python runtime and a daemon process, directly contradicting the single-executable design tenet.
 
@@ -61,10 +61,10 @@ We explicitly rejected **Chroma** for this role: it requires a Python runtime an
 
 **Rationale:**
 - **Why `mistral.rs` over a `llama.cpp` sidecar:** For a small single-user utility, the simplicity dividend of staying in-process is enormous. Dropping the sidecar removes: PID lockfiles, ephemeral port binding, dynamic `--port` argument parsing, `GET /health` polling loops, 32-byte hex auth tokens, `Authorization: Bearer` header plumbing, `command-group`/`killpg` process-group management, `RunEvent::CloseRequested` cleanup hooks, the `shell:allow-execute` capability, the `src-tauri/binaries/` directory, per-target-triple binary naming, and a separate macOS hardened-runtime signing pass for the `llama-server` binary. We consciously accept the trade-off: `mistral.rs` (Candle-backed) does not yet match `llama.cpp`'s breadth of GPU backend coverage, particularly Vulkan on Windows. For a documentation-querying utility on commodity laptops, CPU + Metal + CUDA is sufficient and the simplicity is worth more than the long tail of GPU support.
-- **Embedding Model (`EmbeddingGemma-300M`):** Available as `EmbeddingModel::EmbeddingGemma300M` via the ONNX backend in `fastembed`. It is instruction-aware (requiring `passage: ` and `query: ` prefixes), outputs 768 dimensions, and yields strong retrieval performance. *Note:* This is distinct from `nomic-embed-text-v1.5`. `fastembed` lacks CoreML execution providers for the ONNX backend out-of-the-box, so expect CPU inference on Apple Silicon (M-series). We specifically **do not** use Candle-backed embedding models (like Qwen3) because they lack cross-platform quantization support.
+- **Embedding Model (`EmbeddingGemma-300M`):** Available as `EmbeddingModel::EmbeddingGemma300M` via the ONNX backend in `fastembed`. It is instruction-aware (requiring `passage: ` and `query: ` prefixes), outputs 768 dimensions, and yields strong retrieval performance. Ingest splits with the active tokenizer and counts the prefix plus special tokens before embedding, preventing silent truncation. *Note:* This is distinct from `nomic-embed-text-v1.5`. `fastembed` lacks CoreML execution providers for the ONNX backend out-of-the-box, so expect CPU inference on Apple Silicon (M-series). We specifically **do not** use Candle-backed embedding models (like Qwen3) because they lack cross-platform quantization support.
 - **Generation Model (`Qwen3-1.7B`):** A highly capable lightweight edge model providing excellent RAG performance within a small RAM footprint (~1.1 GB at Q4_K_M quantization), making it the ideal fast baseline for desktop hardware. Loaded via `mistral.rs`'s `GgufModelBuilder` using pre-quantized weights (Q4_K_M). Any reasoning tokens are explicitly disabled via system prompts to prevent slow overhead during structured RAG tasks.
 - **No Auth Tokens Needed:** Without a localhost HTTP server in the loop, there is no surface to authenticate. The previous ephemeral-token machinery is gone entirely.
-- **BYO Inference Mode:** Users can opt to use an external OpenAI-compatible API, select its `external_model` (defaulting to `gpt-4o-mini`), and store an optional API key in the OS keychain. Retrieval, prompt construction, and citations are common before explicit local/external stream branches; there is no `InferenceClient` trait. External mode skips local model initialization, so its readiness signal does not validate the endpoint or credentials.
+- **BYO Inference Mode:** Users can opt to use an external OpenAI-compatible API, select its `external_model` (defaulting to `gpt-4o-mini`), and store an optional API key in the OS keychain. Retrieval, prompt construction, and structured citations are common before explicit local/external stream branches; there is no `InferenceClient` trait. External mode releases any loaded local model. Returning to local builds the current persisted model settings; its readiness signal still does not validate an external endpoint or credentials.
 - **Reranker Strategy:** We explicitly defer adding a Cross-Encoder or ColBERT reranker (e.g. `answerai-colbert-small-v1`) to the pipeline to save latency and RAM. We rely entirely on LanceDB's Hybrid Search unless user testing proves the recall is insufficient.
 
 ## 8. PDF Text Extraction
@@ -72,13 +72,13 @@ We explicitly rejected **Chroma** for this role: it requires a Python runtime an
 **Decision:** We use `pdf-extract` (a pure Rust crate) for pulling text out of uploaded documents.
 
 **Rationale:**
-While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior layout fidelity, they require bundling a second OS-specific C++ shared library sidecar. To maintain our core tenet of simplicity and a pure-Rust pipeline, we accept the layout tradeoffs of `pdf-extract` for the MVP. To mitigate the impact on the citation engine, text extraction must strictly operate on a per-page loop to guarantee accurate page boundaries.
+While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior layout fidelity, they require bundling a second OS-specific C++ shared library sidecar. To maintain our core tenet of simplicity and a pure-Rust pipeline, we accept the layout tradeoffs of `pdf-extract` for the MVP. The extractor verifies that its per-page result count matches the physical page count before filtering blanks, so an intermediate extraction failure cannot silently truncate citations.
 
 ## 9. Text Chunking Strategy
 
-**Decision:** Character-level sliding windows sized as 512 estimated tokens (about 2,048 characters), with an 80 estimated-token overlap (about 320 characters).
+**Decision:** Tokenizer-boundary windows sized as 512 embedding tokens with an 80-token overlap.
 
-**Rationale:** The current ingestion path estimates one token as four Unicode characters; it does not use or claim exact model-token boundaries. This keeps chunking independent of a model-specific tokenizer while retaining useful, configurable context overlap. To prevent pathological near-duplicate chunks, the effective overlap is capped at half of each character window. Changing these settings affects future processing only; existing indexed documents are not automatically re-chunked.
+**Rationale:** Each chunk is split and then counted using the active EmbeddingGemma tokenizer with the `passage: ` prefix and special tokens included. This makes the configured size a real embedding bound rather than a character estimate. The effective overlap is capped at half of each token window to prevent pathological near-duplicates. Changing settings affects future processing; a version change requeues existing indexed documents for the tokenizer-boundary migration, while later setting edits do not automatically re-chunk existing documents.
 
 ## 10. Streaming AI Responses
 
@@ -95,7 +95,7 @@ While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior l
 **Rationale:**
 - Avoids the massive binary size bloat (~500MB for embeddings, several GBs for LLMs).
 - Allows users to seamlessly pause, resume, update, and manage their models.
-- `mistral.rs`'s builders resolve repo IDs against the same Hugging Face cache that `hf-hub` populates, so we control the download UX while letting the inference engine load weights normally.
+- `mistral.rs` resolves tokenizer assets through Hugging Face’s cache. Ragtag owns and removes its application-local GGUF/model entries when requested, but never deletes a cache location explicitly selected through `HF_HUB_CACHE` or `HF_HOME`; that external storage is excluded from app storage accounting.
 
 ## 12. macOS Window Chrome
 

@@ -9,11 +9,6 @@
   import DocumentsPage from './pages/DocumentsPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
 
-  const pages: Record<Route, typeof QueryPage> = {
-    query: QueryPage,
-    documents: DocumentsPage,
-    settings: SettingsPage
-  };
 
   function navTo(route: Route) {
     if (typeof document.startViewTransition === 'function') {

@@ -11,3 +11,4 @@ fastembed = "=6.0.2"
 tokio = { version = "1.53.1", features = ["full"] }
 arrow-array = "=58.4.0"
 arrow-schema = "=58.4.0"
+tokenizers = { version = "=0.22.2", default-features = false }

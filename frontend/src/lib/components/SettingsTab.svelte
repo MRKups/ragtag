@@ -66,9 +66,7 @@
   }
 
   async function setDefaultInference(mode: InferenceConfig) {
-    if (settingsState.inference_mode !== mode) {
-      await updateSetting('inference_mode', mode);
-    }
+    await updateSetting('inference_mode', mode);
   }
 
   function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfig) {
@@ -496,7 +494,7 @@
               <p id="reset-modal-description">This permanently deletes all documents, vectors, and the database. The app must restart to apply the reset.</p>
               <label class="checkbox-label">
                 <input type="checkbox" bind:checked={resetDeleteModels} />
-                <span>Also delete downloaded models</span>
+                <span>Also delete app-managed local model downloads</span>
               </label>
               <div class="reset-modal-actions">
                 <button type="button" class="btn btn-secondary" onclick={() => (showResetConfirm = false)}>Cancel</button>

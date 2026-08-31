@@ -11,11 +11,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const IVF_PQ_MINIMUM_VECTORS: usize = 256;
 
+static TABLE_CREATION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 static VECTOR_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
 pub struct VectorDb {
     pub conn: Connection,
+    table_exists: AtomicBool,
     fts_index_built: AtomicBool,
     vector_index_built: AtomicBool,
 }
@@ -32,6 +36,7 @@ impl VectorDb {
 
         Ok(Self {
             conn,
+            table_exists: AtomicBool::new(false),
             fts_index_built: AtomicBool::new(false),
             vector_index_built: AtomicBool::new(false),
         })
@@ -52,6 +57,16 @@ impl VectorDb {
     }
 
     pub async fn get_or_create_table(&self) -> Result<lancedb::Table, AppError> {
+        if self.table_exists.load(Ordering::Acquire) {
+            return self.open_table().await;
+        }
+
+        let _guard = TABLE_CREATION_LOCK.lock().await;
+
+        if self.table_exists.load(Ordering::Acquire) {
+            return self.open_table().await;
+        }
+
         let table_names = self
             .conn
             .table_names()
@@ -59,26 +74,27 @@ impl VectorDb {
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        let schema = Self::schema();
-
-        if table_names.contains(&"chunks".to_string()) {
-            let table = self
-                .conn
-                .open_table("chunks")
-                .execute()
-                .await
-                .map_err(|e| AppError::VectorDb(e.to_string()))?;
-            Ok(table)
+        let table = if table_names.iter().any(|name| name == "chunks") {
+            self.open_table().await?
         } else {
-            let table = self
-                .conn
-                .create_empty_table("chunks", schema)
+            self.conn
+                .create_empty_table("chunks", Self::schema())
                 .execute()
                 .await
-                .map_err(|e| AppError::VectorDb(e.to_string()))?;
+                .map_err(|e| AppError::VectorDb(e.to_string()))?
+        };
 
-            Ok(table)
-        }
+        self.table_exists.store(true, Ordering::Release);
+
+        Ok(table)
+    }
+
+    async fn open_table(&self) -> Result<lancedb::Table, AppError> {
+        self.conn
+            .open_table("chunks")
+            .execute()
+            .await
+            .map_err(|e| AppError::VectorDb(e.to_string()))
     }
 
     pub async fn delete_chunks(&self, document_id: &str) -> Result<(), AppError> {
@@ -369,7 +385,8 @@ pub struct SearchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::should_build_ivf_pq;
+    use super::{VectorDb, should_build_ivf_pq};
+    use std::sync::Arc;
 
     #[test]
     fn ivf_pq_requires_at_least_256_vectors() {
@@ -377,5 +394,47 @@ mod tests {
         assert!(!should_build_ivf_pq(255));
         assert!(should_build_ivf_pq(256));
         assert!(should_build_ivf_pq(257));
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_access_creates_the_chunks_table_once() {
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-lancedb-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time must be after the Unix epoch")
+                .as_nanos()
+        ));
+        let db = Arc::new(
+            VectorDb::init(&path)
+                .await
+                .expect("database must initialize"),
+        );
+
+        let results = futures::future::join_all((0..8).map(|_| {
+            let db = Arc::clone(&db);
+            async move { db.get_or_create_table().await }
+        }))
+        .await;
+
+        assert!(results.into_iter().all(|result| result.is_ok()));
+
+        let table_names = db
+            .conn
+            .table_names()
+            .execute()
+            .await
+            .expect("table names must be readable");
+        assert_eq!(
+            table_names
+                .iter()
+                .filter(|name| name.as_str() == "chunks")
+                .count(),
+            1
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(path).expect("temporary database must be removable");
     }
 }

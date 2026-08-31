@@ -3,17 +3,20 @@ pub mod extractor;
 
 use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
 use domain::AppError;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use persistence::{DocumentRepository, VectorDb};
 use std::path::Path;
 use std::sync::Arc;
 
 pub use chunker::Chunk;
 
+const EMBEDDING_MAX_TOKENS: usize = 2_048;
+
 pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
     std::fs::create_dir_all(cache_dir)?;
     TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::EmbeddingGemma300M)
+        TextInitOptions::new(EmbeddingModel::EmbeddingGemma300M)
+            .with_max_length(EMBEDDING_MAX_TOKENS)
             .with_cache_dir(cache_dir.to_path_buf()),
     )
     .map_err(|e| AppError::Internal(format!("Failed to init embedder: {e}")))
@@ -33,31 +36,58 @@ pub async fn process_document(
 
     on_progress("extracting");
     let pdf_path = pdf_path.to_path_buf();
+    let pages = tokio::task::spawn_blocking(move || extractor::extract_pages(&pdf_path))
+        .await
+        .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
+
+    on_progress("chunking");
+    let (tokenizer, embedding_token_limit) = {
+        let model = embedder
+            .lock()
+            .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
+        let embedding_token_limit = model
+            .tokenizer
+            .get_truncation()
+            .map(|truncation| truncation.max_length)
+            .ok_or_else(|| {
+                AppError::Internal("Embedder tokenizer has no truncation limit".into())
+            })?;
+        (model.tokenizer.clone(), embedding_token_limit)
+    };
     let chunks = tokio::task::spawn_blocking(move || {
-        let pages = extractor::extract_pages(&pdf_path)?;
-        let chunks = chunker::chunk_pages(pages, chunk_size, chunk_overlap);
+        let chunks = chunker::chunk_pages(
+            pages,
+            embedding_token_limit.min(chunk_size),
+            chunk_overlap,
+            tokenizer,
+        )?;
         if chunks.is_empty() {
             return Err(AppError::Internal("No text chunks produced".into()));
         }
         Ok(chunks)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
-
-    on_progress("chunking");
+    .map_err(|e| AppError::Internal(format!("Chunking task panicked: {e}")))??;
 
     on_progress("embedding");
-    let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
 
-    let embeddings = {
+    let (chunks, embeddings) = {
         let embedder = Arc::clone(&embedder);
         tokio::task::spawn_blocking(move || {
             let mut model = embedder
                 .lock()
                 .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
-            model
-                .embed(texts.iter().map(|s| s.as_str()).collect::<Vec<_>>(), Some(32))
-                .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))
+            let texts = chunks
+                .iter()
+                .map(|chunk| format!("passage: {}", chunk.content))
+                .collect::<Vec<_>>();
+            let embeddings = model
+                .embed(
+                    texts.iter().map(String::as_str).collect::<Vec<_>>(),
+                    Some(32),
+                )
+                .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?;
+            Ok::<_, AppError>((chunks, embeddings))
         })
         .await
         .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
@@ -67,12 +97,9 @@ pub async fn process_document(
 
     on_progress("storing");
     vector_db.delete_chunks(document_id).await?;
-    vector_db
-        .upsert_chunks(std::iter::once(batch))
-        .await?;
+    vector_db.upsert_chunks(std::iter::once(batch)).await?;
 
-    repo
-        .mark_indexed(document_id, chunks.len(), "EmbeddingGemma-300M")
+    repo.mark_indexed(document_id, chunks.len(), "EmbeddingGemma-300M")
         .await?;
 
     Ok(())
@@ -103,7 +130,9 @@ fn build_record_batch(
 
     let float_values = Float32Array::from(all_floats);
     let arrow_schema::DataType::FixedSizeList(inner_field, _) = schema.field(0).data_type() else {
-        return Err(AppError::Internal("Schema vector field must be FixedSizeList".into()));
+        return Err(AppError::Internal(
+            "Schema vector field must be FixedSizeList".into(),
+        ));
     };
     let vector_col = FixedSizeListArray::try_new(
         inner_field.clone(),
@@ -191,10 +220,7 @@ mod tests {
     }
 }
 
-pub fn build_rag_prompt(
-    query: &str,
-    chunks: &[domain::Citation],
-) -> String {
+pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
     let mut context = String::new();
 
     for chunk in chunks {

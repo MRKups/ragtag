@@ -20,7 +20,7 @@ const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_EXTERNAL_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
 
-const EXTRACTION_VERSION: &str = "page-aware-v1";
+const EXTRACTION_VERSION: &str = "token-aware-v2";
 const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
@@ -121,6 +121,17 @@ fn is_valid_hugging_face_model_id(value: &str) -> bool {
     })
 }
 
+fn require_retrieved_citations(citations: &[Citation]) -> Result<(), AppError> {
+    if citations.is_empty() {
+        return Err(AppError::Inference(
+            "No usable document excerpts were retrieved. Add or wait for indexed documents, then try again."
+                .into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     match key {
         "inference_mode" if matches!(value, "local" | "external") => Ok(()),
@@ -184,12 +195,14 @@ async fn request_llm_initialization(
     state: &AppState,
     models_dir: std::path::PathBuf,
 ) {
-    let mut initialization = state.llm_initialization.lock().await;
-    if initialization.in_progress {
-        return;
-    }
-    initialization.in_progress = true;
-    drop(initialization);
+    let generation = {
+        let mut initialization = state.llm_initialization.lock().await;
+        if initialization.in_progress {
+            return;
+        }
+        initialization.in_progress = true;
+        initialization.generation
+    };
 
     let llm_state = state.local_llm.clone();
     let initialization = state.llm_initialization.clone();
@@ -198,95 +211,138 @@ async fn request_llm_initialization(
 
     tauri::async_runtime::spawn(async move {
         let app_settings = AppSettingsRepository::new(pool);
+        let mode = app_settings
+            .get("inference_mode")
+            .await
+            .unwrap_or_default()
+            .unwrap_or_else(|| "local".to_string());
 
-        loop {
-            let generation = initialization.lock().await.generation;
-            let mode = app_settings
-                .get("inference_mode")
-                .await
-                .unwrap_or_default()
-                .unwrap_or_else(|| "local".to_string());
-
-            if mode != "local" {
-                let mut current = initialization.lock().await;
-                if current.generation != generation {
-                    continue;
-                }
-                current.in_progress = false;
-                info!("BYO inference mode — skipping local LLM initialization");
-                let _ = app.emit("llm_ready", ());
+        if mode != "local" {
+            let mut current = initialization.lock().await;
+            if current.generation != generation {
                 return;
             }
+            current.in_progress = false;
+            info!("BYO inference mode — skipping local LLM initialization");
+            let _ = app.emit("llm_ready", ());
+            return;
+        }
 
-            let model_id = app_settings
-                .get("generation_model")
-                .await
-                .unwrap_or_default()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
-            let tokenizer_model = app_settings
-                .get("tokenizer_model")
-                .await
-                .unwrap_or_default()
-                .filter(|model| is_valid_hugging_face_model_id(model))
-                .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
-            let gguf_filename = app_settings
-                .get("gguf_filename")
-                .await
-                .unwrap_or_default()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
+        let model_id = app_settings
+            .get("generation_model")
+            .await
+            .unwrap_or_default()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
+        let tokenizer_model = app_settings
+            .get("tokenizer_model")
+            .await
+            .unwrap_or_default()
+            .filter(|model| is_valid_hugging_face_model_id(model))
+            .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
+        let gguf_filename = app_settings
+            .get("gguf_filename")
+            .await
+            .unwrap_or_default()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
 
-            info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
-            let gguf_path =
-                match model_download::download_model(&model_id, &gguf_filename, &models_dir, &app)
-                    .await
-                {
-                    Ok(path) => path,
-                    Err(error) => {
-                        error!("model download failed after all retries: {error}");
-                        let progress = model_download::ModelDownloadProgress {
-                            model_id: model_id.to_string(),
-                            current_file: String::new(),
-                            file_downloaded: 0,
-                            file_total: 0,
-                            files_completed: 0,
-                            total_files: 0,
-                            stage: model_download::DownloadStage::Error {
-                                message: error.to_string(),
-                            },
-                        };
-                        let mut current = initialization.lock().await;
-                        if current.generation != generation {
-                            continue;
-                        }
-                        current.in_progress = false;
-                        let _ = app.emit("model_download_progress", progress);
-                        return;
-                    }
-                };
-
-            let _ = app.emit(
-                "model_download_progress",
-                model_download::ModelDownloadProgress {
+        info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
+        let gguf_path = match model_download::download_model(
+            &model_id,
+            &gguf_filename,
+            &models_dir,
+            &app,
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(error) => {
+                error!("model download failed after all retries: {error}");
+                let progress = model_download::ModelDownloadProgress {
                     model_id: model_id.to_string(),
                     current_file: String::new(),
                     file_downloaded: 0,
                     file_total: 0,
-                    files_completed: 1,
-                    total_files: 1,
-                    stage: model_download::DownloadStage::LoadingModel,
-                },
-            );
+                    files_completed: 0,
+                    total_files: 0,
+                    stage: model_download::DownloadStage::Error {
+                        message: error.to_string(),
+                    },
+                };
+                let mut current = initialization.lock().await;
+                if current.generation != generation {
+                    return;
+                }
+                current.in_progress = false;
+                let _ = app.emit("model_download_progress", progress);
+                return;
+            }
+        };
 
-            let Some(parent_dir) = gguf_path.parent() else {
-                let message = format!(
-                    "GGUF path has no parent directory: '{}'",
-                    gguf_path.display()
-                );
+        if initialization.lock().await.generation != generation {
+            return;
+        }
+        let _ = app.emit(
+            "model_download_progress",
+            model_download::ModelDownloadProgress {
+                model_id: model_id.to_string(),
+                current_file: String::new(),
+                file_downloaded: 0,
+                file_total: 0,
+                files_completed: 1,
+                total_files: 1,
+                stage: model_download::DownloadStage::LoadingModel,
+            },
+        );
+
+        let Some(parent_dir) = gguf_path.parent() else {
+            let message = format!(
+                "GGUF path has no parent directory: '{}'",
+                gguf_path.display()
+            );
+            error!("{message}");
+            let progress = model_download::ModelDownloadProgress {
+                model_id: model_id.to_string(),
+                current_file: String::new(),
+                file_downloaded: 0,
+                file_total: 0,
+                files_completed: 0,
+                total_files: 0,
+                stage: model_download::DownloadStage::Error { message },
+            };
+            let mut current = initialization.lock().await;
+            if current.generation != generation {
+                return;
+            }
+            current.in_progress = false;
+            let _ = app.emit("model_download_progress", progress);
+            return;
+        };
+
+        info!("model downloaded, building mistral.rs pipeline...");
+        let builder = mistralrs::GgufModelBuilder::new(
+            parent_dir.to_string_lossy().to_string(),
+            vec![gguf_filename],
+        )
+        .with_tok_model_id(tokenizer_model);
+
+        match builder.build().await {
+            Ok(model) => {
+                let mut current = initialization.lock().await;
+                if current.generation != generation {
+                    return;
+                }
+                *llm_state.write().await = Some(Arc::new(model));
+                current.in_progress = false;
+                info!("mistral.rs pipeline built and ready");
+                let _ = app.emit("llm_ready", ());
+            }
+            Err(error) => {
+                let message = format!("Failed to initialize local model: {error}");
                 error!("{message}");
                 let progress = model_download::ModelDownloadProgress {
-                    model_id: model_id.to_string(),
+                    model_id,
                     current_file: String::new(),
                     file_downloaded: 0,
                     file_total: 0,
@@ -296,52 +352,10 @@ async fn request_llm_initialization(
                 };
                 let mut current = initialization.lock().await;
                 if current.generation != generation {
-                    continue;
+                    return;
                 }
                 current.in_progress = false;
                 let _ = app.emit("model_download_progress", progress);
-                return;
-            };
-
-            info!("model downloaded, building mistral.rs pipeline...");
-            let builder = mistralrs::GgufModelBuilder::new(
-                parent_dir.to_string_lossy().to_string(),
-                vec![gguf_filename],
-            )
-            .with_tok_model_id(tokenizer_model);
-
-            match builder.build().await {
-                Ok(model) => {
-                    let mut current = initialization.lock().await;
-                    if current.generation != generation {
-                        continue;
-                    }
-                    *llm_state.write().await = Some(Arc::new(model));
-                    current.in_progress = false;
-                    info!("mistral.rs pipeline built and ready");
-                    let _ = app.emit("llm_ready", ());
-                    return;
-                }
-                Err(error) => {
-                    let message = format!("Failed to initialize local model: {error}");
-                    error!("{message}");
-                    let progress = model_download::ModelDownloadProgress {
-                        model_id,
-                        current_file: String::new(),
-                        file_downloaded: 0,
-                        file_total: 0,
-                        files_completed: 0,
-                        total_files: 0,
-                        stage: model_download::DownloadStage::Error { message },
-                    };
-                    let mut current = initialization.lock().await;
-                    if current.generation != generation {
-                        continue;
-                    }
-                    current.in_progress = false;
-                    let _ = app.emit("model_download_progress", progress);
-                    return;
-                }
             }
         }
     });
@@ -658,6 +672,9 @@ async fn execute_query(
         if doc.status != DocumentStatus::Indexed {
             continue;
         }
+        if result.content.trim().is_empty() {
+            continue;
+        }
 
         citations.push(Citation {
             document_id: result.document_id.clone(),
@@ -673,9 +690,10 @@ async fn execute_query(
         });
     }
     citations.truncate(RETRIEVAL_RESULT_LIMIT);
+    require_retrieved_citations(&citations)?;
 
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
-    let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
+    let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. The structured source list accompanying the answer is the only citation authority; do not include page numbers, citation markers, or source references in the answer. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
 
     let mode = settings_repo
         .get("inference_mode")
@@ -1066,16 +1084,18 @@ async fn set_setting(
 
     repo.set(&key, &value).await?;
     if key == "inference_mode" {
-        {
+        let event = {
             let mut initialization = state.llm_initialization.lock().await;
             initialization.generation = initialization.generation.wrapping_add(1);
-            let event = if value == "external" {
+            initialization.in_progress = false;
+            if value == "external" {
+                *state.local_llm.write().await = None;
                 "llm_ready"
             } else {
                 "llm_unready"
-            };
-            let _ = app.emit(event, ());
-        }
+            }
+        };
+        let _ = app.emit(event, ());
         if value == "local" {
             begin_first_run_init(app, state).await?;
         }
@@ -1310,7 +1330,6 @@ pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let app_local_data = app
                 .path()
@@ -1326,6 +1345,7 @@ pub fn run() {
                 error!("pending data reset failed: {error}");
                 return Err(Box::new(std::io::Error::other(error.to_string())));
             }
+
 
             let pool = tauri::async_runtime::block_on(init_pool(&app_local_data))
                 .map_err(|e| Box::new(std::io::Error::other(
@@ -1512,8 +1532,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_upload_filename, registry_read_retry_delay, sse_event_boundary, sse_event_data,
-        validate_setting, validate_upload,
+        decode_upload_filename, registry_read_retry_delay, remove_non_fastembed_models,
+        require_retrieved_citations, sse_event_boundary, sse_event_data, validate_setting,
+        validate_upload,
     };
     use std::time::Duration;
 
@@ -1537,6 +1558,34 @@ mod tests {
         ] {
             assert!(validate_setting("tokenizer_model", invalid).is_err());
         }
+    }
+
+    #[test]
+    fn refuses_queries_without_retrieved_citations() {
+        let error = require_retrieved_citations(&[]).unwrap_err();
+        assert!(matches!(&error, domain::AppError::Inference(_)));
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["kind"],
+            serde_json::Value::String("Inference".into())
+        );
+    }
+
+    #[test]
+    fn removes_non_fastembed_model_entries() {
+        let models_dir =
+            std::env::temp_dir().join(format!("ragtag-model-cleanup-{}", uuid::Uuid::now_v7()));
+        let other_model = models_dir.join("generation-model");
+        let embedder_models = models_dir.join("fastembed");
+        std::fs::create_dir_all(&other_model).unwrap();
+        std::fs::create_dir_all(&embedder_models).unwrap();
+        std::fs::write(other_model.join("model.gguf"), "model").unwrap();
+        std::fs::write(embedder_models.join("model.onnx"), "embedder").unwrap();
+
+        remove_non_fastembed_models(&models_dir).unwrap();
+
+        assert!(!other_model.exists());
+        assert!(embedder_models.exists());
+        std::fs::remove_dir_all(models_dir).unwrap();
     }
 
     #[test]

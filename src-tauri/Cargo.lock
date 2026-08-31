@@ -2977,10 +2977,8 @@ dependencies = [
 name = "domain"
 version = "0.1.0"
 dependencies = [
- "jiff",
  "serde",
  "thiserror 2.0.18",
- "uuid 1.26.0",
 ]
 
 [[package]]
@@ -6983,7 +6981,6 @@ dependencies = [
  "sqlx",
  "tauri",
  "tauri-build",
- "tauri-plugin-fs",
  "tokio",
  "uuid 1.26.0",
 ]
@@ -8491,6 +8488,7 @@ dependencies = [
  "fastembed",
  "pdf-extract",
  "persistence",
+ "tokenizers 0.22.2",
  "tokio",
 ]
 
@@ -10811,46 +10809,6 @@ dependencies = [
  "syn 2.0.117",
  "tauri-codegen",
  "tauri-utils",
-]
-
-[[package]]
-name = "tauri-plugin"
-version = "2.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e126abc9e84e35cdfd01596140a73a1850cdb0df0a23acf0185776c30b469a6e"
-dependencies = [
- "anyhow",
- "glob",
- "plist",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "tauri-utils",
- "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-fs"
-version = "2.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7ecc274121aca0c036a2b42d1cbe83d368d348f54e0bb8a735c2b1548e8f371"
-dependencies = [
- "anyhow",
- "dunce",
- "glob",
- "log",
- "objc2-foundation",
- "percent-encoding",
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "serde_repr",
- "tauri",
- "tauri-plugin",
- "tauri-utils",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
- "url",
 ]
 
 [[package]]

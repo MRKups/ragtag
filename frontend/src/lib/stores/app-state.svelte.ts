@@ -31,24 +31,23 @@ export class AppState {
   llmReady = $state(false);
   modelError = $state('');
 
-  private unlisten: Array<() => void> = [];
 
   async init() {
     try {
-      const unlistenEmbedder = await api.listen('embedder_ready', () => {
+      await api.listen('embedder_ready', () => {
         console.log('[AppState] embedder ready');
         this.embedderAvailable = true;
         this.#tryBecomeReady();
       });
 
-      const unlistenEmbedderFailed = await api.listen<{ message: string }>('embedder_failed', (event) => {
+      await api.listen<{ message: string }>('embedder_failed', (event) => {
         console.error('[AppState] embedder failed:', event.payload.message);
         this.embedderAvailable = false;
         this.phase = 'error';
         this.errorMessage = event.payload.message;
       });
 
-      const unlistenProgress = await api.listen<DownloadProgress>('model_download_progress', (event) => {
+      await api.listen<DownloadProgress>('model_download_progress', (event) => {
         const p = event.payload;
         console.log('[AppState] download progress:', p);
 
@@ -94,19 +93,18 @@ export class AppState {
         }
       });
 
-      const unlistenLlm = await api.listen('llm_ready', () => {
+      await api.listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
         this.llmReady = true;
         this.modelError = '';
         this.#tryBecomeReady();
       });
-      const unlistenLlmUnready = await api.listen('llm_unready', () => {
+      await api.listen('llm_unready', () => {
         console.log('[AppState] local LLM initialization requested');
         this.llmReady = false;
         this.modelError = '';
       });
 
-      this.unlisten = [unlistenEmbedder, unlistenEmbedderFailed, unlistenProgress, unlistenLlm, unlistenLlmUnready];
 
       // If both were already ready (e.g. BYO mode with cached embedder), check now
       this.#tryBecomeReady();
@@ -139,10 +137,6 @@ export class AppState {
     }
   }
 
-  destroy() {
-    this.unlisten.forEach(fn => fn());
-    this.unlisten = [];
-  }
 }
 
 export const appState = new AppState();

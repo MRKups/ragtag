@@ -63,9 +63,9 @@ LanceDB manages tables using a strongly typed schema. Each row represents a sing
 | `document_id` | `String` | Foreign key referencing `documents.id` in SQLite. |
 | `page` | `Int32` | 1-indexed page number for citations. |
 | `chunk_index` | `Int32` | Position within the document. |
-| `content` | `String` | Chunk text stored with its `"passage: "` embedding prefix; reused for RAG prompt synthesis. |
+| `content` | `String` | Raw chunk text reused for citations and RAG prompt synthesis. The ingest embedding input prepends `"passage: "` without persisting that instruction prefix. |
 
-LanceDB does not contain document status, extraction version, or chunking configuration. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed`. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
+LanceDB does not contain document status, extraction version, or chunking configuration. First table creation is serialized before concurrent search or ingest access. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed`. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
 
 ## Application Settings
 
@@ -85,11 +85,11 @@ Example keys:
 - `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
 - `tokenizer_model`: Hugging Face tokenizer repository compatible with the local GGUF model. Default: `"Qwen/Qwen3-1.7B"`.
 - `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
-- `chunk_size`: Estimated-token character-window size (default `"512"`).
-- `chunk_overlap`: Estimated-token overlap (default `"80"`).
-- `extraction_version`: Internal global marker used to requeue indexed documents after an extraction change.
+- `chunk_size`: Token count per embedding-safe chunk (default `"512"`, maximum `"2048"`).
+- `chunk_overlap`: Token overlap between chunks on the same page (default `"80"`).
+- `extraction_version`: Internal global marker used to requeue indexed documents after an extraction or chunking change.
 
-`chunk_size` and `chunk_overlap` are validated together when a setting changes, but changing either setting does not itself requeue already indexed documents. They are character estimates (four characters per estimated token), not exact tokenizer settings.
+`chunk_size` and `chunk_overlap` are validated together when a setting changes. Chunks are split and counted with the active embedding tokenizer, including the `passage: ` prefix and special tokens, so no stored chunk is silently truncated during embedding. Changing either setting does not itself requeue already indexed documents.
 
 The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
 
@@ -125,4 +125,4 @@ pub struct Citation {
 
 `Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
 
-`TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—for example retrieval failures or an external request/status error—reject the `execute_query` IPC command instead.
+`TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—including no usable retrieved excerpts, retrieval failures, or an external request/status error—reject the `execute_query` IPC command instead.

@@ -24,8 +24,8 @@
   let totalPages = $state(0);
   let loading = $state(true);
   let error: string | null = $state(null);
-  let scrollContainer: HTMLDivElement | null = $state(null);
   let loadId = 0;
+  let lastIncomingPage: number | null = null;
 
   let pagesToRender = $derived.by(() => {
     if (!totalPages) return [] as number[];
@@ -45,8 +45,9 @@
   });
 
   $effect(() => {
-    if (pdfDoc && page >= 1 && page <= totalPages && page !== pageNum) {
+    if (pdfDoc && page >= 1 && page <= totalPages && page !== lastIncomingPage) {
       pageNum = page;
+      lastIncomingPage = page;
     }
   });
 
@@ -90,12 +91,12 @@
   }
 
   function onPrevPage() {
-    if (pageNum <= Math.max(1, pageNum - contextPages)) return;
+    if (pageNum <= 1) return;
     pageNum -= 1;
   }
 
   function onNextPage() {
-    if (pageNum >= Math.min(totalPages, pageNum + contextPages)) return;
+    if (pageNum >= totalPages) return;
     pageNum += 1;
   }
 
@@ -120,11 +121,11 @@
   {:else}
     <div class="toolbar">
       <div class="group">
-        <button class="tool-btn" onclick={onPrevPage} disabled={pageNum <= Math.max(1, pageNum - contextPages)} aria-label="Previous page">
+        <button class="tool-btn" onclick={onPrevPage} disabled={pageNum <= 1} aria-label="Previous page">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
         </button>
         <span class="page-info">Page {pageNum} of {totalPages}</span>
-        <button class="tool-btn" onclick={onNextPage} disabled={pageNum >= Math.min(totalPages, pageNum + contextPages)} aria-label="Next page">
+        <button class="tool-btn" onclick={onNextPage} disabled={pageNum >= totalPages} aria-label="Next page">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
         </button>
       </div>
@@ -140,7 +141,7 @@
       </div>
     </div>
 
-    <div class="scroll-container" bind:this={scrollContainer}>
+    <div class="scroll-container">
       {#if loading}
         <div class="loading-overlay"><div class="spinner"></div></div>
       {:else if pdfDoc}

@@ -82,27 +82,6 @@ impl DocumentRepository {
         Ok(())
     }
 
-    pub async fn update_status(&self, id: &str, status: DocumentStatus) -> Result<(), AppError> {
-        let status_str = match status {
-            DocumentStatus::Queued => "queued",
-            DocumentStatus::Embedding => "embedding",
-            DocumentStatus::Indexed => "indexed",
-            DocumentStatus::Deleting => "deleting",
-            DocumentStatus::Failed => "failed",
-        };
-
-        sqlx::query!(
-            "UPDATE documents SET status = ? WHERE id = ?",
-            status_str,
-            id
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(sql_err)?;
-
-        Ok(())
-    }
-
     pub async fn mark_embedding(&self, id: &str) -> Result<(), AppError> {
         sqlx::query(
             "UPDATE documents

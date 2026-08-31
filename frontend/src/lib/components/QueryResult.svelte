@@ -32,23 +32,6 @@
     }
   });
 
-  function handleCitationClick(event: MouseEvent) {
-    const target = event.target as HTMLElement;
-    const citationLink = target.closest('[data-citation-id]');
-    if (citationLink) {
-      event.preventDefault();
-      const idx = parseInt(citationLink.getAttribute('data-citation-id') || '', 10);
-      const citation = citations[idx];
-      if (citation) {
-        onCitationClick({
-          filename: citation.filename,
-          storagePath: citation.storage_path,
-          documentId: citation.document_id,
-          page: citation.page
-        });
-      }
-    }
-  }
 </script>
 
 <div class="result-container" class:has-content={!!text || isStreaming}>
@@ -59,9 +42,7 @@
   {/if}
 
   {#if text || isStreaming}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="prose" bind:this={contentEl} onclick={handleCitationClick}>
+    <div class="prose" bind:this={contentEl}>
       {@html renderedHtml}
       {#if isStreaming}
         <span class="cursor-blink">|</span>
