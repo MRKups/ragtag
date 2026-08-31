@@ -1,5 +1,8 @@
 use domain::{AppError, Document, DocumentStatus};
-use sqlx::{sqlite::{SqliteConnectOptions, SqlitePoolOptions}, SqlitePool};
+use sqlx::{
+    SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -11,7 +14,7 @@ pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError
     std::fs::create_dir_all(app_local_data_dir)?;
 
     let db_path = app_local_data_dir.join("app.db");
-    
+
     let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
         .map_err(sql_err)?
         .create_if_missing(true);
@@ -44,6 +47,7 @@ impl DocumentRepository {
             DocumentStatus::Queued => "queued",
             DocumentStatus::Embedding => "embedding",
             DocumentStatus::Indexed => "indexed",
+            DocumentStatus::Deleting => "deleting",
             DocumentStatus::Failed => "failed",
         };
 
@@ -83,6 +87,7 @@ impl DocumentRepository {
             DocumentStatus::Queued => "queued",
             DocumentStatus::Embedding => "embedding",
             DocumentStatus::Indexed => "indexed",
+            DocumentStatus::Deleting => "deleting",
             DocumentStatus::Failed => "failed",
         };
 
@@ -173,13 +178,20 @@ impl DocumentRepository {
         Ok(row.map(|r| r.into_domain()))
     }
 
+    pub async fn get_deleting_documents(&self) -> Result<Vec<Document>, AppError> {
+        Ok(self
+            .list_all()
+            .await?
+            .into_iter()
+            .filter(|document| document.status == DocumentStatus::Deleting)
+            .collect())
+    }
+
     pub async fn get_queued_ids(&self) -> Result<Vec<String>, AppError> {
-        let rows = sqlx::query!(
-            "SELECT id FROM documents WHERE status = 'queued'"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let rows = sqlx::query!("SELECT id FROM documents WHERE status = 'queued'")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(rows.into_iter().filter_map(|r| r.id).collect())
     }
@@ -187,12 +199,11 @@ impl DocumentRepository {
     pub async fn requeue_indexed_for_reindex(&self) -> Result<Vec<String>, AppError> {
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
 
-        let ids = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM documents WHERE status = 'indexed'",
-        )
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(sql_err)?;
+        let ids =
+            sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(sql_err)?;
 
         if !ids.is_empty() {
             sqlx::query(
@@ -255,6 +266,16 @@ impl DocumentRepository {
         Ok(())
     }
 
+    pub async fn mark_deleting(&self, id: &str) -> Result<(), AppError> {
+        sqlx::query("UPDATE documents SET status = 'deleting', error_message = NULL WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(sql_err)?;
+
+        Ok(())
+    }
+
     pub async fn find_by_hash(&self, hash: &[u8]) -> Result<Option<Document>, AppError> {
         let row = sqlx::query_as!(
             DocumentRow,
@@ -294,22 +315,18 @@ impl DocumentRepository {
     }
 
     pub async fn reset_embedding_to_queued(&self) -> Result<Vec<String>, AppError> {
-        let docs = sqlx::query!(
-            "SELECT id FROM documents WHERE status = 'embedding'"
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let docs = sqlx::query!("SELECT id FROM documents WHERE status = 'embedding'")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         let ids: Vec<String> = docs.into_iter().filter_map(|d| d.id).collect();
 
         if !ids.is_empty() {
-            sqlx::query!(
-                "UPDATE documents SET status = 'queued' WHERE status = 'embedding'"
-            )
-            .execute(&self.pool)
-            .await
-            .map_err(sql_err)?;
+            sqlx::query!("UPDATE documents SET status = 'queued' WHERE status = 'embedding'")
+                .execute(&self.pool)
+                .await
+                .map_err(sql_err)?;
         }
 
         Ok(ids)
@@ -363,6 +380,7 @@ impl DocumentRow {
         let status = match self.status.as_str() {
             "embedding" => DocumentStatus::Embedding,
             "indexed" => DocumentStatus::Indexed,
+            "deleting" => DocumentStatus::Deleting,
             "failed" => DocumentStatus::Failed,
             _ => DocumentStatus::Queued,
         };
@@ -397,13 +415,10 @@ impl AppSettingsRepository {
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<String>, AppError> {
-        let row = sqlx::query!(
-            r#"SELECT value FROM app_settings WHERE key = ?"#,
-            key
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let row = sqlx::query!(r#"SELECT value FROM app_settings WHERE key = ?"#, key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(row.map(|r| r.value))
     }

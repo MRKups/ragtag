@@ -1,37 +1,49 @@
-use domain::AppError;
-use lancedb::connection::Connection;
+use arrow_array::{Float32Array, Int32Array, StringArray};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
-use arrow_array::{Float32Array, StringArray, Int32Array};
+use domain::AppError;
+use futures::stream::StreamExt;
+use lancedb::connection::Connection;
+use lancedb::query::{ExecutableQuery, QueryBase};
+use log::warn;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use lancedb::query::{ExecutableQuery, QueryBase};
-use futures::stream::StreamExt;
-use log::warn;
+
+const IVF_PQ_MINIMUM_VECTORS: usize = 256;
 
 static VECTOR_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
 pub struct VectorDb {
     pub conn: Connection,
-    indexes_built: AtomicBool,
+    fts_index_built: AtomicBool,
+    vector_index_built: AtomicBool,
 }
 
 impl VectorDb {
     pub async fn init(path: &std::path::Path) -> Result<Self, AppError> {
-        let uri = path.to_str().ok_or_else(|| AppError::Internal("Invalid vector DB path".into()))?;
-        let conn = lancedb::connect(uri).execute().await
+        let uri = path
+            .to_str()
+            .ok_or_else(|| AppError::Internal("Invalid vector DB path".into()))?;
+        let conn = lancedb::connect(uri)
+            .execute()
+            .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
-        
-        Ok(Self { conn, indexes_built: AtomicBool::new(false) })
+
+        Ok(Self {
+            conn,
+            fts_index_built: AtomicBool::new(false),
+            vector_index_built: AtomicBool::new(false),
+        })
     }
 
     pub fn schema() -> Arc<ArrowSchema> {
         Arc::new(ArrowSchema::new(vec![
-            Field::new("vector", DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                768
-            ), false),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 768),
+                false,
+            ),
             Field::new("document_id", DataType::Utf8, false),
             Field::new("page", DataType::Int32, false),
             Field::new("chunk_index", DataType::Int32, false),
@@ -40,19 +52,31 @@ impl VectorDb {
     }
 
     pub async fn get_or_create_table(&self) -> Result<lancedb::Table, AppError> {
-        let table_names = self.conn.table_names().execute().await
+        let table_names = self
+            .conn
+            .table_names()
+            .execute()
+            .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
-        
+
         let schema = Self::schema();
-        
+
         if table_names.contains(&"chunks".to_string()) {
-            let table = self.conn.open_table("chunks").execute().await
+            let table = self
+                .conn
+                .open_table("chunks")
+                .execute()
+                .await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
             Ok(table)
         } else {
-            let table = self.conn.create_empty_table("chunks", schema).execute().await
+            let table = self
+                .conn
+                .create_empty_table("chunks", schema)
+                .execute()
+                .await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
-            
+
             Ok(table)
         }
     }
@@ -63,24 +87,36 @@ impl VectorDb {
             .await
             .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
 
-        let table_names = self.conn.table_names().execute().await
+        let table_names = self
+            .conn
+            .table_names()
+            .execute()
+            .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
-        
+
         if table_names.contains(&"chunks".to_string()) {
-            let table = self.conn.open_table("chunks").execute().await
+            let table = self
+                .conn
+                .open_table("chunks")
+                .execute()
+                .await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
-            
-            table.delete(format!("document_id = '{}'", document_id).as_str())
+
+            table
+                .delete(format!("document_id = '{}'", document_id).as_str())
                 .await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
         }
-        
+
         Ok(())
     }
 
-    pub async fn upsert_chunks(&self, batches: impl IntoIterator<Item = arrow_array::RecordBatch>) -> Result<(), AppError> {
+    pub async fn upsert_chunks(
+        &self,
+        batches: impl IntoIterator<Item = arrow_array::RecordBatch>,
+    ) -> Result<(), AppError> {
         let table = self.get_or_create_table().await?;
-        
+
         let batch_vec: Vec<_> = batches.into_iter().map(Ok).collect();
         if batch_vec.is_empty() {
             return Ok(());
@@ -96,77 +132,91 @@ impl VectorDb {
         let mut merge_insert = table.merge_insert(&["document_id", "page", "chunk_index"]);
         merge_insert.when_matched_update_all(None);
         merge_insert.when_not_matched_insert_all();
-        
-        merge_insert.execute(Box::new(arrow_array::RecordBatchIterator::new(batch_vec, schema)))
+
+        merge_insert
+            .execute(Box::new(arrow_array::RecordBatchIterator::new(
+                batch_vec, schema,
+            )))
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        if !self.indexes_built.load(Ordering::SeqCst) {
-            let fts_params = lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
-            table.create_index(&["content"], fts_params)
-                .replace(true)
-                .execute()
-                .await
-                .map_err(|e| AppError::VectorDb(format!("FTS index creation failed: {e}")))?;
+        self.ensure_indexes(&table).await?;
 
-            table
-                .create_index(
-                    &["vector"],
-                    lancedb::index::Index::IvfPq(lancedb::index::vector::IvfPqIndexBuilder::default()),
-                )
-                .replace(true)
-                .execute()
-                .await
-                .map_err(|e| AppError::VectorDb(format!("Vector index creation failed: {e}")))?;
+        Ok(())
+    }
 
-            let index_configs = table
-                .list_indices()
-                .await
-                .map_err(|e| AppError::VectorDb(format!("Failed to list created indexes: {e}")))?;
-            let fts_index_names: Vec<_> = index_configs
-                .iter()
-                .filter(|index| {
-                    index.index_type == lancedb::index::IndexType::FTS
-                        && index.columns.iter().any(|column| column == "content")
-                })
-                .map(|index| index.name.as_str())
-                .collect();
-            let vector_index_names: Vec<_> = index_configs
-                .iter()
-                .filter(|index| {
-                    index.index_type == lancedb::index::IndexType::IvfPq
-                        && index.columns.iter().any(|column| column == "vector")
-                })
-                .map(|index| index.name.as_str())
-                .collect();
+    async fn ensure_indexes(&self, table: &lancedb::Table) -> Result<(), AppError> {
+        let fts_index_built = self.fts_index_built.load(Ordering::SeqCst);
+        let vector_index_built = self.vector_index_built.load(Ordering::SeqCst);
 
-            if fts_index_names.is_empty() || vector_index_names.is_empty() {
-                return Err(AppError::VectorDb(
-                    "Created FTS and vector indexes were not found in LanceDB".into(),
-                ));
+        let existing_indexes = if fts_index_built && vector_index_built {
+            None
+        } else {
+            Some(
+                table
+                    .list_indices()
+                    .await
+                    .map_err(|e| AppError::VectorDb(format!("Failed to list indexes: {e}")))?,
+            )
+        };
+
+        if !fts_index_built {
+            if existing_indexes.as_ref().is_some_and(|indexes| {
+                has_index(indexes, &lancedb::index::IndexType::FTS, "content")
+            }) {
+                self.fts_index_built.store(true, Ordering::SeqCst);
+            } else {
+                let fts_params =
+                    lancedb::index::Index::FTS(lancedb::index::scalar::FtsIndexBuilder::default());
+                table
+                    .create_index(&["content"], fts_params)
+                    .execute()
+                    .await
+                    .map_err(|e| AppError::VectorDb(format!("FTS index creation failed: {e}")))?;
+                wait_for_index(table, &lancedb::index::IndexType::FTS, "content").await?;
+                self.fts_index_built.store(true, Ordering::SeqCst);
             }
-
-            let index_names: Vec<_> = fts_index_names
-                .into_iter()
-                .chain(vector_index_names)
-                .collect();
-            table
-                .wait_for_index(
-                    &index_names,
-                    std::time::Duration::from_secs(2 * 60 * 60),
-                )
-                .await
-                .map_err(|e| AppError::VectorDb(format!("Index readiness check failed: {e}")))?;
-
-            self.indexes_built.store(true, Ordering::SeqCst);
         }
+
+        if vector_index_built {
+            return Ok(());
+        }
+
+        if existing_indexes
+            .as_ref()
+            .is_some_and(|indexes| has_index(indexes, &lancedb::index::IndexType::IvfPq, "vector"))
+        {
+            self.vector_index_built.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
+
+        let vector_count = table
+            .count_rows(None)
+            .await
+            .map_err(|e| AppError::VectorDb(format!("Failed to count vectors: {e}")))?;
+        if !should_build_ivf_pq(vector_count) {
+            return Ok(());
+        }
+
+        table
+            .create_index(
+                &["vector"],
+                lancedb::index::Index::IvfPq(lancedb::index::vector::IvfPqIndexBuilder::default()),
+            )
+            .execute()
+            .await
+            .map_err(|e| AppError::VectorDb(format!("Vector index creation failed: {e}")))?;
+        wait_for_index(table, &lancedb::index::IndexType::IvfPq, "vector").await?;
+        self.vector_index_built.store(true, Ordering::SeqCst);
 
         Ok(())
     }
 
     pub async fn compact(&self) -> Result<(), AppError> {
         let table = self.get_or_create_table().await?;
-        table.optimize(lancedb::table::OptimizeAction::default()).await
+        table
+            .optimize(lancedb::table::OptimizeAction::default())
+            .await
             .map_err(|e| AppError::VectorDb(format!("Compact failed: {e}")))?;
         Ok(())
     }
@@ -184,7 +234,8 @@ impl VectorDb {
 
         static FTS_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
-        let (mut stream, vector_only) = match table.query()
+        let (mut stream, retrieval_mode) = match table
+            .query()
             .full_text_search(fts_query)
             .nearest_to(query_vector_f32.clone())
             .map_err(|e| AppError::VectorDb(e.to_string()))?
@@ -192,20 +243,23 @@ impl VectorDb {
             .execute()
             .await
         {
-            Ok(stream) => (stream, false),
+            Ok(stream) => (stream, RetrievalMode::Hybrid),
             Err(e) => {
                 if !FTS_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
-                    warn!("hybrid search unavailable (FTS index missing) — falling back to vector-only search");
+                    warn!(
+                        "hybrid search unavailable (FTS index missing) — falling back to vector-only search"
+                    );
                 }
                 warn!("hybrid search error detail: {e}");
-                let stream = table.query()
+                let stream = table
+                    .query()
                     .nearest_to(query_vector_f32)
                     .map_err(|e| AppError::VectorDb(e.to_string()))?
                     .limit(limit)
                     .execute()
                     .await
                     .map_err(|e| AppError::VectorDb(e.to_string()))?;
-                (stream, true)
+                (stream, RetrievalMode::VectorOnly)
             }
         };
 
@@ -213,17 +267,21 @@ impl VectorDb {
 
         while let Some(batch) = stream.next().await {
             let batch = batch.map_err(|e| AppError::VectorDb(e.to_string()))?;
-            
-            let docs_array = batch.column_by_name("document_id")
+
+            let docs_array = batch
+                .column_by_name("document_id")
                 .and_then(|a| a.as_any().downcast_ref::<StringArray>())
                 .ok_or_else(|| AppError::Internal("Missing document_id".into()))?;
-            let content_array = batch.column_by_name("content")
+            let content_array = batch
+                .column_by_name("content")
                 .and_then(|a| a.as_any().downcast_ref::<StringArray>())
                 .ok_or_else(|| AppError::Internal("Missing content".into()))?;
-            let page_array = batch.column_by_name("page")
+            let page_array = batch
+                .column_by_name("page")
                 .and_then(|a| a.as_any().downcast_ref::<Int32Array>())
                 .ok_or_else(|| AppError::Internal("Missing page".into()))?;
-            let distance_array = batch.column_by_name("_distance")
+            let distance_array = batch
+                .column_by_name("_distance")
                 .and_then(|a| a.as_any().downcast_ref::<Float32Array>());
 
             for i in 0..batch.num_rows() {
@@ -239,17 +297,67 @@ impl VectorDb {
         let mut seen: HashSet<(String, u32, String)> = HashSet::new();
         out.retain(|r| seen.insert((r.document_id.clone(), r.page, r.content.clone())));
         out.truncate(limit);
-        
+
         Ok(HybridSearchResult {
             results: out,
-            vector_only,
+            retrieval_mode,
         })
     }
 }
 
+fn should_build_ivf_pq(vector_count: usize) -> bool {
+    vector_count >= IVF_PQ_MINIMUM_VECTORS
+}
+
+fn has_index(
+    indexes: &[lancedb::index::IndexConfig],
+    index_type: &lancedb::index::IndexType,
+    column: &str,
+) -> bool {
+    indexes.iter().any(|index| {
+        &index.index_type == index_type && index.columns.iter().any(|indexed| indexed == column)
+    })
+}
+
+async fn wait_for_index(
+    table: &lancedb::Table,
+    index_type: &lancedb::index::IndexType,
+    column: &str,
+) -> Result<(), AppError> {
+    let indexes = table
+        .list_indices()
+        .await
+        .map_err(|e| AppError::VectorDb(format!("Failed to list created indexes: {e}")))?;
+    let index_names: Vec<_> = indexes
+        .iter()
+        .filter(|index| {
+            &index.index_type == index_type && index.columns.iter().any(|indexed| indexed == column)
+        })
+        .map(|index| index.name.as_str())
+        .collect();
+
+    if index_names.is_empty() {
+        return Err(AppError::VectorDb(format!(
+            "Created {index_type} index for {column} was not found in LanceDB"
+        )));
+    }
+
+    table
+        .wait_for_index(&index_names, std::time::Duration::from_secs(2 * 60 * 60))
+        .await
+        .map_err(|e| AppError::VectorDb(format!("Index readiness check failed: {e}")))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetrievalMode {
+    /// LanceDB ranked this result with reciprocal-rank fusion, not a calibrated confidence.
+    Hybrid,
+    VectorOnly,
+}
+
 pub struct HybridSearchResult {
     pub results: Vec<SearchResult>,
-    pub vector_only: bool,
+    pub retrieval_mode: RetrievalMode,
 }
 
 pub struct SearchResult {
@@ -257,4 +365,17 @@ pub struct SearchResult {
     pub content: String,
     pub page: u32,
     pub score: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_build_ivf_pq;
+
+    #[test]
+    fn ivf_pq_requires_at_least_256_vectors() {
+        assert!(!should_build_ivf_pq(0));
+        assert!(!should_build_ivf_pq(255));
+        assert!(should_build_ivf_pq(256));
+        assert!(should_build_ivf_pq(257));
+    }
 }

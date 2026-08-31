@@ -26,6 +26,7 @@ CREATE TABLE documents (
     -- 'queued'   : Eligible for/recoverable by the background worker
     -- 'embedding': Background task is actively processing
     -- 'indexed'  : Replacement vectors were stored successfully and are eligible for citations
+    -- 'deleting' : Durable deletion is in progress; excluded from retrieval and retried at startup
     -- 'failed'   : Processing error; retryable failures are requeued during startup recovery
     
     -- Indexing metadata
@@ -64,7 +65,7 @@ LanceDB manages tables using a strongly typed schema. Each row represents a sing
 | `chunk_index` | `Int32` | Position within the document. |
 | `content` | `String` | Chunk text stored with its `"passage: "` embedding prefix; reused for RAG prompt synthesis. |
 
-LanceDB does not contain document status, extraction version, or chunking configuration. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed`. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots.
+LanceDB does not contain document status, extraction version, or chunking configuration. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed`. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
 
 ## Application Settings
 
@@ -117,7 +118,11 @@ pub struct Citation {
     pub page:        i32,
     pub chunk_content: String,
     pub score:       f32,
+    pub is_hybrid:   bool,
 }
 
 ```
+
+`Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
+
 `TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—for example retrieval failures or an external request/status error—reject the `execute_query` IPC command instead.

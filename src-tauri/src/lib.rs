@@ -3,25 +3,26 @@ pub use state::AppState;
 mod model_download;
 
 use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent};
-use persistence::{init_pool, DocumentRepository, AppSettingsRepository, VectorDb};
+use log::{debug, error, info, warn};
+use persistence::lancedb::RetrievalMode;
+use persistence::{AppSettingsRepository, DocumentRepository, VectorDb, init_pool};
 use sha2::{Digest, Sha512};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tokio::sync::mpsc;
-use log::{debug, error, info, warn};
 
 static EMBEDDER_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-static LLM_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 const DEFAULT_EXTERNAL_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
 
-
-
 const EXTRACTION_VERSION: &str = "page-aware-v1";
+const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
 const RETRIEVAL_RESULT_LIMIT: usize = 10;
 
@@ -32,15 +33,83 @@ fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
         || name.file_name().and_then(|name| name.to_str()) != Some(filename)
         || !filename.to_ascii_lowercase().ends_with(".pdf")
     {
-        return Err(AppError::InvalidInput("Upload filename must be a PDF filename".into()));
+        return Err(AppError::InvalidInput(
+            "Upload filename must be a PDF filename".into(),
+        ));
     }
     if bytes.len() > MAX_UPLOAD_BYTES {
-        return Err(AppError::InvalidInput("PDF exceeds the 50 MiB upload limit".into()));
+        return Err(AppError::InvalidInput(
+            "PDF exceeds the 50 MiB upload limit".into(),
+        ));
     }
-    if !bytes.get(..1024).is_some_and(|prefix| prefix.windows(5).any(|window| window == b"%PDF-")) {
+    let prefix = &bytes[..bytes.len().min(1024)];
+    if !prefix.windows(5).any(|window| window == b"%PDF-") {
         return Err(AppError::InvalidInput("Upload is not a PDF".into()));
     }
     Ok(())
+}
+
+fn decode_upload_filename(encoded_filename: &str) -> Result<String, AppError> {
+    if !encoded_filename.is_ascii() {
+        return Err(AppError::InvalidInput(
+            "X-Filename must be percent-encoded UTF-8".into(),
+        ));
+    }
+
+    let bytes = encoded_filename.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len()
+                || !bytes[index + 1].is_ascii_hexdigit()
+                || !bytes[index + 2].is_ascii_hexdigit()
+            {
+                return Err(AppError::InvalidInput(
+                    "X-Filename contains an invalid percent escape".into(),
+                ));
+            }
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+
+    percent_encoding::percent_decode_str(encoded_filename)
+        .decode_utf8()
+        .map(|filename| filename.into_owned())
+        .map_err(|_| AppError::InvalidInput("X-Filename is not valid UTF-8".into()))
+}
+
+fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let crlf_boundary = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4));
+    let lf_boundary = buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| (position, 2));
+
+    match (crlf_boundary, lf_boundary) {
+        (Some(crlf), Some(lf)) => Some(if crlf.0 <= lf.0 { crlf } else { lf }),
+        (Some(boundary), None) | (None, Some(boundary)) => Some(boundary),
+        (None, None) => None,
+    }
+}
+
+fn sse_event_data(event: &str) -> Option<&str> {
+    event.lines().find_map(|line| {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        line.strip_prefix("data:")
+            .map(|data| data.strip_prefix(' ').unwrap_or(data))
+    })
+}
+
+fn registry_read_retry_delay(attempt: u32) -> Duration {
+    let multiplier = 1_u32 << attempt.saturating_sub(1).min(7);
+    REGISTRY_READ_RETRY_BASE_DELAY
+        .saturating_mul(multiplier)
+        .min(REGISTRY_READ_RETRY_MAX_DELAY)
 }
 
 fn is_valid_hugging_face_model_id(value: &str) -> bool {
@@ -56,17 +125,44 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     match key {
         "inference_mode" if matches!(value, "local" | "external") => Ok(()),
         "use_query_enhancement" if matches!(value, "true" | "false") => Ok(()),
-        "chunk_size" => value.parse::<usize>().ok().filter(|size| (128..=2048).contains(size))
-            .map(|_| ()).ok_or_else(|| AppError::InvalidInput("chunk_size must be 128–2048".into())),
-        "chunk_overlap" => value.parse::<usize>().ok().filter(|size| *size <= 1024)
-            .map(|_| ()).ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
-        "external_base_url" if reqwest::Url::parse(value).ok().is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some() && url.username().is_empty() && url.password().is_none()) => Ok(()),
+        "chunk_size" => value
+            .parse::<usize>()
+            .ok()
+            .filter(|size| (128..=2048).contains(size))
+            .map(|_| ())
+            .ok_or_else(|| AppError::InvalidInput("chunk_size must be 128–2048".into())),
+        "chunk_overlap" => value
+            .parse::<usize>()
+            .ok()
+            .filter(|size| *size <= 1024)
+            .map(|_| ())
+            .ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
+        "external_base_url"
+            if reqwest::Url::parse(value).ok().is_some_and(|url| {
+                matches!(url.scheme(), "http" | "https")
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+            }) =>
+        {
+            Ok(())
+        }
         "external_model" if !value.trim().is_empty() => Ok(()),
 
-        "generation_model" if value.split('/').count() == 2 && !value.contains(char::is_whitespace) => Ok(()),
+        "generation_model"
+            if value.split('/').count() == 2 && !value.contains(char::is_whitespace) =>
+        {
+            Ok(())
+        }
         "tokenizer_model" if is_valid_hugging_face_model_id(value) => Ok(()),
-        "gguf_filename" if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") => Ok(()),
-        _ => Err(AppError::InvalidInput(format!("Unsupported or invalid setting: {key}"))),
+        "gguf_filename"
+            if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") =>
+        {
+            Ok(())
+        }
+        _ => Err(AppError::InvalidInput(format!(
+            "Unsupported or invalid setting: {key}"
+        ))),
     }
 }
 
@@ -81,6 +177,174 @@ impl Drop for ActiveQuery {
             queries.remove(&self.request_id);
         }
     }
+}
+
+async fn request_llm_initialization(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    models_dir: std::path::PathBuf,
+) {
+    let mut initialization = state.llm_initialization.lock().await;
+    if initialization.in_progress {
+        return;
+    }
+    initialization.in_progress = true;
+    drop(initialization);
+
+    let llm_state = state.local_llm.clone();
+    let initialization = state.llm_initialization.clone();
+    let app = app.clone();
+    let pool = state.db_pool.clone();
+
+    tauri::async_runtime::spawn(async move {
+        let app_settings = AppSettingsRepository::new(pool);
+
+        loop {
+            let generation = initialization.lock().await.generation;
+            let mode = app_settings
+                .get("inference_mode")
+                .await
+                .unwrap_or_default()
+                .unwrap_or_else(|| "local".to_string());
+
+            if mode != "local" {
+                let mut current = initialization.lock().await;
+                if current.generation != generation {
+                    continue;
+                }
+                current.in_progress = false;
+                info!("BYO inference mode — skipping local LLM initialization");
+                let _ = app.emit("llm_ready", ());
+                return;
+            }
+
+            let model_id = app_settings
+                .get("generation_model")
+                .await
+                .unwrap_or_default()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
+            let tokenizer_model = app_settings
+                .get("tokenizer_model")
+                .await
+                .unwrap_or_default()
+                .filter(|model| is_valid_hugging_face_model_id(model))
+                .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
+            let gguf_filename = app_settings
+                .get("gguf_filename")
+                .await
+                .unwrap_or_default()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
+
+            info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
+            let gguf_path =
+                match model_download::download_model(&model_id, &gguf_filename, &models_dir, &app)
+                    .await
+                {
+                    Ok(path) => path,
+                    Err(error) => {
+                        error!("model download failed after all retries: {error}");
+                        let progress = model_download::ModelDownloadProgress {
+                            model_id: model_id.to_string(),
+                            current_file: String::new(),
+                            file_downloaded: 0,
+                            file_total: 0,
+                            files_completed: 0,
+                            total_files: 0,
+                            stage: model_download::DownloadStage::Error {
+                                message: error.to_string(),
+                            },
+                        };
+                        let mut current = initialization.lock().await;
+                        if current.generation != generation {
+                            continue;
+                        }
+                        current.in_progress = false;
+                        let _ = app.emit("model_download_progress", progress);
+                        return;
+                    }
+                };
+
+            let _ = app.emit(
+                "model_download_progress",
+                model_download::ModelDownloadProgress {
+                    model_id: model_id.to_string(),
+                    current_file: String::new(),
+                    file_downloaded: 0,
+                    file_total: 0,
+                    files_completed: 1,
+                    total_files: 1,
+                    stage: model_download::DownloadStage::LoadingModel,
+                },
+            );
+
+            let Some(parent_dir) = gguf_path.parent() else {
+                let message = format!(
+                    "GGUF path has no parent directory: '{}'",
+                    gguf_path.display()
+                );
+                error!("{message}");
+                let progress = model_download::ModelDownloadProgress {
+                    model_id: model_id.to_string(),
+                    current_file: String::new(),
+                    file_downloaded: 0,
+                    file_total: 0,
+                    files_completed: 0,
+                    total_files: 0,
+                    stage: model_download::DownloadStage::Error { message },
+                };
+                let mut current = initialization.lock().await;
+                if current.generation != generation {
+                    continue;
+                }
+                current.in_progress = false;
+                let _ = app.emit("model_download_progress", progress);
+                return;
+            };
+
+            info!("model downloaded, building mistral.rs pipeline...");
+            let builder = mistralrs::GgufModelBuilder::new(
+                parent_dir.to_string_lossy().to_string(),
+                vec![gguf_filename],
+            )
+            .with_tok_model_id(tokenizer_model);
+
+            match builder.build().await {
+                Ok(model) => {
+                    let mut current = initialization.lock().await;
+                    if current.generation != generation {
+                        continue;
+                    }
+                    *llm_state.write().await = Some(Arc::new(model));
+                    current.in_progress = false;
+                    info!("mistral.rs pipeline built and ready");
+                    let _ = app.emit("llm_ready", ());
+                    return;
+                }
+                Err(error) => {
+                    let message = format!("Failed to initialize local model: {error}");
+                    error!("{message}");
+                    let progress = model_download::ModelDownloadProgress {
+                        model_id,
+                        current_file: String::new(),
+                        file_downloaded: 0,
+                        file_total: 0,
+                        files_completed: 0,
+                        total_files: 0,
+                        stage: model_download::DownloadStage::Error { message },
+                    };
+                    let mut current = initialization.lock().await;
+                    if current.generation != generation {
+                        continue;
+                    }
+                    current.in_progress = false;
+                    let _ = app.emit("model_download_progress", progress);
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -102,213 +366,116 @@ async fn begin_first_run_init(
         return Ok(());
     }
 
-    let models_dir = app.path()
+    let models_dir = app
+        .path()
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?
         .join("models");
 
     if !embedder_ready && !EMBEDDER_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-    let embedder_state = state.embedder.clone();
-    let embedder_handle = app.clone();
-    let models_dir_embedder = models_dir.clone();
-    let embedder_pool = state.db_pool.clone();
-    let embedder_job_queue = state.job_queue.clone();
+        let embedder_state = state.embedder.clone();
+        let embedder_handle = app.clone();
+        let models_dir_embedder = models_dir.clone();
+        let embedder_pool = state.db_pool.clone();
+        let embedder_job_queue = state.job_queue.clone();
 
-    tauri::async_runtime::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            rag_pipeline::init_embedder(&models_dir_embedder)
-        }).await;
+        tauri::async_runtime::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                rag_pipeline::init_embedder(&models_dir_embedder)
+            })
+            .await;
 
-        match result {
-            Ok(Ok(emb)) => {
-                *embedder_state.write().await = Some(Arc::new(std::sync::Mutex::new(emb)));
-                let _ = embedder_handle.emit("embedder_ready", ());
+            match result {
+                Ok(Ok(emb)) => {
+                    *embedder_state.write().await = Some(Arc::new(std::sync::Mutex::new(emb)));
+                    let _ = embedder_handle.emit("embedder_ready", ());
 
-                // Recovery runs after the embedder is ready. Awaiting sends applies
-                // producer backpressure instead of silently dropping recovered work.
-                let repo = persistence::DocumentRepository::new(embedder_pool.clone());
+                    // Recovery runs after the embedder is ready. Awaiting sends applies
+                    // producer backpressure instead of silently dropping recovered work.
+                    let repo = persistence::DocumentRepository::new(embedder_pool.clone());
 
-                let mut recovered_ids = HashSet::new();
-                let settings = AppSettingsRepository::new(embedder_pool.clone());
-                match settings.get("extraction_version").await {
-                    Ok(Some(version)) if version == EXTRACTION_VERSION => {}
-                    Ok(_) => match repo.requeue_indexed_for_reindex().await {
-                        Ok(ids) => {
-                            recovered_ids.extend(ids);
-                            if let Err(e) = settings.set("extraction_version", EXTRACTION_VERSION).await {
-                                error!("citation reindex — failed to record extraction version: {e}");
+                    let mut recovered_ids = HashSet::new();
+                    let settings = AppSettingsRepository::new(embedder_pool.clone());
+                    match settings.get("extraction_version").await {
+                        Ok(Some(version)) if version == EXTRACTION_VERSION => {}
+                        Ok(_) => match repo.requeue_indexed_for_reindex().await {
+                            Ok(ids) => {
+                                recovered_ids.extend(ids);
+                                if let Err(e) =
+                                    settings.set("extraction_version", EXTRACTION_VERSION).await
+                                {
+                                    error!(
+                                        "citation reindex — failed to record extraction version: {e}"
+                                    );
+                                }
                             }
+                            Err(e) => error!(
+                                "citation reindex — failed to requeue indexed documents: {e}"
+                            ),
+                        },
+                        Err(e) => {
+                            error!("citation reindex — failed to read extraction version: {e}")
                         }
-                        Err(e) => error!("citation reindex — failed to requeue indexed documents: {e}"),
-                    },
-                    Err(e) => error!("citation reindex — failed to read extraction version: {e}"),
-                }
+                    }
 
-                match repo.reset_embedding_to_queued().await {
-                    Ok(ids) => recovered_ids.extend(ids),
-                    Err(e) => error!("startup recovery — failed to reset embedding documents: {e}"),
-                }
-                match repo.reset_failed_to_queued(3).await {
-                    Ok(ids) => recovered_ids.extend(ids),
-                    Err(e) => error!("startup recovery — failed to reset retryable documents: {e}"),
-                }
-                match repo.get_queued_ids().await {
-                    Ok(ids) => recovered_ids.extend(ids),
-                    Err(e) => error!("startup recovery — failed to list queued documents: {e}"),
-                }
+                    match repo.reset_embedding_to_queued().await {
+                        Ok(ids) => recovered_ids.extend(ids),
+                        Err(e) => {
+                            error!("startup recovery — failed to reset embedding documents: {e}")
+                        }
+                    }
+                    match repo.reset_failed_to_queued(3).await {
+                        Ok(ids) => recovered_ids.extend(ids),
+                        Err(e) => {
+                            error!("startup recovery — failed to reset retryable documents: {e}")
+                        }
+                    }
+                    match repo.get_queued_ids().await {
+                        Ok(ids) => recovered_ids.extend(ids),
+                        Err(e) => error!("startup recovery — failed to list queued documents: {e}"),
+                    }
 
-                let recovered_count = recovered_ids.len();
-                for id in recovered_ids {
-                    if let Err(e) = embedder_job_queue.send(id).await {
-                        error!("startup recovery — document worker stopped before recovery completed: {e}");
-                        break;
+                    let recovered_count = recovered_ids.len();
+                    for id in recovered_ids {
+                        if let Err(e) = embedder_job_queue.send(id).await {
+                            error!(
+                                "startup recovery — document worker stopped before recovery completed: {e}"
+                            );
+                            break;
+                        }
+                    }
+                    if recovered_count > 0 {
+                        info!("startup recovery — re-queued {recovered_count} documents");
+                    } else {
+                        debug!("startup recovery — no documents to resume");
                     }
                 }
-                if recovered_count > 0 {
-                    info!("startup recovery — re-queued {recovered_count} documents");
-                } else {
-                    debug!("startup recovery — no documents to resume");
+                Ok(Err(e)) => {
+                    EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+                    error!("embedder initialization failed: {e}");
+                    let _ = embedder_handle.emit(
+                        "embedder_failed",
+                        serde_json::json!({
+                            "message": e.to_string(),
+                        }),
+                    );
+                }
+                Err(e) => {
+                    EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+                    error!("embedder initialization task panicked: {e}");
+                    let _ = embedder_handle.emit(
+                        "embedder_failed",
+                        serde_json::json!({
+                            "message": format!("Embedder task panicked: {e}"),
+                        }),
+                    );
                 }
             }
-            Ok(Err(e)) => {
-                EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-                error!("embedder initialization failed: {e}");
-                let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
-                    "message": e.to_string(),
-                }));
-            }
-            Err(e) => {
-                EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-                error!("embedder initialization task panicked: {e}");
-                let _ = embedder_handle.emit("embedder_failed", serde_json::json!({
-                    "message": format!("Embedder task panicked: {e}"),
-                }));
-            }
-        }
-    });
+        });
     }
 
-    if !llm_ready && !LLM_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-    let llm_state = state.local_llm.clone();
-    let llm_handle = app.clone();
-    let pool = state.db_pool.clone();
-    let models_dir_llm = models_dir;
-
-    tauri::async_runtime::spawn(async move {
-        let app_settings = persistence::AppSettingsRepository::new(pool);
-        let mode = app_settings.get("inference_mode").await
-            .unwrap_or_default()
-            .unwrap_or_else(|| "local".to_string());
-
-        if mode != "local" {
-            info!("BYO inference mode — skipping local LLM initialization");
-            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-            let _ = llm_handle.emit("llm_ready", ());
-            return;
-        }
-
-        let model_id = app_settings.get("generation_model").await
-            .unwrap_or_default()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
-
-        let tokenizer_model = app_settings.get("tokenizer_model").await
-            .unwrap_or_default()
-            .filter(|model| is_valid_hugging_face_model_id(model))
-            .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
-
-        let gguf_filename = app_settings.get("gguf_filename").await
-            .unwrap_or_default()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
-
-        info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
-
-        let gguf_path = match model_download::download_model(
-            &model_id,
-            &gguf_filename,
-            &models_dir_llm,
-            &llm_handle,
-        ).await {
-            Ok(p) => p,
-            Err(e) => {
-                error!("model download failed after all retries: {e}");
-                let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
-                    model_id: model_id.to_string(),
-                    current_file: String::new(),
-                    file_downloaded: 0,
-                    file_total: 0,
-                    files_completed: 0,
-                    total_files: 0,
-                    stage: model_download::DownloadStage::Error { message: e.to_string() },
-                });
-                LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-                return;
-            }
-        };
-
-        let _ = llm_handle.emit(
-            "model_download_progress",
-            model_download::ModelDownloadProgress {
-                model_id: model_id.to_string(),
-                current_file: String::new(),
-                file_downloaded: 0,
-                file_total: 0,
-                files_completed: 1,
-                total_files: 1,
-                stage: model_download::DownloadStage::LoadingModel,
-            },
-        );
-
-        info!("model downloaded, building mistral.rs pipeline...");
-
-        let Some(parent_dir) = gguf_path.parent() else {
-            let msg = format!(
-                "GGUF path has no parent directory: '{}'",
-                gguf_path.display()
-            );
-            error!("{msg}");
-            let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
-                model_id: model_id.to_string(),
-                current_file: String::new(),
-                file_downloaded: 0,
-                file_total: 0,
-                files_completed: 0,
-                total_files: 0,
-                stage: model_download::DownloadStage::Error { message: msg },
-            });
-            LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-            return;
-        };
-
-        let builder = mistralrs::GgufModelBuilder::new(
-            parent_dir.to_string_lossy().to_string(),
-            vec![gguf_filename.to_string()],
-        )
-        .with_tok_model_id(tokenizer_model);
-
-        match builder.build().await {
-            Ok(model) => {
-                *llm_state.write().await = Some(Arc::new(model));
-                info!("mistral.rs pipeline built and ready");
-                let _ = llm_handle.emit("llm_ready", ());
-            }
-            Err(e) => {
-                let msg = format!("Failed to initialize local model: {e}");
-                error!("{msg}");
-                let _ = llm_handle.emit("model_download_progress", model_download::ModelDownloadProgress {
-                    model_id: model_id.to_string(),
-                    current_file: String::new(),
-                    file_downloaded: 0,
-                    file_total: 0,
-                    files_completed: 0,
-                    total_files: 0,
-                    stage: model_download::DownloadStage::Error { message: msg },
-                });
-                LLM_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
-            }
-        }
-    });
+    if !llm_ready {
+        request_llm_initialization(&app, &state, models_dir).await;
     }
 
     Ok(())
@@ -319,14 +486,18 @@ async fn upload_document(
     app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<String, AppError> {
-    let filename = request.headers()
+    let encoded_filename = request
+        .headers()
         .get("x-filename")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| AppError::Io("Missing filename header".into()))?
-        .to_string();
+        .ok_or_else(|| AppError::InvalidInput("Missing X-Filename header".into()))?
+        .to_str()
+        .map_err(|_| AppError::InvalidInput("X-Filename must be percent-encoded UTF-8".into()))?;
+    let filename = decode_upload_filename(encoded_filename)?;
     let file_bytes = match request.body() {
         tauri::ipc::InvokeBody::Raw(b) => b.clone(),
-        tauri::ipc::InvokeBody::Json(_) => return Err(AppError::Io("Expected raw binary body".into())),
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err(AppError::Io("Expected raw binary body".into()));
+        }
     };
 
     validate_upload(&filename, &file_bytes)?;
@@ -352,9 +523,10 @@ async fn upload_document(
     .map_err(|e| AppError::Internal(format!("Hashing failed: {}", e)))?;
 
     if let Some(existing) = repo.find_by_hash(&hash).await? {
-        return Err(AppError::DuplicateDocument(
-            format!("This file was already uploaded as '{}' (status: {:?})", existing.filename, existing.status)
-        ));
+        return Err(AppError::DuplicateDocument(format!(
+            "This file was already uploaded as '{}' (status: {:?})",
+            existing.filename, existing.status
+        )));
     }
 
     let doc_id = uuid::Uuid::now_v7().to_string();
@@ -364,9 +536,7 @@ async fn upload_document(
 
     tokio::fs::write(&storage_path, &file_bytes).await?;
 
-    let created_at = jiff::Zoned::now()
-        .strftime("%Y-%m-%d %H:%M:%S")
-        .to_string();
+    let created_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string();
 
     let doc = Document {
         id: doc_id.clone(),
@@ -467,7 +637,8 @@ async fn execute_query(
             RETRIEVAL_CANDIDATE_LIMIT,
         )
         .await?;
-    if search.vector_only {
+    let is_hybrid = search.retrieval_mode == RetrievalMode::Hybrid;
+    if search.retrieval_mode == RetrievalMode::VectorOnly {
         let _ = channel.send(TokenEvent::Warning {
             message: "Full-text retrieval is temporarily unavailable; this answer uses vector-only retrieval.".into(),
         });
@@ -491,10 +662,14 @@ async fn execute_query(
         citations.push(Citation {
             document_id: result.document_id.clone(),
             filename: doc.filename,
-            storage_path: app_local_data.join(&doc.storage_path).to_string_lossy().to_string(),
+            storage_path: app_local_data
+                .join(&doc.storage_path)
+                .to_string_lossy()
+                .to_string(),
             page: result.page as i32,
             chunk_content: result.content.clone(),
             score: 1.0 / (1.0 + result.score),
+            is_hybrid,
         });
     }
     citations.truncate(RETRIEVAL_RESULT_LIMIT);
@@ -502,17 +677,23 @@ async fn execute_query(
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
     let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Cite sources by indicating the page number in brackets like [Page N]. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
 
-    let mode = settings_repo.get("inference_mode").await
+    let mode = settings_repo
+        .get("inference_mode")
+        .await
         .unwrap_or_default()
         .unwrap_or_else(|| "local".to_string());
 
     if mode == "external" {
-        let model = settings_repo.get("external_model").await
+        let model = settings_repo
+            .get("external_model")
+            .await
             .unwrap_or_default()
             .filter(|model| !model.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_EXTERNAL_MODEL.to_string());
 
-        let base_url = settings_repo.get("external_base_url").await
+        let base_url = settings_repo
+            .get("external_base_url")
+            .await
             .unwrap_or_default()
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
 
@@ -552,7 +733,7 @@ async fn execute_query(
 
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut buffer = Vec::new();
 
         loop {
             let chunk = tokio::select! {
@@ -568,38 +749,55 @@ async fn execute_query(
             };
             let chunk = match chunk {
                 Ok(chunk) => chunk,
-                Err(e) => {
+                Err(error) => {
                     let _ = channel.send(TokenEvent::Error {
-                        message: format!("Stream error: {e}"),
+                        message: format!("Stream error: {error}"),
                         citations,
                     });
                     return Ok(());
                 }
             };
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            buffer.extend_from_slice(&chunk);
 
-            while let Some((pos, delimiter_len)) = buffer
-                .find("\r\n\r\n")
-                .map(|pos| (pos, 4))
-                .or_else(|| buffer.find("\n\n").map(|pos| (pos, 2)))
-            {
-                let line = buffer[..pos].trim_end_matches('\r').to_string();
-                buffer = buffer[pos + delimiter_len..].to_string();
-
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" {
-                        let _ = channel.send(TokenEvent::Done { citations });
+            while let Some((event_end, delimiter_len)) = sse_event_boundary(&buffer) {
+                let event = match std::str::from_utf8(&buffer[..event_end]) {
+                    Ok(event) => event,
+                    Err(_) => {
+                        let _ = channel.send(TokenEvent::Error {
+                            message: "External inference sent invalid UTF-8 in a complete event."
+                                .into(),
+                            citations,
+                        });
                         return Ok(());
                     }
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                        if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !token.is_empty()
-                                && channel.send(TokenEvent::Token { text: token.to_string() }).is_err()
-                            {
-                                return Ok(());
+                };
+                let is_done = if let Some(data) = sse_event_data(event) {
+                    if data == "[DONE]" {
+                        true
+                    } else {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                            if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
+                                if !token.is_empty()
+                                    && channel
+                                        .send(TokenEvent::Token {
+                                            text: token.to_string(),
+                                        })
+                                        .is_err()
+                                {
+                                    return Ok(());
+                                }
                             }
                         }
+                        false
                     }
+                } else {
+                    false
+                };
+                buffer.drain(..event_end + delimiter_len);
+
+                if is_done {
+                    let _ = channel.send(TokenEvent::Done { citations });
+                    return Ok(());
                 }
             }
         }
@@ -612,7 +810,10 @@ async fn execute_query(
 
     if let Some(model) = model {
         let request = mistralrs::RequestBuilder::new()
-            .add_message(mistralrs::TextMessageRole::System, system_prompt.to_string())
+            .add_message(
+                mistralrs::TextMessageRole::System,
+                system_prompt.to_string(),
+            )
             .add_message(mistralrs::TextMessageRole::User, context);
 
         let stream_result = tokio::select! {
@@ -630,7 +831,11 @@ async fn execute_query(
                         if let Some(choice) = chunk.choices.first() {
                             if let Some(token) = &choice.delta.content {
                                 if !token.is_empty()
-                                    && channel.send(TokenEvent::Token { text: token.clone() }).is_err()
+                                    && channel
+                                        .send(TokenEvent::Token {
+                                            text: token.clone(),
+                                        })
+                                        .is_err()
                                 {
                                     return Ok(());
                                 }
@@ -686,6 +891,67 @@ async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Documen
     repo.list_all().await
 }
 
+fn document_pdf_path(
+    app_local_data: &std::path::Path,
+    storage_path: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    let stored_path = std::path::Path::new(storage_path);
+    if stored_path.is_absolute()
+        || stored_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(AppError::Internal(
+            "Document has an unsafe storage path".into(),
+        ));
+    }
+
+    Ok(app_local_data.join(stored_path))
+}
+
+async fn finish_document_deletion(
+    repo: &DocumentRepository,
+    vector_db: &VectorDb,
+    app_local_data: &std::path::Path,
+    document: &Document,
+) -> Result<(), AppError> {
+    vector_db.delete_chunks(&document.id).await?;
+
+    let pdf_path = document_pdf_path(app_local_data, &document.storage_path)?;
+    match tokio::fs::remove_file(pdf_path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::Io(error.to_string())),
+    }
+
+    repo.delete_by_id(&document.id).await
+}
+
+async fn reconcile_pending_deletions(
+    repo: &DocumentRepository,
+    vector_db: &VectorDb,
+    app_local_data: &std::path::Path,
+) {
+    let documents = match repo.get_deleting_documents().await {
+        Ok(documents) => documents,
+        Err(error) => {
+            error!("startup deletion recovery — failed to list deleting documents: {error}");
+            return;
+        }
+    };
+
+    for document in documents {
+        let document_id = document.id.clone();
+        if let Err(error) =
+            finish_document_deletion(repo, vector_db, app_local_data, &document).await
+        {
+            error!("startup deletion recovery — failed to delete document {document_id}: {error}");
+        } else {
+            info!("startup deletion recovery — deleted document {document_id}");
+        }
+    }
+}
+
 #[tauri::command]
 async fn delete_document(
     app: tauri::AppHandle,
@@ -698,30 +964,23 @@ async fn delete_document(
     let _document_operation = state.document_operations.write().await;
     let repo = DocumentRepository::new(state.db_pool.clone());
     let document = repo.get_by_id(&id).await?;
-    let pdf_path = if let Some(doc) = document.as_ref() {
-        let app_local_data = app.path().app_local_data_dir().map_err(|e| AppError::Io(e.to_string()))?;
-        let stored_path = std::path::Path::new(&doc.storage_path);
-        if stored_path.is_absolute()
-            || stored_path.components().any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(AppError::Internal("Document has an unsafe storage path".into()));
-        }
-        Some(app_local_data.join(stored_path))
+    if let Some(document) = document {
+        let app_local_data = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| AppError::Io(error.to_string()))?;
+        document_pdf_path(&app_local_data, &document.storage_path)?;
+        repo.mark_deleting(&id).await?;
+        finish_document_deletion(&repo, &state.vector_db, &app_local_data, &document).await?;
     } else {
-        None
-    };
-
-    state.vector_db.delete_chunks(&id).await?;
-    repo.delete_by_id(&id).await?;
-
-    if let Some(pdf_path) = pdf_path {
-        if tokio::fs::metadata(&pdf_path).await.is_ok() {
-            tokio::fs::remove_file(pdf_path).await.map_err(|e| AppError::Io(e.to_string()))?;
-        }
+        state.vector_db.delete_chunks(&id).await?;
     }
-    let _ = app.emit("document_deleted", serde_json::json!({
-        "document_id": &id,
-    }));
+    let _ = app.emit(
+        "document_deleted",
+        serde_json::json!({
+            "document_id": &id,
+        }),
+    );
 
     Ok(())
 }
@@ -742,23 +1001,30 @@ async fn cancel_query(
 }
 
 #[tauri::command]
-async fn get_settings(state: tauri::State<'_, AppState>) -> Result<HashMap<String, String>, AppError> {
+async fn get_settings(
+    state: tauri::State<'_, AppState>,
+) -> Result<HashMap<String, String>, AppError> {
     let repo = AppSettingsRepository::new(state.db_pool.clone());
-    
+
     let mut settings = HashMap::new();
     let keys = vec![
-        "inference_mode", "external_base_url", "external_model", "generation_model",
-        "tokenizer_model", "gguf_filename", "use_query_enhancement", "chunk_size",
-        "chunk_overlap"
+        "inference_mode",
+        "external_base_url",
+        "external_model",
+        "generation_model",
+        "tokenizer_model",
+        "gguf_filename",
+        "use_query_enhancement",
+        "chunk_size",
+        "chunk_overlap",
     ];
 
-    
     for key in keys {
         if let Some(val) = repo.get(key).await? {
             settings.insert(key.to_string(), val);
         }
     }
-    
+
     Ok(settings)
 }
 
@@ -773,18 +1039,22 @@ async fn set_setting(
     let repo = AppSettingsRepository::new(state.db_pool.clone());
 
     let chunk_size = if key == "chunk_size" {
-        value.parse::<usize>()
+        value
+            .parse::<usize>()
             .map_err(|_| AppError::InvalidInput("Invalid chunk_size".into()))?
     } else {
-        repo.get("chunk_size").await?
+        repo.get("chunk_size")
+            .await?
             .and_then(|value| value.parse().ok())
             .unwrap_or(512)
     };
     let chunk_overlap = if key == "chunk_overlap" {
-        value.parse::<usize>()
+        value
+            .parse::<usize>()
             .map_err(|_| AppError::InvalidInput("Invalid chunk_overlap".into()))?
     } else {
-        repo.get("chunk_overlap").await?
+        repo.get("chunk_overlap")
+            .await?
             .and_then(|value| value.parse().ok())
             .unwrap_or(80)
     };
@@ -796,10 +1066,17 @@ async fn set_setting(
 
     repo.set(&key, &value).await?;
     if key == "inference_mode" {
-        if value == "external" {
-            let _ = app.emit("llm_ready", ());
-        } else {
-            let _ = app.emit("llm_unready", ());
+        {
+            let mut initialization = state.llm_initialization.lock().await;
+            initialization.generation = initialization.generation.wrapping_add(1);
+            let event = if value == "external" {
+                "llm_ready"
+            } else {
+                "llm_unready"
+            };
+            let _ = app.emit(event, ());
+        }
+        if value == "local" {
             begin_first_run_init(app, state).await?;
         }
     }
@@ -811,7 +1088,8 @@ async fn set_api_key(key: String) -> Result<bool, AppError> {
     tokio::task::spawn_blocking(move || {
         let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
-        entry.set_password(&key)
+        entry
+            .set_password(&key)
             .map_err(|e| AppError::Internal(format!("keyring set: {e}")))?;
         Ok(true)
     })
@@ -821,15 +1099,15 @@ async fn set_api_key(key: String) -> Result<bool, AppError> {
 
 #[tauri::command]
 async fn has_api_key() -> Result<bool, AppError> {
-    tokio::task::spawn_blocking(|| {
-        match keyring::v1::Entry::new("ragtag", "external_api_key") {
+    tokio::task::spawn_blocking(
+        || match keyring::v1::Entry::new("ragtag", "external_api_key") {
             Ok(entry) => match entry.get_password() {
                 Ok(pwd) => Ok(!pwd.is_empty()),
                 Err(_) => Ok(false),
             },
             Err(_) => Ok(false),
-        }
-    })
+        },
+    )
     .await
     .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
 }
@@ -839,7 +1117,8 @@ async fn delete_api_key() -> Result<bool, AppError> {
     tokio::task::spawn_blocking(|| {
         let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
-        entry.delete_credential()
+        entry
+            .delete_credential()
             .map_err(|e| AppError::Internal(format!("keyring delete: {e}")))?;
         Ok(true)
     })
@@ -852,7 +1131,9 @@ async fn get_storage_info(
     app: tauri::AppHandle,
     _state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
-    let app_local_data = app.path().app_local_data_dir()
+    let app_local_data = app
+        .path()
+        .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
 
     let db_size = tokio::fs::metadata(app_local_data.join("app.db"))
@@ -917,9 +1198,7 @@ async fn compact_vector_store(
 }
 
 #[tauri::command]
-async fn vacuum_database(
-    state: tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, AppError> {
+async fn vacuum_database(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, AppError> {
     sqlx::query("VACUUM")
         .execute(&state.db_pool)
         .await
@@ -928,12 +1207,92 @@ async fn vacuum_database(
     Ok(serde_json::json!({"status": "vacuumed"}))
 }
 
+fn remove_path_if_present(path: &std::path::Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+fn remove_non_fastembed_models(models_dir: &std::path::Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(models_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().contains("fastembed") {
+            remove_path_if_present(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn complete_pending_reset(
+    app_local_data: &std::path::Path,
+    sentinel: &std::path::Path,
+) -> Result<(), AppError> {
+    let contents = match std::fs::read_to_string(sentinel) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::Io(format!(
+                "Could not read pending reset marker: {error}"
+            )));
+        }
+    };
+    let config: serde_json::Value = serde_json::from_str(&contents).map_err(|error| {
+        AppError::InvalidInput(format!("Pending reset marker is invalid: {error}"))
+    })?;
+    let delete_models = config["delete_models"].as_bool().unwrap_or(false);
+
+    let mut failures = Vec::new();
+    for path in [
+        app_local_data.join("documents"),
+        app_local_data.join(".lancedb"),
+        app_local_data.join("app.db"),
+        app_local_data.join("app.db-wal"),
+        app_local_data.join("app.db-shm"),
+    ] {
+        if let Err(error) = remove_path_if_present(&path) {
+            failures.push(format!("{}: {error}", path.display()));
+        }
+    }
+    if delete_models {
+        let models_dir = app_local_data.join("models");
+        if let Err(error) = remove_non_fastembed_models(&models_dir) {
+            failures.push(format!("{}: {error}", models_dir.display()));
+        }
+    }
+
+    if !failures.is_empty() {
+        return Err(AppError::Io(format!(
+            "Pending data reset incomplete: {}",
+            failures.join("; "),
+        )));
+    }
+
+    std::fs::remove_file(sentinel)
+        .map_err(|error| AppError::Io(format!("Could not clear pending reset marker: {error}")))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn reset_all_data(
     app: tauri::AppHandle,
     delete_models: bool,
 ) -> Result<serde_json::Value, AppError> {
-    let app_local_data = app.path().app_local_data_dir()
+    let app_local_data = app
+        .path()
+        .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
 
     let sentinel = app_local_data.join(".reset_pending");
@@ -960,36 +1319,12 @@ pub fn run() {
                     e.to_string(),
                 )))?;
 
-            // Two-phase reset: check for pending reset sentinel before any DB init
+            // Complete a requested reset before opening either data store. On any
+            // failure the sentinel remains in place so the next launch retries it.
             let sentinel = app_local_data.join(".reset_pending");
-            if sentinel.exists() {
-                if let Ok(contents) = std::fs::read_to_string(&sentinel) {
-                    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
-                        let delete_models = config["delete_models"].as_bool().unwrap_or(false);
-
-                        // Purge data directories
-                        let _ = std::fs::remove_dir_all(app_local_data.join("documents"));
-                        let _ = std::fs::remove_dir_all(app_local_data.join(".lancedb"));
-                        let _ = std::fs::remove_file(app_local_data.join("app.db"));
-                        let _ = std::fs::remove_file(app_local_data.join("app.db-wal"));
-                        let _ = std::fs::remove_file(app_local_data.join("app.db-shm"));
-
-                        if delete_models {
-                            // Remove model dirs but preserve fastembed cache
-                            if let Ok(entries) = std::fs::read_dir(app_local_data.join("models")) {
-                                for entry in entries.flatten() {
-                                    let name = entry.file_name();
-                                    let name_str = name.to_string_lossy();
-                                    if !name_str.contains("fastembed") {
-                                        let _ = std::fs::remove_dir_all(entry.path());
-                                    }
-                                }
-                            }
-                        }
-
-                        let _ = std::fs::remove_file(&sentinel);
-                    }
-                }
+            if let Err(error) = complete_pending_reset(&app_local_data, &sentinel) {
+                error!("pending data reset failed: {error}");
+                return Err(Box::new(std::io::Error::other(error.to_string())));
             }
 
             let pool = tauri::async_runtime::block_on(init_pool(&app_local_data))
@@ -1008,17 +1343,29 @@ pub fn run() {
                     e.to_string(),
                 )))?;
             let vector_db = Arc::new(vector_db);
+            let deletion_repo = DocumentRepository::new(pool.clone());
+            tauri::async_runtime::block_on(reconcile_pending_deletions(
+                &deletion_repo,
+                &vector_db,
+                &app_local_data,
+            ));
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
+            let llm_initialization = Arc::new(tokio::sync::Mutex::new(
+                state::LlmInitializationState::default(),
+            ));
+            let registry_read_retries = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
             let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             app.manage(AppState {
                 db_pool: pool.clone(),
-                job_queue: tx,
+                job_queue: tx.clone(),
                 embedder: embedder.clone(),
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
+                llm_initialization,
+                registry_read_retries: registry_read_retries.clone(),
                 document_operations: document_operations.clone(),
                 active_queries: active_queries.clone(),
                 http_client: reqwest::Client::builder()
@@ -1033,6 +1380,8 @@ pub fn run() {
             // Background worker: processes documents from the channel
             let embedder_worker = embedder.clone();
             let document_operations_worker = document_operations.clone();
+            let job_queue_worker = tx;
+            let registry_read_retries_worker = registry_read_retries;
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
                 while let Some(doc_id) = rx.recv().await {
@@ -1051,7 +1400,8 @@ pub fn run() {
 
 
                     let result = match repo.get_by_id(&doc_id).await {
-                        Ok(Some(doc)) => {
+                        Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
+                            registry_read_retries_worker.lock().await.remove(&doc_id);
                             let settings_repo = AppSettingsRepository::new(pool.clone());
                             let chunk_size: usize = settings_repo.get("chunk_size").await
                                 .unwrap_or_default()
@@ -1080,12 +1430,38 @@ pub fn run() {
                                 },
                             ).await
                         }
+                        Ok(Some(document)) => {
+                            registry_read_retries_worker.lock().await.remove(&doc_id);
+                            debug!(
+                                "document {doc_id} is {:?}; ignoring stale queue entry",
+                                document.status,
+                            );
+                            continue;
+                        }
                         Ok(None) => {
+                            registry_read_retries_worker.lock().await.remove(&doc_id);
                             warn!("document {doc_id} not found in DB — may have been deleted");
                             continue;
                         }
-                        Err(e) => {
-                            error!("database error while fetching document {doc_id}: {e}");
+                        Err(error) => {
+                            let attempt = {
+                                let mut retries = registry_read_retries_worker.lock().await;
+                                let attempt = retries.entry(doc_id.clone()).or_insert(0);
+                                *attempt = attempt.saturating_add(1);
+                                *attempt
+                            };
+                            let delay = registry_read_retry_delay(attempt);
+                            warn!(
+                                "database error while fetching document {doc_id}: {error}; retrying in {delay:?}"
+                            );
+                            let queue = job_queue_worker.clone();
+                            let retry_document_id = doc_id.clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                if let Err(error) = queue.send(retry_document_id).await {
+                                    error!("registry read retry producer stopped: {error}");
+                                }
+                            });
                             continue;
                         }
                     };
@@ -1113,8 +1489,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            begin_first_run_init, 
-            upload_document, 
+            begin_first_run_init,
+            upload_document,
             execute_query,
             cancel_query,
             list_documents,
@@ -1135,7 +1511,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_setting;
+    use super::{
+        decode_upload_filename, registry_read_retry_delay, sse_event_boundary, sse_event_data,
+        validate_setting, validate_upload,
+    };
+    use std::time::Duration;
 
     #[test]
     fn validates_external_model() {
@@ -1147,8 +1527,51 @@ mod tests {
     #[test]
     fn validates_tokenizer_model() {
         assert!(validate_setting("tokenizer_model", "Qwen/Qwen3-1.7B").is_ok());
-        for invalid in ["", "Qwen", "Qwen/", "/Qwen3-1.7B", "Qwen/Qwen3/1.7B", "Qwen /Qwen3-1.7B"] {
+        for invalid in [
+            "",
+            "Qwen",
+            "Qwen/",
+            "/Qwen3-1.7B",
+            "Qwen/Qwen3/1.7B",
+            "Qwen /Qwen3-1.7B",
+        ] {
             assert!(validate_setting("tokenizer_model", invalid).is_err());
         }
+    }
+
+    #[test]
+    fn decodes_percent_encoded_utf8_filename_strictly() {
+        assert_eq!(
+            decode_upload_filename("%E6%93%8D%E4%BD%9C%E8%AF%B4%E6%98%8E.pdf").unwrap(),
+            "操作说明.pdf",
+        );
+        assert!(decode_upload_filename("report%2.pdf").is_err());
+        assert!(decode_upload_filename("%FF.pdf").is_err());
+    }
+
+    #[test]
+    fn accepts_pdf_signature_in_short_payload() {
+        assert!(validate_upload("minimal.pdf", b"%PDF-").is_ok());
+    }
+
+    #[test]
+    fn decodes_sse_only_after_complete_utf8_event() {
+        let mut buffer = b"data: {\"choices\":[{\"delta\":{\"content\":\"caf\xc3".to_vec();
+        assert!(sse_event_boundary(&buffer).is_none());
+        buffer.extend_from_slice(b"\xa9\"}}]}\n\n");
+
+        let (event_end, _) = sse_event_boundary(&buffer).unwrap();
+        let event = std::str::from_utf8(&buffer[..event_end]).unwrap();
+        assert_eq!(
+            sse_event_data(event),
+            Some("{\"choices\":[{\"delta\":{\"content\":\"café\"}}]}"),
+        );
+    }
+
+    #[test]
+    fn caps_registry_read_retry_delay() {
+        assert_eq!(registry_read_retry_delay(1), Duration::from_millis(250));
+        assert_eq!(registry_read_retry_delay(3), Duration::from_secs(1));
+        assert_eq!(registry_read_retry_delay(u32::MAX), Duration::from_secs(30));
     }
 }

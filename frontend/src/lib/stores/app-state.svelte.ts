@@ -1,4 +1,3 @@
-import { listen } from '@tauri-apps/api/event';
 import { api } from '$lib/api';
 
 type AppPhase = 'starting' | 'downloading_model' | 'ready' | 'error';
@@ -36,29 +35,26 @@ export class AppState {
 
   async init() {
     try {
-      const unlistenEmbedder = await listen('embedder_ready', () => {
+      const unlistenEmbedder = await api.listen('embedder_ready', () => {
         console.log('[AppState] embedder ready');
         this.embedderAvailable = true;
         this.#tryBecomeReady();
       });
 
-      const unlistenEmbedderFailed = await listen<{ message: string }>('embedder_failed', (event) => {
+      const unlistenEmbedderFailed = await api.listen<{ message: string }>('embedder_failed', (event) => {
         console.error('[AppState] embedder failed:', event.payload.message);
+        this.embedderAvailable = false;
         this.phase = 'error';
         this.errorMessage = event.payload.message;
       });
 
-      const unlistenProgress = await listen<DownloadProgress>('model_download_progress', (event) => {
+      const unlistenProgress = await api.listen<DownloadProgress>('model_download_progress', (event) => {
         const p = event.payload;
         console.log('[AppState] download progress:', p);
 
         if (p.type === 'error') {
           this.modelError = p.message || `Model download failed: ${p.model_id}`;
           this.downloadIsIndeterminate = false;
-          if (!this.embedderAvailable) {
-            this.phase = 'error';
-            this.errorMessage = this.modelError;
-          }
           return;
         }
 
@@ -98,12 +94,13 @@ export class AppState {
         }
       });
 
-      const unlistenLlm = await listen('llm_ready', () => {
+      const unlistenLlm = await api.listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
         this.llmReady = true;
+        this.modelError = '';
         this.#tryBecomeReady();
       });
-      const unlistenLlmUnready = await listen('llm_unready', () => {
+      const unlistenLlmUnready = await api.listen('llm_unready', () => {
         console.log('[AppState] local LLM initialization requested');
         this.llmReady = false;
         this.modelError = '';
@@ -137,7 +134,7 @@ export class AppState {
   }
 
   #tryBecomeReady() {
-    if (this.phase !== 'error' && this.ingestionAvailable) {
+    if (this.ingestionAvailable) {
       this.phase = 'ready';
     }
   }

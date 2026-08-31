@@ -39,7 +39,9 @@
           </div>
           <div class="citation-details">
             <span class="badge">Page {citation.page}</span>
-            <ConfidenceBadge score={citation.score} />
+            {#if !citation.is_hybrid}
+              <ConfidenceBadge score={citation.score} />
+            {/if}
           </div>
           <p class="citation-text">"{citation.chunk_content}"</p>
         </button>

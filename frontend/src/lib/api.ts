@@ -1,4 +1,5 @@
-import { invoke, Channel } from '@tauri-apps/api/core';
+import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
+import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Document, TokenEvent } from './types';
 
 export const api = {
@@ -11,7 +12,7 @@ export const api = {
     return invoke<string>('upload_document', bytes, {
       headers: {
         'Content-Type': 'application/octet-stream',
-        'X-Filename': file.name,
+        'X-Filename': encodeURIComponent(file.name),
       }
     });
   },
@@ -28,6 +29,12 @@ export const api = {
   },
 
   cancelQuery: (requestId: string) => invoke<void>('cancel_query', { requestId }),
+
+  listen<T>(event: string, handler: (event: Event<T>) => void): Promise<UnlistenFn> {
+    return listen<T>(event, handler);
+  },
+
+  assetUrl: (path: string) => convertFileSrc(path),
   
   listDocuments: () => invoke<Document[]>('list_documents'),
   
@@ -54,5 +61,5 @@ export const api = {
 
   vacuumDatabase: () => invoke<{ status: string }>('vacuum_database'),
 
-  resetAllData: (deleteModels: boolean) => invoke<{ requires_restart: boolean }>('reset_all_data', { deleteModels })
+  resetAllData: (deleteModels: boolean) => invoke<{ restarting: boolean }>('reset_all_data', { deleteModels })
 };

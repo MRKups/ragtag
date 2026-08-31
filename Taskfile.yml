@@ -103,11 +103,6 @@ tasks:
     dir: '{{.FRONTEND_DIR}}'
     cmds:
       - npm run build
-    sources:
-      - src/**/*.svelte
-      - src/**/*.ts
-    generates:
-      - dist/index.html
 
   check:
     desc: Run TypeScript and Svelte type-checking

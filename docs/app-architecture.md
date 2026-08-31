@@ -24,10 +24,10 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 
 ### Rust Core (The Backend)
 - **Commands:** Thin `#[tauri::command]` functions acting as IPC handlers.
-- **State & Setup (`lib.rs`):** The `lib.rs` file orchestrates state initialization, SQLite pooling, command registration, and background channels. It initializes `fastembed` in `spawn_blocking`; when local inference is selected, it asynchronously downloads and builds a pre-quantized GGUF `mistral.rs` model. LanceDB indexes are created lazily after vector rows are written. Model download/build failures are emitted as progress errors rather than falsely reporting the local model ready.
-- **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). Uploads use `try_send()` at the IPC boundary (returning `QueueFull` rather than blocking the UI); recovery uses `send().await` so recovered jobs are not silently dropped.
-- **Crash Recovery:** After the embedder becomes ready, startup requeues documents left `embedding`, retryable failed documents, and queued documents. It also requeues all indexed documents when the global `extraction_version` marker differs, so page-aware extraction changes are reapplied.
-- **LLM Management:** `AppState` holds an optional `Arc<mistralrs::Model>` behind an async lock. It is populated only after a local build succeeds; external mode has no local model and immediately emits `llm_ready` without contacting the external endpoint.
+- **State & Setup (`lib.rs`):** The `lib.rs` file orchestrates state initialization, SQLite pooling, command registration, and background channels. It initializes `fastembed` in `spawn_blocking`; when local inference is selected, it asynchronously downloads and builds a pre-quantized GGUF `mistral.rs` model. FTS indexes are created after vector rows exist; IVF-PQ is deferred until the shared table contains its 256-vector training minimum. Model download/build failures are emitted as progress errors rather than falsely reporting the local model ready.
+- **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). Uploads use `try_send()` at the IPC boundary (returning `QueueFull` rather than blocking the UI); recovery uses `send().await` so recovered jobs are not silently dropped. A transient registry read after dequeue is re-enqueued by a separate bounded-backoff producer, never by blocking the sole worker.
+- **Crash Recovery:** Startup completes durable `deleting` document records before normal work. After the embedder becomes ready, it requeues documents left `embedding`, retryable failed documents, and queued documents. It also requeues all indexed documents when the global `extraction_version` marker differs, so page-aware extraction changes are reapplied.
+- **LLM Management:** `AppState` holds an optional `Arc<mistralrs::Model>` behind an async lock. Generation-tagged initialization serializes inference-mode transitions: an obsolete initializer loops for the current selected mode instead of emitting stale readiness or dropping a local-init request. External mode has no local model and immediately emits `llm_ready` without contacting the external endpoint.
 - **RAG Pipeline:** Rust generates query embeddings locally, searches LanceDB with hybrid search, builds the context prompt, then branches directly to either the in-process `mistral.rs` stream or an external OpenAI-compatible HTTP stream.
   - **Chunking Defaults:** Documents use character windows estimated at four characters per token: **512 estimated tokens** (about 2,048 characters) per chunk with an **80 estimated-token** (about 320-character) overlap. These settings do not create exact tokenizer boundaries. The effective overlap is capped at half of the window to ensure forward progress. Configure them with the `app_settings` keys `chunk_size` and `chunk_overlap`.
   - **Embedding Prefixes:** Chunks must be prefixed with `"passage: "` during ingest, and user queries with `"query: "` to maximize retrieval quality with Instruction-aware models like EmbeddingGemma.
@@ -35,13 +35,13 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 ### SQLite & Embedded Vectors
 - SQLite stores document metadata such as filename, status, chunk count, timestamps, and persisted processing errors.
 - Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server.
-- **Indexes and Fallbacks:** After an upsert, LanceDB creates/replaces the FTS index, attempts the vector index, and waits for created indexes before SQLite marks the document indexed. If hybrid FTS/dense search fails, the backend falls back to vector-only search and sends a request-scoped warning to the query UI.
+- **Indexes and Fallbacks:** After an upsert, LanceDB creates FTS once rows exist. IVF-PQ is created only when the shared table reaches 256 vectors; smaller stores use LanceDB's flat vector search. If hybrid FTS/dense search fails, the backend falls back to vector-only search and sends a request-scoped warning to the query UI. RRF hybrid ordering is not rendered as calibrated citation confidence.
 
 ## 3. Data Flows
 
 ### Document Upload & Processing
 1. User drops a PDF into the Svelte UI.
-2. Svelte passes the raw file bytes or filepath to Rust via IPC.
+2. Svelte percent-encodes the UTF-8 filename in the ASCII `X-Filename` IPC header and sends the raw file bytes; Rust decodes and validates it before persistence.
 3. Rust saves the file to the OS's specific App Data directory.
 4. Rust inserts a `queued` row into SQLite and emits a job down the `tokio` channel.
 5. Svelte receives the new document ID and listens for `ingestion_progress` stage events plus terminal document events.
@@ -51,7 +51,14 @@ The application is a monolithic, secure, and blazing-fast desktop application us
    - Generates embeddings locally using `fastembed`.
    - **Vector lifecycle:** Deletes the document's prior chunks, then upserts replacement chunks into LanceDB.
    - **Write Order Discipline:** Marks the SQLite row `indexed` only after the vector upsert succeeds. A failed replacement can therefore leave a failed document without vectors until a retry, rather than an indexed document with missing vectors.
+
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to update the UI instantly.
+
+### Document Deletion
+
+1. Rust marks the SQLite registry row `deleting`, which excludes it from retrieval before any derived data is removed.
+2. It deletes the document's LanceDB chunks, stored PDF, and finally the registry row.
+3. A failed or interrupted deletion remains `deleting`; startup retries it before normal document work.
 
 ### Query Execution (RAG)
 1. User types a query in the UI.
@@ -60,7 +67,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search). If the FTS path fails, it falls back to vector-only search and streams a visible request-scoped warning before the answer.
 5. Rust retrieves associated document metadata from SQLite.
 6. Rust builds the chat messages and either calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model or POSTs to the configured OpenAI-compatible endpoint via `reqwest`, including the selected external model.
-7. Rust parses the citations and streams the response to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
+7. Rust assembles external SSE as raw bytes, decodes only complete events as UTF-8, and streams ordered tokens to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
 
 **Citation Engine (Retrieval-Grounded)**
 To eliminate hallucination risks, the application uses a retrieval-grounded citation approach (Option A). The LLM is *not* asked to generate page numbers. Instead, Rust attaches the top-K chunk metadata (which already contains the exact `page` integer) directly to the final `TokenEvent::Done` payload as structured citations. The UI then displays these precise sources (e.g., "Sources: page 4, page 11").

@@ -6973,6 +6973,7 @@ dependencies = [
  "keyring",
  "log",
  "mistralrs",
+ "percent-encoding",
  "persistence",
  "rag_pipeline",
  "reqwest 0.13.4",

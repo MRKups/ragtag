@@ -71,9 +71,9 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 
 - `Cargo.toml`: Minimal deps — `serde`, `uuid`, `jiff`, `thiserror`.
 - `src/lib.rs`: Re-exports all public types.
-- `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, error tracking) and `DocumentStatus` enum (`Queued | Embedding | Indexed | Failed`).
+- `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, error tracking) and `DocumentStatus` enum (`Queued | Embedding | Indexed | Deleting | Failed`).
 - `src/error.rs`: `AppError` enum with variants `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`. Includes manual `Serialize` impl for Tauri IPC (structured `{ kind, message }`). `From<std::io::Error>` impl for `?` convenience.
-- `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels.
+- `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels. `Citation::is_hybrid` prevents RRF rank from being presented as calibrated confidence.
 
 #### `crates/persistence/` — Data Layer
 
@@ -83,16 +83,16 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
 - `src/lib.rs`: Re-exports `DocumentRepository`, `VectorDb`, and `init_pool`. Contains a private `fn sql_err(e: sqlx::Error) -> AppError` helper to work around orphan rule restrictions on `From` impls.
 - `src/sqlite.rs`:
   - `init_pool()`: Creates the app data directory, opens a SQLite connection with `SqliteConnectOptions`, runs migrations, returns a `SqlitePool` (max 5 connections).
-  - `DocumentRepository`: CRUD operations — `insert`, `update_status`, `get_by_id`, `list_all`, `delete_by_id` (maps raw rows through `DocumentRow → into_domain()`), `get_queued_ids` (fetches all `queued` doc IDs for crash recovery), and `reset_embedding_to_queued` (recovery: flips `embedding` back to `queued` on crash restart). Date/time columns use `CAST(... as TEXT)` with sqlx type overrides since SQLite has no native datetime type.
+  - `DocumentRepository`: CRUD operations — `insert`, status transitions, lookups, deletion, and recovery queries. `mark_deleting` persists a non-indexable deletion state; startup lists and completes those rows before normal document work. Date/time columns use `CAST(... as TEXT)` with sqlx type overrides since SQLite has no native datetime type.
   - `AppSettingsRepository`: Key-value settings store — `get(key)` and `set(key, value)` with upsert on conflict. Stores keys like `inference_mode`, `external_base_url`, `generation_model`, `chunk_size`, `chunk_overlap`, `use_query_enhancement`.
 - `src/lancedb.rs`:
-  - `VectorDb`: Holds a LanceDB `Connection` and an `AtomicBool` for FTS index guard.
+  - `VectorDb`: Holds a LanceDB `Connection` and separate in-memory guards for FTS and IVF-PQ availability.
   - `init()`: Connects to a LanceDB directory on disk.
   - `schema()`: Arrow schema with `FixedSizeList(Float32, 768)` vectors, plus `document_id`, `page`, `chunk_index`, `content` columns.
-  - `get_or_create_table()`: Opens existing `chunks` table or creates a new empty one. FTS index is deferred to first write.
-  - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, then rebuilds the FTS index on the first call per session (`AtomicBool` swap).
-  - `hybrid_search()`: Performs FTS + dense vector hybrid search via Reciprocal Rank Fusion. Falls back to vector-only if FTS index is missing or errors. Returns deduplicated `Vec<SearchResult>` capped at the requested limit.
-  - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by the `delete_document` command before SQLite row deletion.
+  - `get_or_create_table()`: Opens existing `chunks` table or creates a new empty one. FTS index creation is deferred to the first write.
+  - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, creates FTS after rows exist, and defers 8-bit IVF-PQ until the table reaches 256 vectors.
+  - `hybrid_search()`: Performs FTS + dense vector hybrid search via Reciprocal Rank Fusion, returning explicit hybrid/vector-only mode. Falls back to vector-only if FTS is missing or errors, returns deduplicated results capped at the requested limit, and does not expose RRF rank as calibrated confidence.
+  - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by durable document deletion.
 - `migrations/`:
   - `20240101000000_initial.sql`: Creates `documents` table (id, file metadata, processing status, embedding metadata, timestamps, error tracking) with indexes on `status`, `file_hash` (unique), and `created_at`. Creates `app_settings` key-value table.
 

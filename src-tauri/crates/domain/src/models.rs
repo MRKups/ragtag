@@ -7,6 +7,7 @@ pub enum DocumentStatus {
     Queued,
     Embedding,
     Indexed,
+    Deleting,
     Failed,
 }
 

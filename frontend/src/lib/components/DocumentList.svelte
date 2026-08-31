@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { listen } from '@tauri-apps/api/event';
   import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from '@lucide/svelte';
   import { api } from '$lib/api';
   import type { Document, IngestionProgressEvent } from '$lib/types';
@@ -54,7 +53,7 @@
     clearTimeout(pollTimeout);
 
     const hasTransientDocs = documents.some(doc =>
-      ['queued', 'embedding'].includes(doc.status)
+      ['queued', 'embedding', 'deleting'].includes(doc.status)
     );
 
     if (hasTransientDocs) {
@@ -79,7 +78,7 @@
     deleting = id;
     try {
       await api.deleteDocument(id);
-      documents = documents.filter(d => d.id !== id);
+      await fetchDocuments(true);
     } catch (e) {
       const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
       error = `Failed to delete: ${msg}`;
@@ -92,15 +91,18 @@
     await fetchDocuments();
 
     try {
-      const [unlisten1, unlisten2, unlisten3, unlisten4] = await Promise.all([
-        listen('document_indexed', (event) => { documentStageMap.delete((event.payload as any).document_id); fetchDocuments(true); }),
-        listen('document_failed', () => fetchDocuments(true)),
-        listen('document_deleted', () => fetchDocuments(true)),
-        listen<IngestionProgressEvent>('ingestion_progress', (event) => {
+      const [unlistenIndexed, unlistenFailed, unlistenDeleted, unlistenProgress] = await Promise.all([
+        api.listen<{ document_id: string }>('document_indexed', (event) => {
+          documentStageMap.delete(event.payload.document_id);
+          void fetchDocuments(true);
+        }),
+        api.listen('document_failed', () => void fetchDocuments(true)),
+        api.listen('document_deleted', () => void fetchDocuments(true)),
+        api.listen<IngestionProgressEvent>('ingestion_progress', (event) => {
           documentStageMap.set(event.payload.document_id, event.payload.stage);
         }),
       ]);
-      unlistenFns = [unlisten1, unlisten2, unlisten3, unlisten4];
+      unlistenFns = [unlistenIndexed, unlistenFailed, unlistenDeleted, unlistenProgress];
     } catch (err) {
       console.error('Failed to register document event listeners:', err);
     }
@@ -176,7 +178,7 @@
               <span class="doc-status status-{doc.status.toLowerCase()}">
                 {#if doc.status === 'indexed'}
                   <CheckCircle size={12} />
-                {:else if doc.status === 'embedding'}
+                {:else if doc.status === 'embedding' || doc.status === 'deleting'}
                   <Loader2 size={12} class="spin-slow" />
                 {:else if doc.status === 'failed'}
                   <XCircle size={12} />
@@ -198,7 +200,7 @@
                 class="action-btn delete-btn"
                 title="Delete"
                 onclick={() => confirmDelete(doc.id, doc.filename)}
-                disabled={deleting === doc.id}
+                disabled={deleting === doc.id || doc.status === 'deleting'}
               >
                 {#if deleting === doc.id}
                   <div class="spinner-small"></div>
@@ -339,6 +341,7 @@
   .status-embedding { color: #fbbf24; }
   .status-queued { color: #facc15; }
   .status-failed { color: #f87171; }
+  .status-deleting { color: #fbbf24; }
 
   .doc-stage {
     color: #6b7280;

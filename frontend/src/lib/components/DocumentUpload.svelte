@@ -11,7 +11,7 @@
   // Track each selected file with its upload status
   interface FileStatus {
     file: File;
-    status: 'pending' | 'uploading' | 'success' | 'error';
+    status: 'pending' | 'uploading' | 'success' | 'error' | 'rejected';
     progress: number;
     errorMsg?: string;
   }
@@ -54,10 +54,10 @@
       const hasValidExtension = allowedExtensions.some(ext => name.endsWith(ext));
 
       if (!hasValidExtension) {
-        return { file: f, status: 'error' as const, progress: 0, errorMsg: 'Unsupported file type' };
+        return { file: f, status: 'rejected' as const, progress: 0, errorMsg: 'Unsupported file type' };
       }
       if (f.size > maxFileSize) {
-        return { file: f, status: 'error' as const, progress: 0, errorMsg: 'File too large (>50MB)' };
+        return { file: f, status: 'rejected' as const, progress: 0, errorMsg: 'File too large (>50MB)' };
       }
 
       return { file: f, status: 'pending' as const, progress: 0 };
@@ -70,14 +70,17 @@
     files = files.filter((_, i) => i !== index);
   }
 
+  function isUploadCandidate(file: FileStatus) {
+    return file.status === 'pending' || file.status === 'error';
+  }
+
   async function uploadAll() {
-    const pendingFiles = files.filter(f => f.status === 'pending' || f.status === 'error');
-    if (pendingFiles.length === 0) return;
+    if (!files.some(isUploadCandidate)) return;
 
     isUploading = true;
     
     files = files.map(f => 
-      (f.status === 'pending' || f.status === 'error') ? { ...f, status: 'uploading' } : f
+      isUploadCandidate(f) ? { ...f, status: 'uploading' } : f
     );
 
     let successCount = 0;
@@ -188,14 +191,14 @@
       <button
         class="upload-btn"
         onclick={uploadAll}
-        disabled={isUploading || !files.some(f => f.status === 'pending' || f.status === 'error')}
+        disabled={isUploading || !files.some(isUploadCandidate)}
       >
         {#if isUploading}
           <div class="spinner-xs"></div>
           Uploading...
         {:else}
           <Upload size={16} />
-          Upload {files.filter(f => f.status === 'pending' || f.status === 'error').length} Files
+          Upload {files.filter(isUploadCandidate).length} Files
         {/if}
       </button>
     </div>
@@ -339,6 +342,7 @@
 
   .file-status.success { color: #4ade80; }
   .file-status.error { color: #f87171; }
+  .file-status.rejected { color: #f87171; }
 
   .file-action {
     flex-shrink: 0;

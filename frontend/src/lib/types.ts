@@ -1,4 +1,4 @@
-export type DocumentStatus = "queued" | "embedding" | "indexed" | "failed";
+export type DocumentStatus = "queued" | "embedding" | "indexed" | "failed" | "deleting";
 
 export interface Document {
   id: string;
@@ -25,6 +25,7 @@ export interface Citation {
   page: number;
   chunk_content: string;
   score: number;
+  is_hybrid: boolean;
 }
 
 export type TokenEvent =

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { FileText } from '@lucide/svelte';
-  import { convertFileSrc } from '@tauri-apps/api/core';
+  import { api } from '$lib/api';
   import PdfViewer from './PdfViewer.svelte';
 
   let {
@@ -19,7 +19,7 @@
     if (storagePath) {
       // Tauri v2 asset protocol: convertFileSrc builds the correct URL
       // The assetProtocol in tauri.conf.json scopes to $APPLOCALDATA
-      return convertFileSrc(storagePath);
+      return api.assetUrl(storagePath);
     }
     return null;
   });
