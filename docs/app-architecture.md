@@ -26,14 +26,14 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 - **Commands:** Thin `#[tauri::command]` functions acting as IPC handlers.
 - **State & Setup (`lib.rs`):** The `lib.rs` file orchestrates state initialization, SQLite pooling, command registration, and background channels. It initializes `fastembed` in `spawn_blocking`; when local inference is selected, it asynchronously downloads and builds a pre-quantized GGUF `mistral.rs` model. FTS indexes are created after vector rows exist; IVF-PQ is deferred until the shared table contains its 256-vector training minimum. Model download/build failures are emitted as progress errors rather than falsely reporting the local model ready.
 - **Job Queue:** A `tokio::sync::mpsc` channel runs in the background with a fixed capacity of `32` (`tokio::sync::mpsc::channel(32)`). Uploads use `try_send()` at the IPC boundary (returning `QueueFull` rather than blocking the UI); recovery uses `send().await` so recovered jobs are not silently dropped. A transient registry read after dequeue is re-enqueued by a separate bounded-backoff producer, never by blocking the sole worker.
-- **Crash Recovery:** Startup completes durable `deleting` document records before normal work. After the embedder becomes ready, it requeues documents left `embedding`, retryable failed documents, and queued documents. It also requeues all indexed documents when the global `extraction_version` marker differs, so page-aware extraction changes are reapplied.
+- **Crash Recovery:** Startup completes durable `deleting` document records before normal work. After the embedder becomes ready, it requeues documents left `embedding`, retryable failed documents, and queued documents. Under the document-operations write lock, it atomically changes only `indexed` rows whose successful-index provenance is absent or differs from the desired extraction version, chunk size, or overlap; it enqueues those rows after the transaction and lock release.
 - **LLM Management:** `AppState` holds an optional `Arc<mistralrs::Model>` behind an async lock. Generation-tagged initialization serializes inference-mode transitions: invalidated initializers exit without publishing stale readiness or models. External mode releases any local model before emitting `llm_ready`; returning to local initializes the current persisted settings.
 - **RAG Pipeline:** Rust generates query embeddings locally, searches LanceDB with hybrid search, requires at least one indexed non-empty retrieved excerpt, then builds the context prompt. An `InferenceProvider` enum selects in-process `mistral.rs` or external OpenAI-compatible transport and normalizes it into one Channel-forwarding path.
   - **Chunking Defaults:** Documents are split at the active EmbeddingGemma tokenizer’s boundaries: **512 tokens** per chunk with an **80-token** overlap, configurable through `chunk_size` and `chunk_overlap`. The `passage: ` prefix and special tokens count against the active 2,048-token embedding limit; no embedded input is silently truncated. The effective overlap is capped at half of a chunk to ensure forward progress.
   - **Embedding Prefixes:** Chunks must be prefixed with `"passage: "` during ingest, and user queries with `"query: "` to maximize retrieval quality with Instruction-aware models like EmbeddingGemma.
 
 ### SQLite & Embedded Vectors
-- SQLite stores document metadata such as filename, status, chunk count, timestamps, and persisted processing errors.
+- SQLite stores document metadata, status, chunk count, timestamps, persisted processing errors, and the extraction/chunk provenance recorded only after successful vector replacement.
 - Embedded vector search (LanceDB) operates on local files, mapping 768-dimensional embeddings to document chunks without requiring a standalone database server.
 - **Indexes and Fallbacks:** First creation of the shared `chunks` table is serialized; after an upsert, LanceDB creates FTS once rows exist. IVF-PQ is created only when the shared table reaches 256 vectors; smaller stores use LanceDB's flat vector search. If hybrid FTS/dense search fails, the backend falls back to vector-only search and sends a request-scoped warning to the query UI. RRF hybrid ordering is not rendered as calibrated citation confidence.
 
@@ -49,8 +49,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
    - Extracts text using the `pdf-extract` crate, then verifies that its per-page result count matches the physical PDF page count before blank pages are filtered. A partial page-extraction result fails indexing rather than silently losing citation pages.
    - Chunks text.
    - Generates embeddings locally using `fastembed`.
-   - **Vector lifecycle:** Deletes the document's prior chunks, then upserts replacement chunks into LanceDB.
-   - **Write Order Discipline:** Marks the SQLite row `indexed` only after the vector upsert succeeds. A failed replacement can therefore leave a failed document without vectors until a retry, rather than an indexed document with missing vectors.
+   - **Write Order Discipline:** After the vector upsert succeeds, SQLite marks the row `indexed` and records the extraction version, chunk size, and chunk overlap that produced those vectors. A failed replacement can therefore leave a failed document without vectors until a retry, rather than an indexed document with missing vectors.
 
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to update the UI instantly.
 
@@ -106,6 +105,5 @@ Instead of bundling massive AI model files into the application binary, model fi
 
 ### Retrieval Lifecycle Limits
 
-- The page-aware migration uses one global `extraction_version` setting. Neither SQLite document rows nor LanceDB chunks record the extraction/chunk configuration that produced them.
 - LanceDB has no query-time join to SQLite document status. Retrieval overfetches a bounded candidate set, then `execute_query` discards candidates whose documents are not `indexed`; exceptionally stale-heavy stores can still reduce the usable result set.
 - Active queries register request-scoped cancellation senders. `cancel_query` interrupts pending external HTTP/local stream reads by dropping their futures; already-running blocking embedding work remains non-interruptible.

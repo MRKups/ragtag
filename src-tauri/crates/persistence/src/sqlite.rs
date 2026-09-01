@@ -1,4 +1,4 @@
-use domain::{AppError, Document, DocumentStatus};
+use domain::{AppError, Document, DocumentStatus, models::IndexProvenance};
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -51,30 +51,47 @@ impl DocumentRepository {
             DocumentStatus::Failed => "failed",
         };
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO documents (
-                id, filename, file_type, file_size_bytes, file_hash, storage_path, 
-                status, chunk_count, embedding_model, embedding_attempts, 
-                created_at, processing_started_at, indexed_at, error_message, retry_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, filename, file_type, file_size_bytes, file_hash, storage_path,
+                status, chunk_count, embedding_model, embedding_attempts,
+                created_at, processing_started_at, indexed_at,
+                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
+                error_message, retry_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
-            doc.id,
-            doc.filename,
-            doc.file_type,
-            doc.file_size_bytes,
-            doc.file_hash,
-            doc.storage_path,
-            status_str,
-            doc.chunk_count,
-            doc.embedding_model,
-            doc.embedding_attempts,
-            doc.created_at,
-            doc.processing_started_at,
-            doc.indexed_at,
-            doc.error_message,
-            doc.retry_count
         )
+        .bind(&doc.id)
+        .bind(&doc.filename)
+        .bind(&doc.file_type)
+        .bind(doc.file_size_bytes)
+        .bind(doc.file_hash.as_deref())
+        .bind(&doc.storage_path)
+        .bind(status_str)
+        .bind(doc.chunk_count)
+        .bind(doc.embedding_model.as_deref())
+        .bind(doc.embedding_attempts)
+        .bind(doc.created_at.as_deref())
+        .bind(doc.processing_started_at.as_deref())
+        .bind(doc.indexed_at.as_deref())
+        .bind(
+            doc.indexing_provenance
+                .as_ref()
+                .map(|provenance| provenance.extraction_version.as_str()),
+        )
+        .bind(
+            doc.indexing_provenance
+                .as_ref()
+                .map(|provenance| provenance.chunk_size),
+        )
+        .bind(
+            doc.indexing_provenance
+                .as_ref()
+                .map(|provenance| provenance.chunk_overlap),
+        )
+        .bind(doc.error_message.as_deref())
+        .bind(doc.retry_count)
         .execute(&self.pool)
         .await
         .map_err(sql_err)?;
@@ -104,6 +121,7 @@ impl DocumentRepository {
         id: &str,
         chunk_count: usize,
         embedding_model: &str,
+        provenance: &IndexProvenance,
     ) -> Result<(), AppError> {
         let chunk_count = i32::try_from(chunk_count)
             .map_err(|_| AppError::Database("Chunk count exceeds SQLite integer range".into()))?;
@@ -114,11 +132,17 @@ impl DocumentRepository {
                  chunk_count = ?,
                  embedding_model = ?,
                  indexed_at = CURRENT_TIMESTAMP,
+                 indexed_extraction_version = ?,
+                 indexed_chunk_size = ?,
+                 indexed_chunk_overlap = ?,
                  error_message = NULL
              WHERE id = ?",
         )
         .bind(chunk_count)
         .bind(embedding_model)
+        .bind(&provenance.extraction_version)
+        .bind(provenance.chunk_size)
+        .bind(provenance.chunk_overlap)
         .bind(id)
         .execute(&self.pool)
         .await
@@ -128,33 +152,24 @@ impl DocumentRepository {
     }
 
     pub async fn get_by_id(&self, id: &str) -> Result<Option<Document>, AppError> {
-        let row = sqlx::query_as!(
-            DocumentRow,
-            r#"SELECT 
-                id as "id!", 
-                filename as "filename!", 
-                file_type as "file_type!", 
-                file_size_bytes, 
-                file_hash, 
-                storage_path as "storage_path!", 
-                status as "status!", 
-                chunk_count, 
-                embedding_model, 
-                embedding_attempts, 
-                CAST(created_at as TEXT) as "created_at?: String", 
-                CAST(processing_started_at as TEXT) as "processing_started_at?: String", 
-                CAST(indexed_at as TEXT) as "indexed_at?: String", 
-                error_message, 
-                retry_count 
-            FROM documents 
+        let row = sqlx::query_as::<_, DocumentRow>(
+            r#"SELECT
+                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
+                chunk_count, embedding_model, embedding_attempts,
+                CAST(created_at AS TEXT) AS created_at,
+                CAST(processing_started_at AS TEXT) AS processing_started_at,
+                CAST(indexed_at AS TEXT) AS indexed_at,
+                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
+                error_message, retry_count
+            FROM documents
             WHERE id = ?"#,
-            id
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(sql_err)?;
 
-        Ok(row.map(|r| r.into_domain()))
+        Ok(row.map(DocumentRow::into_domain))
     }
 
     pub async fn get_deleting_documents(&self) -> Result<Vec<Document>, AppError> {
@@ -175,61 +190,34 @@ impl DocumentRepository {
         Ok(rows.into_iter().filter_map(|r| r.id).collect())
     }
 
-    pub async fn requeue_indexed_for_reindex(&self) -> Result<Vec<String>, AppError> {
+    pub async fn requeue_indexed_with_stale_provenance(
+        &self,
+        desired_provenance: &IndexProvenance,
+    ) -> Result<Vec<String>, AppError> {
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
-
-        let ids =
-            sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
-                .fetch_all(&mut *transaction)
-                .await
-                .map_err(sql_err)?;
-
-        if !ids.is_empty() {
-            sqlx::query(
-                "UPDATE documents
-                 SET status = 'queued',
-                     chunk_count = NULL,
-                     embedding_model = NULL,
-                     indexed_at = NULL,
-                     error_message = NULL
-                 WHERE status = 'indexed'",
-            )
-            .execute(&mut *transaction)
-            .await
-            .map_err(sql_err)?;
-        }
-
+        let ids = requeue_stale_indexed_documents(&mut transaction, desired_provenance).await?;
         transaction.commit().await.map_err(sql_err)?;
         Ok(ids)
     }
 
     pub async fn list_all(&self) -> Result<Vec<Document>, AppError> {
-        let rows = sqlx::query_as!(
-            DocumentRow,
-            r#"SELECT 
-                id as "id!", 
-                filename as "filename!", 
-                file_type as "file_type!", 
-                file_size_bytes, 
-                file_hash, 
-                storage_path as "storage_path!", 
-                status as "status!", 
-                chunk_count, 
-                embedding_model, 
-                embedding_attempts, 
-                CAST(created_at as TEXT) as "created_at?: String", 
-                CAST(processing_started_at as TEXT) as "processing_started_at?: String", 
-                CAST(indexed_at as TEXT) as "indexed_at?: String", 
-                error_message, 
-                retry_count 
-            FROM documents 
-            ORDER BY created_at DESC"#
+        let rows = sqlx::query_as::<_, DocumentRow>(
+            r#"SELECT
+                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
+                chunk_count, embedding_model, embedding_attempts,
+                CAST(created_at AS TEXT) AS created_at,
+                CAST(processing_started_at AS TEXT) AS processing_started_at,
+                CAST(indexed_at AS TEXT) AS indexed_at,
+                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
+                error_message, retry_count
+            FROM documents
+            ORDER BY created_at DESC"#,
         )
         .fetch_all(&self.pool)
         .await
         .map_err(sql_err)?;
 
-        Ok(rows.into_iter().map(|r| r.into_domain()).collect())
+        Ok(rows.into_iter().map(DocumentRow::into_domain).collect())
     }
 
     pub async fn mark_failed(&self, id: &str, error_message: &str) -> Result<(), AppError> {
@@ -256,33 +244,24 @@ impl DocumentRepository {
     }
 
     pub async fn find_by_hash(&self, hash: &[u8]) -> Result<Option<Document>, AppError> {
-        let row = sqlx::query_as!(
-            DocumentRow,
-            r#"SELECT 
-                id as "id!", 
-                filename as "filename!", 
-                file_type as "file_type!", 
-                file_size_bytes, 
-                file_hash, 
-                storage_path as "storage_path!", 
-                status as "status!", 
-                chunk_count, 
-                embedding_model, 
-                embedding_attempts, 
-                CAST(created_at as TEXT) as "created_at?: String", 
-                CAST(processing_started_at as TEXT) as "processing_started_at?: String", 
-                CAST(indexed_at as TEXT) as "indexed_at?: String", 
-                error_message, 
-                retry_count 
-            FROM documents 
+        let row = sqlx::query_as::<_, DocumentRow>(
+            r#"SELECT
+                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
+                chunk_count, embedding_model, embedding_attempts,
+                CAST(created_at AS TEXT) AS created_at,
+                CAST(processing_started_at AS TEXT) AS processing_started_at,
+                CAST(indexed_at AS TEXT) AS indexed_at,
+                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
+                error_message, retry_count
+            FROM documents
             WHERE file_hash = ?"#,
-            hash
         )
+        .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .map_err(sql_err)?;
 
-        Ok(row.map(|r| r.into_domain()))
+        Ok(row.map(DocumentRow::into_domain))
     }
 
     pub async fn delete_by_id(&self, id: &str) -> Result<(), AppError> {
@@ -336,6 +315,61 @@ impl DocumentRepository {
     }
 }
 
+async fn requeue_stale_indexed_documents(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    desired_provenance: &IndexProvenance,
+) -> Result<Vec<String>, AppError> {
+    let ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM documents
+         WHERE status = 'indexed'
+           AND (
+               indexed_extraction_version IS NULL
+               OR indexed_extraction_version != ?
+               OR indexed_chunk_size IS NULL
+               OR indexed_chunk_size != ?
+               OR indexed_chunk_overlap IS NULL
+               OR indexed_chunk_overlap != ?
+           )",
+    )
+    .bind(&desired_provenance.extraction_version)
+    .bind(desired_provenance.chunk_size)
+    .bind(desired_provenance.chunk_overlap)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(sql_err)?;
+
+    if !ids.is_empty() {
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'queued',
+                 chunk_count = NULL,
+                 embedding_model = NULL,
+                 processing_started_at = NULL,
+                 indexed_at = NULL,
+                 error_message = NULL,
+                 retry_count = 0
+             WHERE status = 'indexed'
+               AND (
+                   indexed_extraction_version IS NULL
+                   OR indexed_extraction_version != ?
+                   OR indexed_chunk_size IS NULL
+                   OR indexed_chunk_size != ?
+                   OR indexed_chunk_overlap IS NULL
+                   OR indexed_chunk_overlap != ?
+               )",
+        )
+        .bind(&desired_provenance.extraction_version)
+        .bind(desired_provenance.chunk_size)
+        .bind(desired_provenance.chunk_overlap)
+        .execute(&mut **transaction)
+        .await
+        .map_err(sql_err)?;
+    }
+
+    Ok(ids)
+}
+
+#[derive(sqlx::FromRow)]
 struct DocumentRow {
     id: String,
     filename: String,
@@ -350,6 +384,9 @@ struct DocumentRow {
     created_at: Option<String>,
     processing_started_at: Option<String>,
     indexed_at: Option<String>,
+    indexed_extraction_version: Option<String>,
+    indexed_chunk_size: Option<i64>,
+    indexed_chunk_overlap: Option<i64>,
     error_message: Option<String>,
     retry_count: Option<i64>,
 }
@@ -362,6 +399,24 @@ impl DocumentRow {
             "deleting" => DocumentStatus::Deleting,
             "failed" => DocumentStatus::Failed,
             _ => DocumentStatus::Queued,
+        };
+
+        let indexing_provenance = match (
+            self.indexed_extraction_version,
+            self.indexed_chunk_size,
+            self.indexed_chunk_overlap,
+        ) {
+            (Some(extraction_version), Some(chunk_size), Some(chunk_overlap)) => {
+                match (i32::try_from(chunk_size), i32::try_from(chunk_overlap)) {
+                    (Ok(chunk_size), Ok(chunk_overlap)) => Some(IndexProvenance {
+                        extraction_version,
+                        chunk_size,
+                        chunk_overlap,
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
         };
 
         Document {
@@ -378,6 +433,7 @@ impl DocumentRow {
             created_at: self.created_at,
             processing_started_at: self.processing_started_at,
             indexed_at: self.indexed_at,
+            indexing_provenance,
             error_message: self.error_message,
             retry_count: self.retry_count.unwrap_or(0) as i32,
         }
@@ -418,5 +474,160 @@ impl AppSettingsRepository {
         .map_err(sql_err)?;
 
         Ok(())
+    }
+
+    pub async fn set_indexing_setting_and_requeue_stale_documents(
+        &self,
+        key: &str,
+        value: &str,
+        desired_provenance: &IndexProvenance,
+    ) -> Result<Vec<String>, AppError> {
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+        sqlx::query(
+            "INSERT INTO app_settings (key, value)
+             VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
+
+        let ids = requeue_stale_indexed_documents(&mut transaction, desired_provenance).await?;
+        transaction.commit().await.map_err(sql_err)?;
+        Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppSettingsRepository, DocumentRepository, init_pool};
+    use domain::{Document, DocumentStatus, models::IndexProvenance};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DATABASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn indexed_document(id: &str, provenance: IndexProvenance) -> Document {
+        Document {
+            id: id.to_string(),
+            filename: format!("{id}.pdf"),
+            file_type: "application/pdf".to_string(),
+            file_size_bytes: Some(1),
+            file_hash: None,
+            storage_path: format!("{id}.pdf"),
+            status: DocumentStatus::Indexed,
+            chunk_count: Some(1),
+            embedding_model: Some("EmbeddingGemma-300M".to_string()),
+            embedding_attempts: 1,
+            created_at: None,
+            processing_started_at: None,
+            indexed_at: None,
+            indexing_provenance: Some(provenance),
+            error_message: None,
+            retry_count: 0,
+        }
+    }
+
+    async fn temporary_pool() -> (sqlx::SqlitePool, std::path::PathBuf) {
+        let sequence = TEST_DATABASE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-persistence-{}-{sequence}",
+            std::process::id()
+        ));
+        let pool = init_pool(&path)
+            .await
+            .expect("temporary database should migrate");
+        (pool, path)
+    }
+
+    #[tokio::test]
+    async fn requeues_only_indexed_documents_with_stale_provenance() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let desired = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let stale = IndexProvenance {
+            extraction_version: "token-aware-v1".to_string(),
+            ..desired.clone()
+        };
+
+        documents
+            .insert(&indexed_document("current", desired.clone()))
+            .await
+            .unwrap();
+        let mut stale_document = indexed_document("stale", stale.clone());
+        stale_document.retry_count = 2;
+        documents.insert(&stale_document).await.unwrap();
+
+        assert_eq!(
+            documents
+                .requeue_indexed_with_stale_provenance(&desired)
+                .await
+                .unwrap(),
+            vec!["stale"]
+        );
+
+        let current = documents.get_by_id("current").await.unwrap().unwrap();
+        assert_eq!(current.status, DocumentStatus::Indexed);
+        assert_eq!(current.indexing_provenance, Some(desired));
+
+        let requeued = documents.get_by_id("stale").await.unwrap().unwrap();
+        assert_eq!(requeued.status, DocumentStatus::Queued);
+        assert_eq!(requeued.chunk_count, None);
+        assert_eq!(requeued.embedding_model, None);
+        assert_eq!(requeued.indexing_provenance, Some(stale));
+        assert_eq!(requeued.retry_count, 0);
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunk_setting_update_persists_before_requeueing_stale_documents() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let settings = AppSettingsRepository::new(pool.clone());
+        let original = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let desired = IndexProvenance {
+            chunk_size: 640,
+            ..original.clone()
+        };
+
+        documents
+            .insert(&indexed_document("document", original))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            settings
+                .set_indexing_setting_and_requeue_stale_documents("chunk_size", "640", &desired,)
+                .await
+                .unwrap(),
+            vec!["document"]
+        );
+        assert_eq!(
+            settings.get("chunk_size").await.unwrap().as_deref(),
+            Some("640")
+        );
+        assert_eq!(
+            documents
+                .get_by_id("document")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Queued
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

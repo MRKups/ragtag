@@ -2,7 +2,7 @@ pub mod chunker;
 pub mod extractor;
 
 use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
-use domain::AppError;
+use domain::{AppError, models::IndexProvenance};
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use persistence::{DocumentRepository, VectorDb};
 use std::path::Path;
@@ -25,8 +25,7 @@ pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
 pub async fn process_document(
     pdf_path: &Path,
     document_id: &str,
-    chunk_size: usize,
-    chunk_overlap: usize,
+    provenance: IndexProvenance,
     embedder: Arc<std::sync::Mutex<TextEmbedding>>,
     repo: &DocumentRepository,
     vector_db: &VectorDb,
@@ -54,6 +53,16 @@ pub async fn process_document(
             })?;
         (model.tokenizer.clone(), embedding_token_limit)
     };
+    let chunk_size = usize::try_from(provenance.chunk_size)
+        .map_err(|_| AppError::InvalidInput("chunk_size must be positive".into()))?;
+    let chunk_overlap = usize::try_from(provenance.chunk_overlap)
+        .map_err(|_| AppError::InvalidInput("chunk_overlap must be non-negative".into()))?;
+    if chunk_overlap >= chunk_size {
+        return Err(AppError::InvalidInput(
+            "chunk_overlap must be smaller than chunk_size".into(),
+        ));
+    }
+
     let chunks = tokio::task::spawn_blocking(move || {
         let chunks = chunker::chunk_pages(
             pages,
@@ -99,8 +108,13 @@ pub async fn process_document(
     vector_db.delete_chunks(document_id).await?;
     vector_db.upsert_chunks(std::iter::once(batch)).await?;
 
-    repo.mark_indexed(document_id, chunks.len(), "EmbeddingGemma-300M")
-        .await?;
+    repo.mark_indexed(
+        document_id,
+        chunks.len(),
+        "EmbeddingGemma-300M",
+        &provenance,
+    )
+    .await?;
 
     Ok(())
 }

@@ -2,7 +2,7 @@ mod state;
 pub use state::AppState;
 mod model_download;
 
-use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent};
+use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent, models::IndexProvenance};
 use log::{debug, error, info, warn};
 use persistence::lancedb::RetrievalMode;
 use persistence::{AppSettingsRepository, DocumentRepository, VectorDb, init_pool};
@@ -21,6 +21,8 @@ const DEFAULT_EXTERNAL_MODEL: &str = "gpt-4o-mini";
 const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
 
 const EXTRACTION_VERSION: &str = "token-aware-v2";
+const DEFAULT_CHUNK_SIZE: usize = 512;
+const DEFAULT_CHUNK_OVERLAP: usize = 80;
 const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
@@ -475,6 +477,43 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     }
 }
 
+fn parse_chunk_setting(key: &str, value: &str) -> Result<i32, AppError> {
+    validate_setting(key, value)?;
+    value
+        .parse::<i32>()
+        .map_err(|_| AppError::InvalidInput(format!("Invalid {key}")))
+}
+
+fn validate_indexing_provenance(provenance: &IndexProvenance) -> Result<(), AppError> {
+    if provenance.chunk_overlap >= provenance.chunk_size {
+        return Err(AppError::InvalidInput(
+            "chunk_overlap must be smaller than chunk_size".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+async fn desired_indexing_provenance(
+    settings: &AppSettingsRepository,
+) -> Result<IndexProvenance, AppError> {
+    let chunk_size = settings
+        .get("chunk_size")
+        .await?
+        .unwrap_or_else(|| DEFAULT_CHUNK_SIZE.to_string());
+    let chunk_overlap = settings
+        .get("chunk_overlap")
+        .await?
+        .unwrap_or_else(|| DEFAULT_CHUNK_OVERLAP.to_string());
+    let provenance = IndexProvenance {
+        extraction_version: EXTRACTION_VERSION.to_string(),
+        chunk_size: parse_chunk_setting("chunk_size", &chunk_size)?,
+        chunk_overlap: parse_chunk_setting("chunk_overlap", &chunk_overlap)?,
+    };
+    validate_indexing_provenance(&provenance)?;
+    Ok(provenance)
+}
+
 struct ActiveQuery {
     queries: Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     request_id: String,
@@ -690,6 +729,7 @@ async fn begin_first_run_init(
         let models_dir_embedder = models_dir.clone();
         let embedder_pool = state.db_pool.clone();
         let embedder_job_queue = state.job_queue.clone();
+        let document_operations = state.document_operations.clone();
 
         tauri::async_runtime::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -705,47 +745,53 @@ async fn begin_first_run_init(
                     // Recovery runs after the embedder is ready. Awaiting sends applies
                     // producer backpressure instead of silently dropping recovered work.
                     let repo = persistence::DocumentRepository::new(embedder_pool.clone());
-
-                    let mut recovered_ids = HashSet::new();
-                    let settings = AppSettingsRepository::new(embedder_pool.clone());
-                    match settings.get("extraction_version").await {
-                        Ok(Some(version)) if version == EXTRACTION_VERSION => {}
-                        Ok(_) => match repo.requeue_indexed_for_reindex().await {
-                            Ok(ids) => {
-                                recovered_ids.extend(ids);
-                                if let Err(e) =
-                                    settings.set("extraction_version", EXTRACTION_VERSION).await
-                                {
+                    let recovered_ids = {
+                        let _document_operation = document_operations.write().await;
+                        let mut recovered_ids = HashSet::new();
+                        let settings = AppSettingsRepository::new(embedder_pool.clone());
+                        match desired_indexing_provenance(&settings).await {
+                            Ok(desired_provenance) => match repo
+                                .requeue_indexed_with_stale_provenance(&desired_provenance)
+                                .await
+                            {
+                                Ok(ids) => recovered_ids.extend(ids),
+                                Err(e) => {
                                     error!(
-                                        "citation reindex — failed to record extraction version: {e}"
+                                        "startup recovery — failed to requeue stale indexed documents: {e}"
                                     );
                                 }
+                            },
+                            Err(e) => {
+                                error!(
+                                    "startup recovery — failed to read desired indexing provenance: {e}"
+                                );
                             }
-                            Err(e) => error!(
-                                "citation reindex — failed to requeue indexed documents: {e}"
-                            ),
-                        },
-                        Err(e) => {
-                            error!("citation reindex — failed to read extraction version: {e}")
                         }
-                    }
 
-                    match repo.reset_embedding_to_queued().await {
-                        Ok(ids) => recovered_ids.extend(ids),
-                        Err(e) => {
-                            error!("startup recovery — failed to reset embedding documents: {e}")
+                        match repo.reset_embedding_to_queued().await {
+                            Ok(ids) => recovered_ids.extend(ids),
+                            Err(e) => {
+                                error!(
+                                    "startup recovery — failed to reset embedding documents: {e}"
+                                )
+                            }
                         }
-                    }
-                    match repo.reset_failed_to_queued(3).await {
-                        Ok(ids) => recovered_ids.extend(ids),
-                        Err(e) => {
-                            error!("startup recovery — failed to reset retryable documents: {e}")
+                        match repo.reset_failed_to_queued(3).await {
+                            Ok(ids) => recovered_ids.extend(ids),
+                            Err(e) => {
+                                error!(
+                                    "startup recovery — failed to reset retryable documents: {e}"
+                                )
+                            }
                         }
-                    }
-                    match repo.get_queued_ids().await {
-                        Ok(ids) => recovered_ids.extend(ids),
-                        Err(e) => error!("startup recovery — failed to list queued documents: {e}"),
-                    }
+                        match repo.get_queued_ids().await {
+                            Ok(ids) => recovered_ids.extend(ids),
+                            Err(e) => {
+                                error!("startup recovery — failed to list queued documents: {e}")
+                            }
+                        }
+                        recovered_ids
+                    };
 
                     let recovered_count = recovered_ids.len();
                     for id in recovered_ids {
@@ -893,6 +939,7 @@ async fn upload_document(
         created_at: Some(created_at),
         processing_started_at: None,
         indexed_at: None,
+        indexing_provenance: None,
         error_message: None,
         retry_count: 0,
     };
@@ -1233,33 +1280,36 @@ async fn set_setting(
     validate_setting(&key, &value)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
 
-    let chunk_size = if key == "chunk_size" {
-        value
-            .parse::<usize>()
-            .map_err(|_| AppError::InvalidInput("Invalid chunk_size".into()))?
+    let requeued_ids = if matches!(key.as_str(), "chunk_size" | "chunk_overlap") {
+        {
+            let _document_operation = state.document_operations.write().await;
+            let mut desired_provenance = desired_indexing_provenance(&repo).await?;
+            match key.as_str() {
+                "chunk_size" => {
+                    desired_provenance.chunk_size = parse_chunk_setting("chunk_size", &value)?;
+                }
+                "chunk_overlap" => {
+                    desired_provenance.chunk_overlap =
+                        parse_chunk_setting("chunk_overlap", &value)?;
+                }
+                _ => unreachable!("chunk settings branch only accepts chunk settings"),
+            }
+            validate_indexing_provenance(&desired_provenance)?;
+            repo.set_indexing_setting_and_requeue_stale_documents(&key, &value, &desired_provenance)
+                .await?
+        }
     } else {
-        repo.get("chunk_size")
-            .await?
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(512)
+        repo.set(&key, &value).await?;
+        Vec::new()
     };
-    let chunk_overlap = if key == "chunk_overlap" {
-        value
-            .parse::<usize>()
-            .map_err(|_| AppError::InvalidInput("Invalid chunk_overlap".into()))?
-    } else {
-        repo.get("chunk_overlap")
-            .await?
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(80)
-    };
-    if chunk_overlap >= chunk_size {
-        return Err(AppError::InvalidInput(
-            "chunk_overlap must be smaller than chunk_size".into(),
-        ));
-    }
 
-    repo.set(&key, &value).await?;
+    for document_id in requeued_ids {
+        state.job_queue.send(document_id).await.map_err(|error| {
+            AppError::Internal(format!(
+                "document worker stopped before stale document reindex could be queued: {error}"
+            ))
+        })?;
+    }
     if key == "inference_mode" {
         let event = {
             let mut initialization = state.llm_initialization.lock().await;
@@ -1600,32 +1650,29 @@ pub fn run() {
                         Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
                             registry_read_retries_worker.lock().await.remove(&doc_id);
                             let settings_repo = AppSettingsRepository::new(pool.clone());
-                            let chunk_size: usize = settings_repo.get("chunk_size").await
-                                .unwrap_or_default()
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(512);
-                            let chunk_overlap: usize = settings_repo.get("chunk_overlap").await
-                                .unwrap_or_default()
-                                .and_then(|s| s.parse().ok())
-                                .unwrap_or(80);
-                            let pdf_path = docs_dir.join(&doc.storage_path);
-                            let app_for_progress = app_handle.clone();
-                            let doc_id_for_progress = doc_id.clone();
-                            rag_pipeline::process_document(
-                                &pdf_path,
-                                &doc_id,
-                                chunk_size,
-                                chunk_overlap,
-                                embedder,
-                                &repo,
-                                &vector_db,
-                                move |stage| {
-                                    let _ = app_for_progress.emit("ingestion_progress", serde_json::json!({
-                                        "document_id": &doc_id_for_progress,
-                                        "stage": stage,
-                                    }));
-                                },
-                            ).await
+                            match desired_indexing_provenance(&settings_repo).await {
+                                Ok(provenance) => {
+                                    let pdf_path = docs_dir.join(&doc.storage_path);
+                                    let app_for_progress = app_handle.clone();
+                                    let doc_id_for_progress = doc_id.clone();
+                                    rag_pipeline::process_document(
+                                        &pdf_path,
+                                        &doc_id,
+                                        provenance,
+                                        embedder,
+                                        &repo,
+                                        &vector_db,
+                                        move |stage| {
+                                            let _ = app_for_progress.emit("ingestion_progress", serde_json::json!({
+                                                "document_id": &doc_id_for_progress,
+                                                "stage": stage,
+                                            }));
+                                        },
+                                    )
+                                    .await
+                                }
+                                Err(error) => Err(error),
+                            }
                         }
                         Ok(Some(document)) => {
                             registry_read_retries_worker.lock().await.remove(&doc_id);

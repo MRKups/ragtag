@@ -70,7 +70,7 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 
 - `Cargo.toml`: Minimal deps — `serde` and `thiserror`.
 - `src/lib.rs`: Re-exports all public types.
-- `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, error tracking) and `DocumentStatus` enum (`Queued | Embedding | Indexed | Deleting | Failed`).
+- `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, successful-index provenance, error tracking), `IndexProvenance` (extraction version, chunk size, chunk overlap), and `DocumentStatus` enum (`Queued | Embedding | Indexed | Deleting | Failed`).
 - `src/error.rs`: `AppError` enum with variants `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`. Includes manual `Serialize` impl for Tauri IPC (structured `{ kind, message }`). `From<std::io::Error>` impl for `?` convenience.
 - `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels. `Citation::is_hybrid` prevents RRF rank from being presented as calibrated confidence.
 
@@ -82,8 +82,8 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
 - `src/lib.rs`: Re-exports `DocumentRepository`, `VectorDb`, and `init_pool`. Contains a private `fn sql_err(e: sqlx::Error) -> AppError` helper to work around orphan rule restrictions on `From` impls.
 - `src/sqlite.rs`:
   - `init_pool()`: Creates the app data directory, opens a SQLite connection with `SqliteConnectOptions`, runs migrations, returns a `SqlitePool` (max 5 connections).
-  - `DocumentRepository`: CRUD operations — `insert`, status transitions, lookups, deletion, and recovery queries. `mark_deleting` persists a non-indexable deletion state; startup lists and completes those rows before normal document work. Date/time columns use `CAST(... as TEXT)` with sqlx type overrides since SQLite has no native datetime type.
-  - `AppSettingsRepository`: Key-value settings store — `get(key)` and `set(key, value)` with upsert on conflict. Stores keys like `inference_mode`, `external_base_url`, `generation_model`, `chunk_size`, `chunk_overlap`, `use_query_enhancement`.
+  - `DocumentRepository`: CRUD operations — `insert`, status transitions, lookups, deletion, and recovery queries. Successful indexing stores typed `IndexProvenance` only after the vector upsert; stale-provenance requeue atomically changes only indexed rows with absent/mismatched provenance while preserving their prior values. `mark_deleting` persists a non-indexable deletion state; startup lists and completes those rows before normal document work. Date/time columns use `CAST(... as TEXT)` since SQLite has no native datetime type.
+  - `AppSettingsRepository`: Key-value settings store — `get(key)` and `set(key, value)` with upsert on conflict. Its chunk-setting update transaction persists the final setting and requeues stale indexed rows before any producer enqueues them. Stores keys like `inference_mode`, `external_base_url`, `generation_model`, `chunk_size`, `chunk_overlap`, `use_query_enhancement`.
 - `src/lancedb.rs`:
   - `VectorDb`: Holds a LanceDB `Connection`, a short first-table-creation mutex/fast path, and separate in-memory guards for FTS and IVF-PQ availability.
   - `init()`: Connects to a LanceDB directory on disk.
@@ -94,12 +94,13 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
   - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by durable document deletion.
 - `migrations/`:
   - `20240101000000_initial.sql`: Creates `documents` table (id, file metadata, processing status, embedding metadata, timestamps, error tracking) with indexes on `status`, `file_hash` (unique), and `created_at`. Creates `app_settings` key-value table.
+  - `20260901000000_document_index_provenance.sql`: Adds nullable `indexed_extraction_version`, `indexed_chunk_size`, and `indexed_chunk_overlap` columns for successful-index provenance.
 
 #### `crates/rag_pipeline/` — Document Processing Pipeline
 
 End-to-end document ingestion logic. Depends on `domain`, `persistence`, `pdf-extract`, `fastembed`, `arrow-array`, `arrow-schema`, `tokio`.
 
 - `Cargo.toml`: Dependencies for PDF extraction (`pdf-extract 0.12`), embeddings (`fastembed 6.0.2` backed by ONNX Runtime), tokenizer-boundary chunking (`tokenizers`), and the matching Arrow `58.4` API family.
-- `src/lib.rs`: Re-exports `Chunk`. `init_embedder(cache_dir)` configures EmbeddingGemma with its 2,048-token limit. `process_document` verifies complete page extraction, splits raw display/prompt text at the active tokenizer's boundaries, prefixes only embedding inputs with `"passage: "`, writes vectors before SQLite `indexed`, and propagates typed failures.
+- `src/lib.rs`: Re-exports `Chunk`. `init_embedder(cache_dir)` configures EmbeddingGemma with its 2,048-token limit. `process_document` receives typed `IndexProvenance`, verifies complete page extraction, splits raw display/prompt text at the active tokenizer's boundaries, prefixes only embedding inputs with `"passage: "`, writes vectors before SQLite `indexed` plus provenance, and propagates typed failures.
 - `src/extractor.rs`: PDF text extraction verifies `pdf-extract` returns exactly the physical page count before filtering blank pages, preserving page numbers and rejecting partial output.
 - `src/chunker.rs`: Tokenizer-boundary chunker counts each temporary `"passage: "` embedding input with special tokens and keeps stored `Chunk { page, chunk_index, content }` raw for citations and prompts.

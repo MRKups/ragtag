@@ -1,5 +1,11 @@
 export type DocumentStatus = "queued" | "embedding" | "indexed" | "failed" | "deleting";
 
+export interface IndexProvenance {
+  extraction_version: string;
+  chunk_size: number;
+  chunk_overlap: number;
+}
+
 export interface Document {
   id: string;
   filename: string;
@@ -14,6 +20,7 @@ export interface Document {
   created_at?: string;
   processing_started_at?: string;
   indexed_at?: string;
+  indexing_provenance?: IndexProvenance;
   error_message?: string;
   retry_count: number;
 }

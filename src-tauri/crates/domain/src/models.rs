@@ -11,6 +11,13 @@ pub enum DocumentStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexProvenance {
+    pub extraction_version: String,
+    pub chunk_size: i32,
+    pub chunk_overlap: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
@@ -26,6 +33,7 @@ pub struct Document {
     pub created_at: Option<String>,
     pub processing_started_at: Option<String>,
     pub indexed_at: Option<String>,
+    pub indexing_provenance: Option<IndexProvenance>,
     pub error_message: Option<String>,
     pub retry_count: i32,
 }

@@ -33,6 +33,11 @@ CREATE TABLE documents (
     chunk_count INTEGER,
     embedding_model TEXT,
     embedding_attempts INTEGER DEFAULT 0,
+
+    -- Successful-index provenance (set only after vector replacement succeeds)
+    indexed_extraction_version TEXT,
+    indexed_chunk_size INTEGER,
+    indexed_chunk_overlap INTEGER,
     
     -- Timestamps
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -65,7 +70,7 @@ LanceDB manages tables using a strongly typed schema. Each row represents a sing
 | `chunk_index` | `Int32` | Position within the document. |
 | `content` | `String` | Raw chunk text reused for citations and RAG prompt synthesis. The ingest embedding input prepends `"passage: "` without persisting that instruction prefix. |
 
-LanceDB does not contain document status, extraction version, or chunking configuration. First table creation is serialized before concurrent search or ingest access. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed`. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
+LanceDB does not contain document status, extraction version, or chunking configuration. SQLite records the nullable successful-index provenance for each document after replacement vectors are stored, so it remains the registry authority for whether an indexed document matches the desired extraction and chunk settings. First table creation is serialized before concurrent search or ingest access. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed` with that provenance. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
 
 ## Application Settings
 
@@ -87,9 +92,8 @@ Example keys:
 - `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
 - `chunk_size`: Token count per embedding-safe chunk (default `"512"`, maximum `"2048"`).
 - `chunk_overlap`: Token overlap between chunks on the same page (default `"80"`).
-- `extraction_version`: Internal global marker used to requeue indexed documents after an extraction or chunking change.
 
-`chunk_size` and `chunk_overlap` are validated together when a setting changes. Chunks are split and counted with the active embedding tokenizer, including the `passage: ` prefix and special tokens, so no stored chunk is silently truncated during embedding. Changing either setting does not itself requeue already indexed documents.
+`chunk_size` and `chunk_overlap` are validated together when a setting changes. Under the document-operations write lock, the final pair is persisted and all indexed documents with absent or mismatched provenance are atomically returned to `queued`; their saved provenance remains until the successful replacement records the new values. Jobs are enqueued only after that transaction and lock release. Chunks are split and counted with the active embedding tokenizer, including the `passage: ` prefix and special tokens, so no stored chunk is silently truncated during embedding.
 
 The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
 
