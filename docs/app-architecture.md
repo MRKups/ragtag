@@ -66,7 +66,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 4. Rust searches the embedded Vector DB via **Hybrid Search** (native LanceDB FTS + dense vector search). If the FTS path fails, it falls back to vector-only search and streams a visible request-scoped warning before the answer.
 5. Rust retrieves associated document metadata from SQLite, discards non-indexed or blank excerpts, and returns a typed no-evidence error without invoking inference when no usable citation remains.
 6. Rust builds the chat messages, selects an `InferenceProvider` enum, and normalizes source-specific local `mistral.rs` or external SSE output into token, terminal, and streaming-error events.
-7. One shared forwarder maps those events to ordered Tauri v2 `Channel<TokenEvent>` messages. Request and HTTP-status failures before external streaming reject the command; local stream-start failures follow the same typed IPC failure path, while failures after either stream starts send `TokenEvent::Error`.
+7. One shared forwarder maps those events to ordered Tauri v2 `Channel<TokenEvent>` messages. Request and HTTP-status failures before external streaming reject the command; a local request-start failure and failures after either stream starts send `TokenEvent::Error` with the retrieved citations.
 8. Query state and its request-scoped Channel callback live in the application singleton, not the keyed query page. Hash-route navigation remounts the page without cancelling an active request or clearing completed text, citations, warnings, or selected pages; only the explicit query cancel control ends and resets that state.
 
 

@@ -298,8 +298,18 @@ async fn stream_local_inference(
         _ = cancellation.changed() => return Ok(()),
         result = model.stream_chat_request(request) => result,
     };
-    let mut stream =
-        stream_result.map_err(|e| AppError::Inference(format!("LLM request failed: {e}")))?;
+    let mut stream = match stream_result {
+        Ok(stream) => stream,
+        Err(error) => {
+            send_inference_event(
+                cancellation,
+                events,
+                InferenceEvent::StreamError(format!("LLM request failed: {error}")),
+            )
+            .await;
+            return Ok(());
+        }
+    };
 
     loop {
         let response = tokio::select! {
