@@ -31,6 +31,7 @@ export class AppState {
   llmReady = $state(false);
   modelError = $state('');
   localModelRetrying = $state(false);
+  externalInferenceError = $state('');
 
 
   async init() {
@@ -100,13 +101,20 @@ export class AppState {
         this.localModelRetrying = false;
         this.llmReady = true;
         this.modelError = '';
+        this.externalInferenceError = '';
         this.#tryBecomeReady();
       });
       await api.listen('llm_unready', () => {
-        console.log('[AppState] local LLM initialization requested');
+        console.log('[AppState] inference initialization requested');
         this.localModelRetrying = false;
         this.llmReady = false;
         this.modelError = '';
+        this.externalInferenceError = '';
+      });
+      await api.listenExternalInferenceFailed((event) => {
+        console.warn('[AppState] external inference unavailable:', event.payload.message);
+        this.llmReady = false;
+        this.externalInferenceError = event.payload.message;
       });
 
 

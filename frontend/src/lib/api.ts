@@ -1,6 +1,6 @@
 import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
-import type { Document, TokenEvent } from './types';
+import type { AppErrorPayload, Document, TokenEvent } from './types';
 
 export const api = {
   beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
@@ -34,6 +34,10 @@ export const api = {
   listen<T>(event: string, handler: (event: Event<T>) => void): Promise<UnlistenFn> {
     return listen<T>(event, handler);
   },
+
+  listenExternalInferenceFailed: (
+    handler: (event: Event<AppErrorPayload>) => void
+  ): Promise<UnlistenFn> => listen<AppErrorPayload>('external_inference_failed', handler),
 
   assetUrl: (path: string) => convertFileSrc(path),
   

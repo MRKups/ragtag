@@ -84,8 +84,8 @@ CREATE TABLE app_settings (
 ```
 Example keys:
 - `inference_mode`: `"local"` or `"external"`; selects the default generation route for new queries.
-- `external_base_url`: URL for an OpenAI-compatible endpoint, used in external mode.
-- `external_model`: Model name sent to that endpoint; absent values fall back to `"gpt-4o-mini"`.
+- `external_base_url`: Credential-free HTTP(S) base URL for an OpenAI-compatible endpoint, normalized before `/models` readiness and chat-completions requests.
+- `external_model`: Model name required in the endpoint’s `/models` response and sent to that endpoint; absent values fall back to `"gpt-4o-mini"`.
 - `use_query_enhancement`: `"true"` or `"false"`; expands recognized technical abbreviations only for retrieval, leaving the user prompt unchanged.
 - `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
 - `tokenizer_model`: Hugging Face tokenizer repository compatible with the local GGUF model. Default: `"Qwen/Qwen3-1.7B"`.

@@ -93,12 +93,15 @@
           isLoading={queryState.isLoading}
           isStreaming={queryState.isStreaming}
           unavailable={!appState.queryAvailable}
-          unavailableMessage={appState.modelError || 'The selected inference model is still preparing.'}
+          unavailableMessage={appState.externalInferenceError || appState.modelError || 'The selected inference model is still preparing.'}
           onSubmit={handleQuery}
           onCancel={handleCancel}
           bind:text={queryState.queryText}
         />
-        {#if appState.modelError}
+        {#if appState.externalInferenceError}
+          <p class="external-inference-error" role="alert">{appState.externalInferenceError}</p>
+        {/if}
+        {#if appState.modelError && !appState.externalInferenceError}
           <button
             class="retry-model-button"
             type="button"
@@ -163,6 +166,13 @@
     max-width: 800px;
     margin: 0 auto;
     width: 100%;
+  }
+
+  .external-inference-error {
+    margin: 0.75rem 0 0;
+    color: #fecaca;
+    font-size: 0.875rem;
+    line-height: 1.4;
   }
 
   .retry-model-button {

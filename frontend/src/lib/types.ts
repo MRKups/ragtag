@@ -41,6 +41,20 @@ export type TokenEvent =
   | { type: "done"; citations: Citation[] }
   | { type: "error"; message: string; citations: Citation[] };
 
+export interface AppErrorPayload {
+  kind:
+    | 'NotFound'
+    | 'Database'
+    | 'Io'
+    | 'VectorDb'
+    | 'QueueFull'
+    | 'Internal'
+    | 'Inference'
+    | 'DuplicateDocument'
+    | 'InvalidInput';
+  message: string;
+}
+
 export interface IngestionProgressEvent {
   document_id: string;
   stage: "extracting" | "chunking" | "embedding" | "storing";

@@ -27,6 +27,8 @@ const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
 const RETRIEVAL_RESULT_LIMIT: usize = 10;
+const EXTERNAL_READINESS_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_EXTERNAL_BASE_URL: &str = "http://localhost:11434/v1";
 
 fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
     let name = std::path::Path::new(filename);
@@ -109,6 +111,167 @@ fn sse_event_data(event: &str) -> Option<&str> {
 
 const INFERENCE_EVENT_BUFFER_CAPACITY: usize = 32;
 
+#[derive(Clone)]
+struct ExternalInferenceConfig {
+    base_url: reqwest::Url,
+    model: String,
+    api_key: Option<String>,
+}
+
+impl ExternalInferenceConfig {
+    fn endpoint_url(&self, segments: &[&str]) -> Result<reqwest::Url, AppError> {
+        let mut url = self.base_url.clone();
+        while url.path().ends_with("//") {
+            let mut path = url.path_segments_mut().map_err(|_| {
+                AppError::InvalidInput(
+                    "External base URL cannot be used as an HTTP endpoint".into(),
+                )
+            })?;
+            path.pop_if_empty();
+        }
+        let mut path = url.path_segments_mut().map_err(|_| {
+            AppError::InvalidInput("External base URL cannot be used as an HTTP endpoint".into())
+        })?;
+        path.pop_if_empty();
+        for segment in segments {
+            path.push(segment);
+        }
+        drop(path);
+        Ok(url)
+    }
+
+    fn models_url(&self) -> Result<reqwest::Url, AppError> {
+        self.endpoint_url(&["models"])
+    }
+
+    fn chat_completions_url(&self) -> Result<reqwest::Url, AppError> {
+        self.endpoint_url(&["chat", "completions"])
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ExternalModelsResponse {
+    data: Vec<ExternalModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExternalModel {
+    id: String,
+}
+
+fn normalize_external_base_url(value: &str) -> Result<reqwest::Url, AppError> {
+    let url = reqwest::Url::parse(value.trim()).map_err(|_| {
+        AppError::InvalidInput("External base URL must be a valid HTTP(S) URL".into())
+    })?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AppError::InvalidInput(
+            "External base URL must be an HTTP(S) URL without credentials, query, or fragment"
+                .into(),
+        ));
+    }
+
+    Ok(url)
+}
+
+fn apply_external_auth(
+    request: reqwest::RequestBuilder,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match api_key.filter(|key| !key.is_empty()) {
+        Some(api_key) => request.bearer_auth(api_key),
+        None => request,
+    }
+}
+
+async fn read_external_api_key() -> Result<Option<String>, AppError> {
+    tokio::task::spawn_blocking(|| {
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
+            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
+        match entry.get_password() {
+            Ok(api_key) if !api_key.is_empty() => Ok(Some(api_key)),
+            Ok(_) | Err(_) => Ok(None),
+        }
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+}
+
+async fn external_inference_config(
+    settings: &AppSettingsRepository,
+) -> Result<ExternalInferenceConfig, AppError> {
+    let base_url = settings
+        .get("external_base_url")
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_EXTERNAL_BASE_URL.to_string());
+    let model = settings
+        .get("external_model")
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_EXTERNAL_MODEL.to_string());
+
+    Ok(ExternalInferenceConfig {
+        base_url: normalize_external_base_url(&base_url)?,
+        model: model.trim().to_string(),
+        api_key: read_external_api_key().await?,
+    })
+}
+
+fn external_model_is_available(models: &ExternalModelsResponse, configured_model: &str) -> bool {
+    models
+        .data
+        .iter()
+        .any(|available_model| available_model.id == configured_model)
+}
+
+async fn probe_external_inference_readiness(
+    client: &reqwest::Client,
+    config: &ExternalInferenceConfig,
+) -> Result<(), AppError> {
+    let models_url = config.models_url()?;
+    let response = apply_external_auth(
+        client.get(models_url).timeout(EXTERNAL_READINESS_TIMEOUT),
+        config.api_key.as_deref(),
+    )
+    .send()
+    .await
+    .map_err(|error| {
+        AppError::Inference(format!(
+            "External inference readiness check failed: {error}"
+        ))
+    })?;
+
+    if !response.status().is_success() {
+        return Err(AppError::Inference(format!(
+            "External inference readiness check failed: endpoint returned HTTP {}",
+            response.status()
+        )));
+    }
+
+    let models = response
+        .json::<ExternalModelsResponse>()
+        .await
+        .map_err(|error| {
+            AppError::Inference(format!(
+                "External inference readiness check received an invalid /models response: {error}"
+            ))
+        })?;
+    if !external_model_is_available(&models, &config.model) {
+        return Err(AppError::Inference(format!(
+            "External inference model '{}' is not available from the configured endpoint",
+            config.model
+        )));
+    }
+
+    Ok(())
+}
+
 enum InferenceEvent {
     Token(String),
     Done,
@@ -121,7 +284,7 @@ enum InferenceProvider {
         client: reqwest::Client,
         url: String,
         body: serde_json::Value,
-        api_key: String,
+        api_key: Option<String>,
     },
     Local {
         model: Arc<mistralrs::Model>,
@@ -185,16 +348,13 @@ async fn stream_external_inference(
     client: reqwest::Client,
     url: String,
     body: serde_json::Value,
-    api_key: String,
+    api_key: Option<String>,
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
     events: &mpsc::Sender<InferenceEvent>,
 ) -> Result<(), AppError> {
     use futures_util::StreamExt;
 
-    let mut request = client.post(url).json(&body);
-    if !api_key.is_empty() {
-        request = request.bearer_auth(api_key);
-    }
+    let request = apply_external_auth(client.post(url).json(&body), api_key.as_deref());
 
     let response = tokio::select! {
         _ = cancellation.changed() => return Ok(()),
@@ -289,8 +449,6 @@ async fn stream_local_inference(
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
     events: &mpsc::Sender<InferenceEvent>,
 ) -> Result<(), AppError> {
-    use futures_util::StreamExt;
-
     let request = mistralrs::RequestBuilder::new()
         .add_message(mistralrs::TextMessageRole::System, system_prompt)
         .add_message(mistralrs::TextMessageRole::User, context);
@@ -458,16 +616,7 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
             .filter(|size| *size <= 1024)
             .map(|_| ())
             .ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
-        "external_base_url"
-            if reqwest::Url::parse(value).ok().is_some_and(|url| {
-                matches!(url.scheme(), "http" | "https")
-                    && url.host_str().is_some()
-                    && url.username().is_empty()
-                    && url.password().is_none()
-            }) =>
-        {
-            Ok(())
-        }
+        "external_base_url" => normalize_external_base_url(value).map(|_| ()),
         "external_model" if !value.trim().is_empty() => Ok(()),
 
         "generation_model"
@@ -570,6 +719,41 @@ impl Drop for ActiveQuery {
     }
 }
 
+async fn restart_external_readiness_probe(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    clear_local_model: bool,
+) -> Result<(), AppError> {
+    {
+        let mut initialization = state.llm_initialization.lock().await;
+        initialization.generation = initialization.generation.wrapping_add(1);
+        initialization.in_progress = false;
+    }
+    let _ = app.emit("llm_unready", ());
+
+    if clear_local_model {
+        *state.local_llm.write().await = None;
+    }
+    let models_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?
+        .join("models");
+    request_llm_initialization(app, state, models_dir).await;
+    Ok(())
+}
+
+async fn revalidate_external_readiness_if_active(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    if settings.get("inference_mode").await?.as_deref() == Some("external") {
+        restart_external_readiness_probe(app, state, false).await?;
+    }
+    Ok(())
+}
+
 async fn request_llm_initialization(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -588,6 +772,7 @@ async fn request_llm_initialization(
     let initialization = state.llm_initialization.clone();
     let app = app.clone();
     let pool = state.db_pool.clone();
+    let http_client = state.http_client.clone();
 
     tauri::async_runtime::spawn(async move {
         let app_settings = AppSettingsRepository::new(pool);
@@ -598,13 +783,27 @@ async fn request_llm_initialization(
             .unwrap_or_else(|| "local".to_string());
 
         if mode != "local" {
+            let readiness = async {
+                let config = external_inference_config(&app_settings).await?;
+                probe_external_inference_readiness(&http_client, &config).await
+            }
+            .await;
+
             let mut current = initialization.lock().await;
             if current.generation != generation {
                 return;
             }
             current.in_progress = false;
-            info!("BYO inference mode — skipping local LLM initialization");
-            let _ = app.emit("llm_ready", ());
+            match readiness {
+                Ok(()) => {
+                    info!("external inference endpoint and model are ready");
+                    let _ = app.emit("llm_ready", ());
+                }
+                Err(error) => {
+                    warn!("external inference readiness check failed: {error}");
+                    let _ = app.emit("external_inference_failed", error);
+                }
+            }
             return;
         }
 
@@ -709,12 +908,20 @@ async fn request_llm_initialization(
 
         match builder.build().await {
             Ok(model) => {
+                let current_mode = app_settings
+                    .get("inference_mode")
+                    .await
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "local".to_string());
                 let mut current = initialization.lock().await;
                 if current.generation != generation {
                     return;
                 }
-                *llm_state.write().await = Some(Arc::new(model));
                 current.in_progress = false;
+                if current_mode != "local" {
+                    return;
+                }
+                *llm_state.write().await = Some(Arc::new(model));
                 info!("mistral.rs pipeline built and ready");
                 let _ = app.emit("llm_ready", ());
             }
@@ -746,8 +953,13 @@ async fn begin_first_run_init(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    let mode = settings
+        .get("inference_mode")
+        .await?
+        .unwrap_or_else(|| "local".to_string());
     let embedder_ready = state.embedder.read().await.is_some();
-    let llm_ready = state.local_llm.read().await.is_some();
+    let llm_ready = mode == "local" && state.local_llm.read().await.is_some();
 
     if embedder_ready {
         let _ = app.emit("embedder_ready", ());
@@ -1032,6 +1244,8 @@ async fn execute_query(
         queries: state.active_queries.clone(),
         request_id: request_id.clone(),
     };
+    let settings_repo = AppSettingsRepository::new(state.db_pool.clone());
+
     let embedder_opt = {
         let guard = state.embedder.read().await;
         guard.clone()
@@ -1040,8 +1254,6 @@ async fn execute_query(
         .ok_or_else(|| AppError::Internal("Embedding model not yet loaded. Please wait.".into()))?;
     let vector_db = state.vector_db.clone();
     let local_llm = state.local_llm.clone();
-    let http_client = state.http_client.clone();
-    let settings_repo = AppSettingsRepository::new(state.db_pool.clone());
 
     let use_query_enhancement = settings_repo
         .get("use_query_enhancement")
@@ -1115,34 +1327,18 @@ async fn execute_query(
 
     let mode = settings_repo
         .get("inference_mode")
-        .await
-        .unwrap_or_default()
+        .await?
         .unwrap_or_else(|| "local".to_string());
-
     let provider = if mode == "external" {
-        let model = settings_repo
-            .get("external_model")
-            .await
-            .unwrap_or_default()
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_EXTERNAL_MODEL.to_string());
-        let base_url = settings_repo
-            .get("external_base_url")
-            .await
-            .unwrap_or_default()
-            .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-        let api_key = tokio::task::spawn_blocking(|| {
-            keyring::v1::Entry::new("ragtag", "external_api_key")
-                .ok()
-                .and_then(|entry| entry.get_password().ok())
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
-        .unwrap_or_default();
+        let config = external_inference_config(&settings_repo).await?;
+        let http_client = state.http_client.clone();
+        probe_external_inference_readiness(&http_client, &config).await?;
+        let url = config.chat_completions_url()?.to_string();
+        let model = config.model;
 
         InferenceProvider::External {
             client: http_client,
-            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            url,
             body: serde_json::json!({
                 "model": model,
                 "messages": [
@@ -1151,7 +1347,7 @@ async fn execute_query(
                 ],
                 "stream": true
             }),
-            api_key,
+            api_key: config.api_key,
         }
     } else {
         let model = {
@@ -1349,37 +1545,41 @@ async fn set_setting(
 
     enqueue_requeued_documents(state.job_queue.clone(), requeued_ids)?;
     if key == "inference_mode" {
-        let event = {
-            let mut initialization = state.llm_initialization.lock().await;
-            initialization.generation = initialization.generation.wrapping_add(1);
-            initialization.in_progress = false;
-            if value == "external" {
-                *state.local_llm.write().await = None;
-                "llm_ready"
-            } else {
-                "llm_unready"
+        if value == "external" {
+            restart_external_readiness_probe(&app, &state, true).await?;
+        } else {
+            {
+                let mut initialization = state.llm_initialization.lock().await;
+                initialization.generation = initialization.generation.wrapping_add(1);
+                initialization.in_progress = false;
             }
-        };
-        let _ = app.emit(event, ());
-        if value == "local" {
+            let _ = app.emit("llm_unready", ());
             begin_first_run_init(app, state).await?;
         }
+    } else if matches!(key.as_str(), "external_base_url" | "external_model") {
+        revalidate_external_readiness_if_active(&app, &state).await?;
     }
     Ok(())
 }
 
 #[tauri::command]
-async fn set_api_key(key: String) -> Result<bool, AppError> {
-    tokio::task::spawn_blocking(move || {
+async fn set_api_key(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    key: String,
+) -> Result<bool, AppError> {
+    let saved = tokio::task::spawn_blocking(move || {
         let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
         entry
             .set_password(&key)
             .map_err(|e| AppError::Internal(format!("keyring set: {e}")))?;
-        Ok(true)
+        Ok::<bool, AppError>(true)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))??;
+    revalidate_external_readiness_if_active(&app, &state).await?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1398,17 +1598,22 @@ async fn has_api_key() -> Result<bool, AppError> {
 }
 
 #[tauri::command]
-async fn delete_api_key() -> Result<bool, AppError> {
-    tokio::task::spawn_blocking(|| {
+async fn delete_api_key(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, AppError> {
+    let deleted = tokio::task::spawn_blocking(|| {
         let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
             .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
         entry
             .delete_credential()
             .map_err(|e| AppError::Internal(format!("keyring delete: {e}")))?;
-        Ok(true)
+        Ok::<bool, AppError>(true)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))??;
+    revalidate_external_readiness_if_active(&app, &state).await?;
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -1795,9 +2000,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_upload_filename, enqueue_requeued_documents, registry_read_retry_delay,
-        remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
-        sse_event_data, validate_setting, validate_upload,
+        ExternalInferenceConfig, ExternalModelsResponse, decode_upload_filename,
+        enqueue_requeued_documents, external_model_is_available, normalize_external_base_url,
+        registry_read_retry_delay, remove_non_fastembed_models, require_retrieved_citations,
+        sse_event_boundary, sse_event_data, validate_setting, validate_upload,
     };
     use domain::AppError;
     use std::time::Duration;
@@ -1809,6 +2015,44 @@ mod tests {
         assert!(validate_setting("external_model", "gpt-4o-mini").is_ok());
         assert!(validate_setting("external_model", "").is_err());
         assert!(validate_setting("external_model", "   ").is_err());
+    }
+
+    #[test]
+    fn normalizes_external_endpoints_without_dropping_base_path() {
+        let config = ExternalInferenceConfig {
+            base_url: normalize_external_base_url("https://example.test/v1/").unwrap(),
+            model: "gpt-4o-mini".into(),
+            api_key: None,
+        };
+        let trailing = ExternalInferenceConfig {
+            base_url: normalize_external_base_url("https://example.test/v1///").unwrap(),
+            model: "gpt-4o-mini".into(),
+            api_key: None,
+        };
+
+        assert_eq!(
+            config.models_url().unwrap().as_str(),
+            "https://example.test/v1/models"
+        );
+        assert_eq!(
+            config.chat_completions_url().unwrap().as_str(),
+            "https://example.test/v1/chat/completions"
+        );
+        assert_eq!(
+            trailing.models_url().unwrap().as_str(),
+            "https://example.test/v1/models"
+        );
+        assert!(normalize_external_base_url("https://user@example.test/v1").is_err());
+        assert!(normalize_external_base_url("https://example.test/v1?tenant=a").is_err());
+    }
+    #[test]
+    fn requires_configured_external_model_in_models_response() {
+        let models: ExternalModelsResponse =
+            serde_json::from_str(r#"{"data":[{"id":"gpt-4o-mini"},{"id":"other-model"}]}"#)
+                .unwrap();
+
+        assert!(external_model_is_available(&models, "gpt-4o-mini"));
+        assert!(!external_model_is_available(&models, "missing-model"));
     }
 
     #[test]

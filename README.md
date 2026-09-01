@@ -77,7 +77,7 @@ Ragtag requires no local `.env` file or cloud account for its default mode. It s
 
 The first local launch downloads the model artifacts needed for offline use: approximately 800 MB for EmbeddingGemma-300M embeddings and approximately 2 GB for the default Qwen3-1.7B GGUF generator. Downloads resume after interruption and report progress in the app boot overlay.
 
-The **Settings** page can select external inference instead. It stores the endpoint URL as a local setting and stores the API key in the operating system keychain, never in SQLite or frontend storage. External inference skips the local generation-model download, but document ingestion and retrieval remain local.
+The **Settings** page can select external inference instead. It stores the endpoint URL as a local setting and stores the API key in the operating system keychain, never in SQLite or frontend storage. External inference skips the local generation-model download, but first verifies the configured/default model through the endpoint’s OpenAI-compatible `/models` route before enabling queries. Document ingestion and retrieval remain local.
 
 ## Documents and citations
 

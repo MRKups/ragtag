@@ -1,6 +1,6 @@
 use serde::ser::SerializeMap;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum AppError {
     #[error("Document not found: {0}")]
     NotFound(String),
