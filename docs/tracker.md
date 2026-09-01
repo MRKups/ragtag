@@ -4,7 +4,4 @@
 
 *Global ID Counter: Next item is **B139***
 
-## Features (F)
-- [ ] F32: Fully implement View Transitions between all 3 pages — verify smooth cross-fade animations on hash-based navigation for query/documents/settings routes. Ensure no visual flashes, layout shifts, or header flicker during transitions. The `startViewTransition` feature detection guard is in place; remaining work is full QA across routes.
-
 ## Bugfixes (B)
