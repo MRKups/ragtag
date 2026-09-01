@@ -5,6 +5,7 @@ import type {
   Document,
   ExternalProviderConnection,
   IngestionProgress,
+  TextPreview,
   TokenEvent
 } from './types';
 
@@ -48,6 +49,8 @@ export const api = {
   assetUrl: (path: string) => convertFileSrc(path),
   
   listDocuments: () => invoke<Document[]>('list_documents'),
+  getTextPreview: (documentId: string) =>
+    invoke<TextPreview>('get_text_preview', { documentId }),
   
   deleteDocument: (id: string) => invoke<void>('delete_document', { id }),
   

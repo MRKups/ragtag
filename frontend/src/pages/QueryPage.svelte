@@ -66,10 +66,7 @@
         } else if (event.type === 'warning') {
           queryState.retrievalWarning = event.message;
         } else if (event.type === 'done') {
-          queryState.citations = event.citations;
-          queryState.currentRequestId = null;
-          queryState.isStreaming = false;
-          queryState.isLoading = false;
+          queryState.complete(event.citations);
         } else if (event.type === 'error') {
           reportQueryFailure(true);
           queryState.citations = event.citations;
@@ -146,6 +143,7 @@
       filename={queryState.selectedDocument?.filename ?? null}
       storagePath={queryState.selectedDocument?.storagePath ?? null}
       page={queryState.selectedDocument?.page ?? 1}
+      documentId={queryState.selectedDocument?.documentId ?? null}
     />
   </div>
 </div>

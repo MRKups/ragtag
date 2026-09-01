@@ -6,7 +6,7 @@ export class QueryState {
   citations = $state<Citation[]>([]);
   retrievalWarning = $state<string | null>(null);
   queryText = $state('');
-  selectedDocument = $state<{ filename: string; storagePath?: string; page: number } | null>(null);
+  selectedDocument = $state<{ documentId: string; filename: string; storagePath?: string; page: number } | null>(null);
   isStreaming = $state(false);
   currentRequestId = $state<string | null>(null);
 
@@ -23,6 +23,14 @@ export class QueryState {
   cancel() {
     this.currentRequestId = null;
     this.reset();
+  }
+
+  complete(citations: Citation[]) {
+    this.citations = citations;
+    this.currentRequestId = null;
+    this.isStreaming = false;
+    this.isLoading = false;
+    this.queryText = '';
   }
 }
 

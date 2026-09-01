@@ -52,7 +52,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
    - Emits `stored` only after vector replacement and the SQLite indexed/provenance update both succeed.
    - Continues to emit the `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`) for lifecycle compatibility; they are not the ordered UI progress path.
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to refresh durable document metadata instantly.
-8. Citation viewing renders PDFs through bundled PDF.js. Non-PDF sources remain retrieval evidence and show an explicit preview-unavailable state rather than being passed to the PDF renderer.
+8. Citation viewing renders PDFs through bundled PDF.js. `.txt` previews use `get_text_preview(document_id)`: Rust validates the indexed registry record and safe app-local path, reads at most 1 MiB on a blocking worker, and returns typed escaped text for Svelte to render. Other non-PDF sources remain retrieval evidence and show an explicit preview-unavailable state until they have a format-specific renderer.
 
 
 ### Document Deletion
@@ -69,7 +69,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 5. Rust retrieves associated document metadata from SQLite, discards non-indexed or blank excerpts, and returns a typed no-evidence error without invoking inference when no usable citation remains.
 6. Rust builds the chat messages, selects an `InferenceProvider` enum, and normalizes source-specific local `mistral.rs` or external SSE output into token, terminal, and streaming-error events.
 7. One shared forwarder maps those events to ordered Tauri v2 `Channel<TokenEvent>` messages. Request and HTTP-status failures before external streaming reject the command; a local request-start failure and failures after either stream starts send `TokenEvent::Error` with the retrieved citations.
-8. Query state and its request-scoped Channel callback live in the application singleton, not the keyed query page. Hash-route navigation remounts the page without cancelling an active request or clearing completed text, citations, warnings, or selected pages; only the explicit query cancel control ends and resets that state.
+8. Query state and its request-scoped Channel callback live in the application singleton, not the keyed query page. A terminal `done` event preserves the completed text and citations while clearing the composer; failed requests retain the composer text, while explicit cancellation resets it. Hash-route navigation does not cancel an active request or clear completed text, citations, warnings, or selected pages.
 
 
 **Citation Engine (Retrieval-Grounded)**

@@ -25,6 +25,11 @@ export interface Document {
   retry_count: number;
 }
 
+export interface TextPreview {
+  content: string;
+  truncated: boolean;
+}
+
 export interface Citation {
   document_id: string;
   filename: string;

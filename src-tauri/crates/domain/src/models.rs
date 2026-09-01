@@ -37,3 +37,9 @@ pub struct Document {
     pub error_message: Option<String>,
     pub retry_count: i32,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextPreview {
+    pub content: String,
+    pub truncated: bool,
+}

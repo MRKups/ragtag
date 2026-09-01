@@ -3,7 +3,7 @@ pub use state::{AppState, IngestionJob};
 mod model_download;
 
 use domain::{
-    AppError, Citation, Document, DocumentStatus, IngestionProgress, TokenEvent,
+    AppError, Citation, Document, DocumentStatus, IngestionProgress, TextPreview, TokenEvent,
     models::IndexProvenance,
 };
 use log::{debug, error, info, warn};
@@ -1784,6 +1784,50 @@ async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Documen
     repo.list_all().await
 }
 
+#[tauri::command]
+async fn get_text_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    document_id: String,
+) -> Result<TextPreview, AppError> {
+    let repo = DocumentRepository::new(state.db_pool.clone());
+    let document = repo
+        .get_by_id(&document_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Document is not available for preview".into()))?;
+    validate_text_preview_document(&document)?;
+
+    let app_local_data = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?;
+    let source_path = document_storage_path(&app_local_data, &document.storage_path)?;
+
+    tokio::task::spawn_blocking(move || rag_pipeline::extractor::text_preview(&source_path))
+        .await
+        .map_err(|e| AppError::Internal(format!("Text preview task panicked: {e}")))?
+}
+
+fn validate_text_preview_document(document: &Document) -> Result<(), AppError> {
+    let is_plain_text = std::path::Path::new(&document.filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"));
+
+    if document.status != DocumentStatus::Indexed {
+        return Err(AppError::NotFound(
+            "Document is not available for preview".into(),
+        ));
+    }
+    if document.file_type != "text" || !is_plain_text {
+        return Err(AppError::InvalidInput(
+            "A plain-text preview is unavailable for this document".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn document_storage_path(
     app_local_data: &std::path::Path,
     storage_path: &str,
@@ -2461,6 +2505,7 @@ pub fn run() {
             execute_query,
             cancel_query,
             list_documents,
+            get_text_preview,
             delete_document,
             get_settings,
             set_setting,
@@ -2486,9 +2531,10 @@ mod tests {
         fetch_external_models, finish_llm_initialization, invalidate_llm_initialization,
         llm_initialization_is_current, normalize_external_base_url, registry_read_retry_delay,
         remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
-        sse_event_data, storage_extension, validate_setting, validate_upload,
+        sse_event_data, storage_extension, validate_setting, validate_text_preview_document,
+        validate_upload,
     };
-    use domain::AppError;
+    use domain::{AppError, Document, DocumentStatus};
     use std::{sync::Arc, time::Duration};
     use tokio::time::timeout;
     use tokio::{
@@ -2634,6 +2680,46 @@ mod tests {
         assert_eq!(storage_extension("advisor.md", "text"), "md");
         assert_eq!(storage_extension("notes", "text"), "text");
         assert_eq!(storage_extension("manual.DOCX", "docx"), "docx");
+    }
+
+    fn indexed_text_document(filename: &str) -> Document {
+        Document {
+            id: "document-1".into(),
+            filename: filename.into(),
+            file_type: "text".into(),
+            file_size_bytes: Some(10),
+            file_hash: None,
+            storage_path: "documents/document-1.txt".into(),
+            status: DocumentStatus::Indexed,
+            chunk_count: Some(1),
+            embedding_model: None,
+            embedding_attempts: 1,
+            created_at: None,
+            processing_started_at: None,
+            indexed_at: None,
+            indexing_provenance: None,
+            error_message: None,
+            retry_count: 0,
+        }
+    }
+
+    #[test]
+    fn authorizes_only_indexed_txt_documents_for_plain_text_preview() {
+        let mut document = indexed_text_document("notes.txt");
+        assert!(validate_text_preview_document(&document).is_ok());
+
+        document.filename = "notes.md".into();
+        assert!(matches!(
+            validate_text_preview_document(&document),
+            Err(AppError::InvalidInput(_))
+        ));
+
+        document.filename = "notes.txt".into();
+        document.status = DocumentStatus::Embedding;
+        assert!(matches!(
+            validate_text_preview_document(&document),
+            Err(AppError::NotFound(_))
+        ));
     }
     #[test]
     fn removes_non_fastembed_model_entries() {

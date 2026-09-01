@@ -72,7 +72,7 @@ We explicitly rejected **Chroma** for this role: it requires a Python runtime an
 **Decision:** PDFs use `pdf-extract`; DOCX files use their local ZIP/XML package structure; all other supported source files are decoded as UTF-8 text.
 
 **Rationale:**
-PDF and DOCX need format-specific extraction. PDF retains its physical page boundaries through citations. DOCX and non-paginated text do not contain trustworthy rendered page boundaries without a layout engine, so they are indexed as one logical source page and citations remain attached to the original document. The DOCX path reads `word/document.xml` with pure-Rust ZIP/XML libraries, avoiding a sidecar or cloud converter. Generic UTF-8 text support admits technical manuals, Markdown, configuration, structured data, and source files without a fragile format-by-format parser.
+PDF and DOCX need format-specific extraction. PDF retains its physical page boundaries through citations. DOCX and non-paginated text do not contain trustworthy rendered page boundaries without a layout engine, so they are indexed as one logical source page and citations remain attached to the original document. The DOCX path reads `word/document.xml` with pure-Rust ZIP/XML libraries, avoiding a sidecar or cloud converter. Generic UTF-8 text support admits technical manuals, Markdown, configuration, structured data, and source files without a fragile format-by-format parser. Preview policy remains in Rust: the initial `.txt` command authorizes the indexed registry record, bounds its valid UTF-8 payload, and returns typed text rather than frontend-selected source paths or generated HTML.
 
 ## 9. Text Chunking Strategy
 

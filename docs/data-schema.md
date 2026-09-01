@@ -152,6 +152,16 @@ pub enum IngestionProgress {
 }
 ```
 
+```rust
+// In crates/domain/src/models.rs
+pub struct TextPreview {
+    pub content: String,
+    pub truncated: bool,
+}
+```
+
+`get_text_preview(document_id)` accepts only an indexed `.txt` document ID. The Tauri adapter resolves the registry-owned app-local path rather than receiving a frontend path, and the pipeline returns at most 1 MiB of valid UTF-8 text. `truncated` signals a bounded preview.
+
 `Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
 
 `TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—including no usable retrieved excerpts, retrieval failures, or an external request/status error—reject the `execute_query` IPC command instead.

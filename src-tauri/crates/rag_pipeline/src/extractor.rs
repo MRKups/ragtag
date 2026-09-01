@@ -1,4 +1,4 @@
-use domain::AppError;
+use domain::{AppError, TextPreview};
 use quick_xml::{Reader, escape::unescape, events::Event};
 use std::{fs::File, io::Read, path::Path};
 
@@ -6,6 +6,8 @@ pub struct ExtractedPages {
     pub pages: Vec<(i32, String)>,
     pub total_pages: usize,
 }
+
+pub const TEXT_PREVIEW_MAX_BYTES: usize = 1024 * 1024;
 
 pub fn extract_pages(
     source_path: &Path,
@@ -69,6 +71,32 @@ fn extract_text_pages(
         pages: vec![(1, page)],
         total_pages: 1,
     })
+}
+
+pub fn text_preview(source_path: &Path) -> Result<TextPreview, AppError> {
+    let file = File::open(source_path)
+        .map_err(|e| AppError::Io(format!("Text preview could not open source: {e}")))?;
+    let mut bytes = Vec::with_capacity(TEXT_PREVIEW_MAX_BYTES + 1);
+    file.take((TEXT_PREVIEW_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| AppError::Io(format!("Text preview could not read source: {e}")))?;
+
+    let truncated = bytes.len() > TEXT_PREVIEW_MAX_BYTES;
+    if truncated {
+        bytes.truncate(TEXT_PREVIEW_MAX_BYTES);
+        while let Err(error) = std::str::from_utf8(&bytes) {
+            if error.error_len().is_some() {
+                return Err(AppError::InvalidInput(
+                    "Text preview source is not valid UTF-8".into(),
+                ));
+            }
+            bytes.truncate(error.valid_up_to());
+        }
+    }
+
+    let content = String::from_utf8(bytes)
+        .map_err(|_| AppError::InvalidInput("Text preview source is not valid UTF-8".into()))?;
+    Ok(TextPreview { content, truncated })
 }
 
 fn extract_docx_pages(
@@ -183,7 +211,10 @@ fn nonpaginated_page(text: String, format: &str) -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{docx_body_text, extract_pages, nonpaginated_page, pages_from_page_texts};
+    use super::{
+        TEXT_PREVIEW_MAX_BYTES, docx_body_text, extract_pages, nonpaginated_page,
+        pages_from_page_texts, text_preview,
+    };
     use std::{fs::File, io::Write};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
@@ -253,5 +284,29 @@ mod tests {
 
         assert_eq!(pages.total_pages, 1);
         assert_eq!(pages.pages, vec![(1, "DOCX text".into())]);
+    }
+
+    #[test]
+    fn reads_a_bounded_utf8_text_preview() {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("ragtag-preview-{unique}.txt"));
+        std::fs::write(
+            &path,
+            format!("{}éafter", "a".repeat(TEXT_PREVIEW_MAX_BYTES - 1)),
+        )
+        .unwrap();
+
+        let preview = text_preview(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert!(preview.truncated);
+        assert_eq!(preview.content, "a".repeat(TEXT_PREVIEW_MAX_BYTES - 1));
     }
 }
