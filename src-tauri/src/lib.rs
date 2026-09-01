@@ -514,6 +514,39 @@ async fn desired_indexing_provenance(
     Ok(provenance)
 }
 
+fn enqueue_requeued_documents(
+    queue: mpsc::Sender<String>,
+    document_ids: Vec<String>,
+) -> Result<(), AppError> {
+    let mut remaining = document_ids.into_iter();
+
+    while let Some(document_id) = remaining.next() {
+        match queue.try_send(document_id) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(document_id)) => {
+                tauri::async_runtime::spawn(async move {
+                    for document_id in std::iter::once(document_id).chain(remaining) {
+                        if let Err(error) = queue.send(document_id).await {
+                            error!(
+                                "stale document reindex recovery producer stopped before enqueue: {error}"
+                            );
+                            break;
+                        }
+                    }
+                });
+                return Err(AppError::QueueFull);
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                return Err(AppError::Internal(
+                    "document worker stopped before stale document reindex could be queued".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 struct ActiveQuery {
     queries: Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
     request_id: String,
@@ -1303,13 +1336,7 @@ async fn set_setting(
         Vec::new()
     };
 
-    for document_id in requeued_ids {
-        state.job_queue.send(document_id).await.map_err(|error| {
-            AppError::Internal(format!(
-                "document worker stopped before stale document reindex could be queued: {error}"
-            ))
-        })?;
-    }
+    enqueue_requeued_documents(state.job_queue.clone(), requeued_ids)?;
     if key == "inference_mode" {
         let event = {
             let mut initialization = state.llm_initialization.lock().await;
@@ -1757,11 +1784,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_upload_filename, registry_read_retry_delay, remove_non_fastembed_models,
-        require_retrieved_citations, sse_event_boundary, sse_event_data, validate_setting,
-        validate_upload,
+        decode_upload_filename, enqueue_requeued_documents, registry_read_retry_delay,
+        remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
+        sse_event_data, validate_setting, validate_upload,
     };
+    use domain::AppError;
     use std::time::Duration;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
 
     #[test]
     fn validates_external_model() {
@@ -1826,6 +1856,34 @@ mod tests {
     #[test]
     fn accepts_pdf_signature_in_short_payload() {
         assert!(validate_upload("minimal.pdf", b"%PDF-").is_ok());
+    }
+
+    #[tokio::test]
+    async fn reindex_queue_overflow_returns_without_blocking_and_recovers_in_background() {
+        let (queue, mut receiver) = mpsc::channel(1);
+        queue.try_send("already-queued".to_string()).unwrap();
+
+        let error = enqueue_requeued_documents(
+            queue.clone(),
+            vec!["first-stale".to_string(), "second-stale".to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(error, AppError::QueueFull));
+        assert_eq!(receiver.recv().await.as_deref(), Some("already-queued"));
+        assert_eq!(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("first-stale")
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("second-stale")
+        );
     }
 
     #[test]
