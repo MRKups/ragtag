@@ -105,6 +105,304 @@ fn sse_event_data(event: &str) -> Option<&str> {
     })
 }
 
+const INFERENCE_EVENT_BUFFER_CAPACITY: usize = 32;
+
+enum InferenceEvent {
+    Token(String),
+    Done,
+    StreamError(String),
+    StartupError(AppError),
+}
+
+enum InferenceProvider {
+    External {
+        client: reqwest::Client,
+        url: String,
+        body: serde_json::Value,
+        api_key: String,
+    },
+    Local {
+        model: Arc<mistralrs::Model>,
+        system_prompt: String,
+        context: String,
+    },
+    MissingLocal,
+}
+
+impl InferenceProvider {
+    async fn stream(
+        self,
+        mut cancellation: tokio::sync::watch::Receiver<bool>,
+        events: mpsc::Sender<InferenceEvent>,
+    ) -> Result<(), AppError> {
+        match self {
+            Self::External {
+                client,
+                url,
+                body,
+                api_key,
+            } => {
+                stream_external_inference(client, url, body, api_key, &mut cancellation, &events)
+                    .await
+            }
+            Self::Local {
+                model,
+                system_prompt,
+                context,
+            } => {
+                stream_local_inference(model, system_prompt, context, &mut cancellation, &events)
+                    .await
+            }
+            Self::MissingLocal => {
+                send_inference_event(
+                    &mut cancellation,
+                    &events,
+                    InferenceEvent::StreamError(
+                        "No LLM model loaded. Switch to external inference in Settings.".into(),
+                    ),
+                )
+                .await;
+                Ok(())
+            }
+        }
+    }
+}
+
+async fn send_inference_event(
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+    events: &mpsc::Sender<InferenceEvent>,
+    event: InferenceEvent,
+) -> bool {
+    tokio::select! {
+        _ = cancellation.changed() => false,
+        result = events.send(event) => result.is_ok(),
+    }
+}
+
+async fn stream_external_inference(
+    client: reqwest::Client,
+    url: String,
+    body: serde_json::Value,
+    api_key: String,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+    events: &mpsc::Sender<InferenceEvent>,
+) -> Result<(), AppError> {
+    use futures_util::StreamExt;
+
+    let mut request = client.post(url).json(&body);
+    if !api_key.is_empty() {
+        request = request.bearer_auth(api_key);
+    }
+
+    let response = tokio::select! {
+        _ = cancellation.changed() => return Ok(()),
+        result = request.send() => result,
+    }
+    .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
+    .error_for_status()
+    .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+
+    loop {
+        let chunk = tokio::select! {
+            _ = cancellation.changed() => return Ok(()),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
+            send_inference_event(
+                cancellation,
+                events,
+                InferenceEvent::StreamError(
+                    "External inference stream ended before its completion marker.".into(),
+                ),
+            )
+            .await;
+            return Ok(());
+        };
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                send_inference_event(
+                    cancellation,
+                    events,
+                    InferenceEvent::StreamError(format!("Stream error: {error}")),
+                )
+                .await;
+                return Ok(());
+            }
+        };
+        buffer.extend_from_slice(&chunk);
+
+        while let Some((event_end, delimiter_len)) = sse_event_boundary(&buffer) {
+            let event = match std::str::from_utf8(&buffer[..event_end]) {
+                Ok(event) => event,
+                Err(_) => {
+                    send_inference_event(
+                        cancellation,
+                        events,
+                        InferenceEvent::StreamError(
+                            "External inference sent invalid UTF-8 in a complete event.".into(),
+                        ),
+                    )
+                    .await;
+                    return Ok(());
+                }
+            };
+            let data = sse_event_data(event).map(str::to_owned);
+            buffer.drain(..event_end + delimiter_len);
+
+            match data.as_deref() {
+                Some("[DONE]") => {
+                    send_inference_event(cancellation, events, InferenceEvent::Done).await;
+                    return Ok(());
+                }
+                Some(data) => {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
+                            if !token.is_empty()
+                                && !send_inference_event(
+                                    cancellation,
+                                    events,
+                                    InferenceEvent::Token(token.to_string()),
+                                )
+                                .await
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+async fn stream_local_inference(
+    model: Arc<mistralrs::Model>,
+    system_prompt: String,
+    context: String,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+    events: &mpsc::Sender<InferenceEvent>,
+) -> Result<(), AppError> {
+    use futures_util::StreamExt;
+
+    let request = mistralrs::RequestBuilder::new()
+        .add_message(mistralrs::TextMessageRole::System, system_prompt)
+        .add_message(mistralrs::TextMessageRole::User, context);
+    let stream_result = tokio::select! {
+        _ = cancellation.changed() => return Ok(()),
+        result = model.stream_chat_request(request) => result,
+    };
+    let mut stream =
+        stream_result.map_err(|e| AppError::Inference(format!("LLM request failed: {e}")))?;
+
+    loop {
+        let response = tokio::select! {
+            _ = cancellation.changed() => return Ok(()),
+            response = stream.next() => response,
+        };
+        match response {
+            Some(mistralrs::Response::Chunk(chunk)) => {
+                if let Some(token) = chunk
+                    .choices
+                    .first()
+                    .and_then(|choice| choice.delta.content.as_ref())
+                    .filter(|token| !token.is_empty())
+                {
+                    if !send_inference_event(
+                        cancellation,
+                        events,
+                        InferenceEvent::Token(token.clone()),
+                    )
+                    .await
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+            Some(mistralrs::Response::Done(_)) => {
+                send_inference_event(cancellation, events, InferenceEvent::Done).await;
+                return Ok(());
+            }
+            Some(mistralrs::Response::ModelError(message, _)) => {
+                send_inference_event(cancellation, events, InferenceEvent::StreamError(message))
+                    .await;
+                return Ok(());
+            }
+            Some(mistralrs::Response::InternalError(error))
+            | Some(mistralrs::Response::ValidationError(error)) => {
+                send_inference_event(
+                    cancellation,
+                    events,
+                    InferenceEvent::StreamError(error.to_string()),
+                )
+                .await;
+                return Ok(());
+            }
+            None => {
+                send_inference_event(
+                    cancellation,
+                    events,
+                    InferenceEvent::StreamError(
+                        "Local inference stream ended before completion.".into(),
+                    ),
+                )
+                .await;
+                return Ok(());
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+async fn forward_inference_events(
+    provider: InferenceProvider,
+    mut cancellation: tokio::sync::watch::Receiver<bool>,
+    channel: tauri::ipc::Channel<TokenEvent>,
+    citations: Vec<Citation>,
+) -> Result<(), AppError> {
+    let (events, mut receiver) = mpsc::channel(INFERENCE_EVENT_BUFFER_CAPACITY);
+    let producer_cancellation = cancellation.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = provider.stream(producer_cancellation, events.clone()).await {
+            let _ = events.send(InferenceEvent::StartupError(error)).await;
+        }
+    });
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancellation.changed() => return Ok(()),
+            event = receiver.recv() => match event {
+                Some(InferenceEvent::Token(text)) => {
+                    if channel.send(TokenEvent::Token { text }).is_err() {
+                        return Ok(());
+                    }
+                }
+                Some(InferenceEvent::Done) => {
+                    let _ = channel.send(TokenEvent::Done { citations });
+                    return Ok(());
+                }
+                Some(InferenceEvent::StreamError(message)) => {
+                    let _ = channel.send(TokenEvent::Error { message, citations });
+                    return Ok(());
+                }
+                Some(InferenceEvent::StartupError(error)) => return Err(error),
+                None => {
+                    let _ = channel.send(TokenEvent::Error {
+                        message: "Inference provider ended without a terminal event.".into(),
+                        citations,
+                    });
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
 fn registry_read_retry_delay(attempt: u32) -> Duration {
     let multiplier = 1_u32 << attempt.saturating_sub(1).min(7);
     REGISTRY_READ_RETRY_BASE_DELAY
@@ -701,206 +999,56 @@ async fn execute_query(
         .unwrap_or_default()
         .unwrap_or_else(|| "local".to_string());
 
-    if mode == "external" {
+    let provider = if mode == "external" {
         let model = settings_repo
             .get("external_model")
             .await
             .unwrap_or_default()
             .filter(|model| !model.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_EXTERNAL_MODEL.to_string());
-
         let base_url = settings_repo
             .get("external_base_url")
             .await
             .unwrap_or_default()
             .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-
         let api_key = tokio::task::spawn_blocking(|| {
             keyring::v1::Entry::new("ragtag", "external_api_key")
                 .ok()
-                .and_then(|e| e.get_password().ok())
+                .and_then(|entry| entry.get_password().ok())
         })
         .await
         .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
         .unwrap_or_default();
 
-        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-        let body = serde_json::json!({
-            "model": model,
-
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": context}
-            ],
-            "stream": true
-        });
-
-        let mut req = http_client.post(&url).json(&body);
-        if !api_key.is_empty() {
-            req = req.bearer_auth(&api_key);
-        }
-
-        let response = tokio::select! {
-            _ = cancel_receiver.changed() => return Ok(()),
-            result = req.send() => result,
-        }
-        .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
-        .error_for_status()
-        .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
-
-        use futures_util::StreamExt;
-        let mut stream = response.bytes_stream();
-        let mut buffer = Vec::new();
-
-        loop {
-            let chunk = tokio::select! {
-                _ = cancel_receiver.changed() => return Ok(()),
-                chunk = stream.next() => chunk,
-            };
-            let Some(chunk) = chunk else {
-                let _ = channel.send(TokenEvent::Error {
-                    message: "External inference stream ended before its completion marker.".into(),
-                    citations,
-                });
-                return Ok(());
-            };
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    let _ = channel.send(TokenEvent::Error {
-                        message: format!("Stream error: {error}"),
-                        citations,
-                    });
-                    return Ok(());
-                }
-            };
-            buffer.extend_from_slice(&chunk);
-
-            while let Some((event_end, delimiter_len)) = sse_event_boundary(&buffer) {
-                let event = match std::str::from_utf8(&buffer[..event_end]) {
-                    Ok(event) => event,
-                    Err(_) => {
-                        let _ = channel.send(TokenEvent::Error {
-                            message: "External inference sent invalid UTF-8 in a complete event."
-                                .into(),
-                            citations,
-                        });
-                        return Ok(());
-                    }
-                };
-                let is_done = if let Some(data) = sse_event_data(event) {
-                    if data == "[DONE]" {
-                        true
-                    } else {
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                            if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
-                                if !token.is_empty()
-                                    && channel
-                                        .send(TokenEvent::Token {
-                                            text: token.to_string(),
-                                        })
-                                        .is_err()
-                                {
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        false
-                    }
-                } else {
-                    false
-                };
-                buffer.drain(..event_end + delimiter_len);
-
-                if is_done {
-                    let _ = channel.send(TokenEvent::Done { citations });
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    let model = {
-        let guard = local_llm.read().await;
-        guard.clone()
-    };
-
-    if let Some(model) = model {
-        let request = mistralrs::RequestBuilder::new()
-            .add_message(
-                mistralrs::TextMessageRole::System,
-                system_prompt.to_string(),
-            )
-            .add_message(mistralrs::TextMessageRole::User, context);
-
-        let stream_result = tokio::select! {
-            _ = cancel_receiver.changed() => return Ok(()),
-            result = model.stream_chat_request(request) => result,
-        };
-        match stream_result {
-            Ok(mut stream) => loop {
-                let response = tokio::select! {
-                    _ = cancel_receiver.changed() => return Ok(()),
-                    response = stream.next() => response,
-                };
-                match response {
-                    Some(mistralrs::Response::Chunk(chunk)) => {
-                        if let Some(choice) = chunk.choices.first() {
-                            if let Some(token) = &choice.delta.content {
-                                if !token.is_empty()
-                                    && channel
-                                        .send(TokenEvent::Token {
-                                            text: token.clone(),
-                                        })
-                                        .is_err()
-                                {
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                    Some(mistralrs::Response::Done(_response)) => {
-                        let _ = channel.send(TokenEvent::Done { citations });
-                        return Ok(());
-                    }
-                    Some(mistralrs::Response::ModelError(message, _)) => {
-                        let _ = channel.send(TokenEvent::Error { message, citations });
-                        return Ok(());
-                    }
-                    Some(mistralrs::Response::InternalError(error))
-                    | Some(mistralrs::Response::ValidationError(error)) => {
-                        let _ = channel.send(TokenEvent::Error {
-                            message: error.to_string(),
-                            citations,
-                        });
-                        return Ok(());
-                    }
-                    None => {
-                        let _ = channel.send(TokenEvent::Error {
-                            message: "Local inference stream ended before completion.".into(),
-                            citations,
-                        });
-                        return Ok(());
-                    }
-                    Some(_) => {}
-                }
-            },
-            Err(e) => {
-                let _ = channel.send(TokenEvent::Error {
-                    message: format!("LLM request failed: {e}"),
-                    citations,
-                });
-            }
+        InferenceProvider::External {
+            client: http_client,
+            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+            body: serde_json::json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context}
+                ],
+                "stream": true
+            }),
+            api_key,
         }
     } else {
-        let _ = channel.send(TokenEvent::Error {
-            message: "No LLM model loaded. Switch to external inference in Settings.".into(),
-            citations,
-        });
-    }
+        let model = {
+            let guard = local_llm.read().await;
+            guard.clone()
+        };
+        match model {
+            Some(model) => InferenceProvider::Local {
+                model,
+                system_prompt: system_prompt.to_string(),
+                context,
+            },
+            None => InferenceProvider::MissingLocal,
+        }
+    };
 
-    Ok(())
+    forward_inference_events(provider, cancel_receiver, channel, citations).await
 }
 
 #[tauri::command]
