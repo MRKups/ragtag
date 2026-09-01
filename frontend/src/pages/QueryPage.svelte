@@ -98,6 +98,16 @@
           onCancel={handleCancel}
           bind:text={queryState.queryText}
         />
+        {#if appState.modelError}
+          <button
+            class="retry-model-button"
+            type="button"
+            onclick={() => void appState.retryLocalModel()}
+            disabled={appState.localModelRetrying}
+          >
+            {appState.localModelRetrying ? 'Retrying local model…' : 'Retry local model'}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -155,7 +165,24 @@
     width: 100%;
   }
 
+  .retry-model-button {
+    display: block;
+    margin: 0.75rem auto 0;
+    border: 1px solid #3b82f6;
+    border-radius: 0.5rem;
+    background: #1d4ed8;
+    color: #eff6ff;
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.5rem 0.875rem;
+  }
+
+  .retry-model-button:disabled {
+    cursor: progress;
+    opacity: 0.65;
+  }
   .loading-state, .welcome-state {
+
     display: flex;
     flex-direction: column;
     align-items: center;

@@ -794,6 +794,35 @@ async fn begin_first_run_init(
 }
 
 #[tauri::command]
+async fn retry_local_model_initialization(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    let mode = settings
+        .get("inference_mode")
+        .await?
+        .unwrap_or_else(|| "local".to_string());
+    if mode != "local" {
+        return Err(AppError::InvalidInput(
+            "Local model retry is unavailable while external inference is selected".into(),
+        ));
+    }
+    if state.local_llm.read().await.is_some() {
+        let _ = app.emit("llm_ready", ());
+        return Ok(());
+    }
+
+    let models_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| AppError::Io(e.to_string()))?
+        .join("models");
+    request_llm_initialization(&app, &state, models_dir).await;
+    Ok(())
+}
+
+#[tauri::command]
 async fn upload_document(
     app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
@@ -1658,6 +1687,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             begin_first_run_init,
+            retry_local_model_initialization,
             upload_document,
             execute_query,
             cancel_query,

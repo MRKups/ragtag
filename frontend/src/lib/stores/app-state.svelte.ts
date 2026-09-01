@@ -30,6 +30,7 @@ export class AppState {
   embedderAvailable = $state(false);
   llmReady = $state(false);
   modelError = $state('');
+  localModelRetrying = $state(false);
 
 
   async init() {
@@ -53,6 +54,7 @@ export class AppState {
 
         if (p.type === 'error') {
           this.modelError = p.message || `Model download failed: ${p.model_id}`;
+          this.localModelRetrying = false;
           this.downloadIsIndeterminate = false;
           return;
         }
@@ -95,12 +97,14 @@ export class AppState {
 
       await api.listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
+        this.localModelRetrying = false;
         this.llmReady = true;
         this.modelError = '';
         this.#tryBecomeReady();
       });
       await api.listen('llm_unready', () => {
         console.log('[AppState] local LLM initialization requested');
+        this.localModelRetrying = false;
         this.llmReady = false;
         this.modelError = '';
       });
@@ -120,6 +124,21 @@ export class AppState {
       console.error('[AppState] Failed to init event listeners:', e);
       this.phase = 'error';
       this.errorMessage = `Failed to initialize: ${e}`;
+    }
+  }
+
+  async retryLocalModel() {
+    if (this.localModelRetrying || this.llmReady) return;
+
+    this.localModelRetrying = true;
+    this.modelError = '';
+    this.downloadMessage = 'Retrying local model initialization...';
+    this.downloadIsIndeterminate = true;
+    try {
+      await api.retryLocalModelInitialization();
+    } catch (error) {
+      this.localModelRetrying = false;
+      this.modelError = error instanceof Error ? error.message : String(error);
     }
   }
 

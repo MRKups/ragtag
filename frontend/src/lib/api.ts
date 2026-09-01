@@ -4,6 +4,7 @@ import type { Document, TokenEvent } from './types';
 
 export const api = {
   beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
+  retryLocalModelInitialization: () => invoke<void>('retry_local_model_initialization'),
   
   uploadDocument: async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();

@@ -78,7 +78,7 @@ To eliminate hallucination risks, the application uses a retrieval-grounded cita
 
 `mistral.rs` runs in-process inside the main Rust binary. There is no subprocess, no port, no auth token, no health check. The lifecycle is:
 - **Startup:** During `lib.rs` setup, local mode asynchronously downloads and builds the configured pre-quantized GGUF model (`GgufModelBuilder::new(repo_dir, vec![filename]).build().await`) from `$APPLOCALDATA/models`. Its tokenizer is resolved through Hugging Face's cache; when the user explicitly sets `HF_HUB_CACHE` or `HF_HOME`, that external cache remains outside Ragtag reset and storage accounting.
-- **Ready Signal:** A successful local build emits `llm_ready` and unlocks querying. Download or build failures emit `model_download_progress` with an error and leave querying unavailable; ingestion and Settings remain available once the embedder is ready.
+- **Ready Signal and Recovery:** A successful local build emits `llm_ready` and unlocks querying. Download or build failures emit `model_download_progress` with an error and leave querying unavailable; once the embedder is ready, the query UI exposes a local-model retry action. The retry invokes the typed `retry_local_model_initialization` command, reuses resumable downloads, and is disabled until it reaches either another progress error or `llm_ready`. Ingestion and Settings remain available throughout.
 - **Runtime:** Tauri commands clone the optional model and call `stream_chat_request` only when it is present. The model drops with `AppState` at process exit.
 - **Shutdown:** Nothing to do. The `Model` drops when `AppState` drops at process exit.
 
@@ -101,7 +101,7 @@ Users can opt to use an external OpenAI-compatible endpoint instead of the in-pr
 Instead of bundling massive AI model files into the application binary, model files are downloaded on first run. To ensure a good UX, the application uses **Staged Availability**:
 - **Embedding Models:** Downloaded via `fastembed`. Once initialized, the application emits `embedder_ready`, makes ingestion available, and lets the main application render.
 - **Text Generation:** In local mode, the GGUF file is downloaded with `hf-hub` and then loaded by `mistral.rs`; querying remains disabled until `llm_ready`. In external mode, local generation initialization is skipped and `llm_ready` is emitted immediately. “Delete app-managed local model downloads” removes only the application-local GGUF/model entries, never a user-selected Hugging Face cache.
-- **Boot progress:** Local-model download emits byte counts from `hf-hub`; the overlay is determinate while totals are known and indeterminate while metadata is fetched or the model is built. A local-model error leaves an actionable query-unavailable message rather than blocking ingestion.
+- **Boot progress and retry:** Local-model download emits byte counts from `hf-hub`; the overlay is determinate while totals are known and indeterminate while metadata is fetched or the model is built. A local-model error leaves an actionable query-unavailable message and explicit retry rather than blocking ingestion or requiring an application reload.
 - **Boundary:** Query availability does not validate an external endpoint before the first request. Changing inference mode transitions query readiness and starts local initialization when needed.
 
 ### Retrieval Lifecycle Limits
