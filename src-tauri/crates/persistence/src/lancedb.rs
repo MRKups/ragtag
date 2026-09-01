@@ -476,7 +476,7 @@ mod tests {
             .unwrap();
 
         let result = db
-            .hybrid_search("content", &vec![0.0; 768], &["indexed".to_string()], 1)
+            .hybrid_search("content", &vec![0.0; 768], &["indexed".to_string()], 2)
             .await
             .unwrap();
         assert_eq!(result.results.len(), 1);
