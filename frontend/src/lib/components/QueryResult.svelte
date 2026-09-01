@@ -8,13 +8,11 @@
     text = '',
     citations = [] as Citation[],
     isStreaming = false,
-    error = null as string | null,
     onCitationClick = (_citation: { filename: string; storagePath: string; documentId: string; page: number }) => {}
   } = $props<{
     text?: string;
     citations?: Citation[];
     isStreaming?: boolean;
-    error?: string | null;
     onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
   }>();
 
@@ -35,11 +33,6 @@
 </script>
 
 <div class="result-container" class:has-content={!!text || isStreaming}>
-  {#if error}
-    <div class="error-box">
-      <strong>Error:</strong> {error}
-    </div>
-  {/if}
 
   {#if text || isStreaming}
     <div class="prose" bind:this={contentEl}>
@@ -140,15 +133,6 @@
     50% { opacity: 0; }
   }
 
-  .error-box {
-    padding: 1rem;
-    background-color: #450a0a;
-    border: 1px solid #7f1d1d;
-    border-radius: 0.5rem;
-    color: #fca5a5;
-    font-size: 0.9rem;
-    margin-bottom: 1rem;
-  }
 
   .prose::-webkit-scrollbar {
     width: 6px;

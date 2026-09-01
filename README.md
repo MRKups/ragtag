@@ -1,6 +1,6 @@
 # Ragtag
 
-Ragtag is a local-first desktop RAG application for querying user-provided PDFs and technical manuals. It copies documents into app-local storage, builds local search indexes, and answers questions with retrieved page citations. By default, document processing, embeddings, vector search, and generation run on the user's machine; an external OpenAI-compatible inference endpoint is an optional user-selected mode.
+Ragtag is a local-first desktop RAG application for querying user-provided PDFs, DOCX files, and UTF-8 technical documents. It copies documents into app-local storage, builds local search indexes, and answers questions with retrieved source citations. By default, document processing, embeddings, vector search, and generation run on the user's machine; an external OpenAI-compatible inference endpoint is an optional user-selected mode.
 
 ## Prerequisites
 
@@ -70,7 +70,7 @@ Use `npm install` only when intentionally changing frontend dependencies. This r
 
 Ragtag requires no local `.env` file or cloud account for its default mode. It stores the following in the operating system's application-local data directory:
 
-- copied uploaded PDFs;
+- copied uploaded source documents;
 - the `app.db` SQLite document registry and non-secret settings;
 - the `.lancedb` vector store containing derived document chunks and embeddings;
 - downloaded embedding and local-generation model files.
@@ -81,7 +81,7 @@ The **Settings** page can select external inference instead. It stores the endpo
 
 ## Documents and citations
 
-Ragtag currently accepts PDF documents. Ingestion preserves page boundaries, extracts text, creates overlapping chunks, and writes 768-dimensional embeddings to the local LanceDB store. Query results combine dense vector and full-text retrieval; the response cites the retrieved document/page metadata rather than model-generated page numbers.
+Ragtag accepts PDF and DOCX documents plus UTF-8 text sources such as Markdown, configuration, structured data, logs, and source files. PDF ingestion preserves physical page boundaries; DOCX and non-paginated text use one logical source page. Ingestion extracts text, creates overlapping chunks, and writes 768-dimensional embeddings to the local LanceDB store. Query results combine dense vector and full-text retrieval; the response cites retrieved source metadata rather than model-generated page numbers.
 
 Deleting a document removes its derived vectors, registry entry, and stored copy. The **Settings** page also exposes maintenance actions for SQLite vacuuming, vector-store compaction, and an explicitly confirmed reset of local data.
 

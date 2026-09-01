@@ -11,7 +11,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 | **Core Engine** | Rust | Document processing, embedding logic, file I/O, API clients |
 | **Relational DB** | SQLite (`sqlx`) | Document registry and app settings |
 | **Vector DB** | LanceDB | Embedded semantic similarity search |
-| **Storage** | Local OS Filesystem | Raw PDF storage in AppData/Config directories |
+| **Storage** | Local OS Filesystem | Original user-owned source documents in the AppData directory |
 | **Local Embeddings** | `fastembed-rs` | In-process ONNX runtime for generating text embeddings locally |
 | **Local LLM** | `mistral.rs` | In-process, pure-Rust inference engine for text generation |
 
@@ -40,23 +40,25 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 ## 3. Data Flows
 
 ### Document Upload & Processing
-1. User drops a PDF into the Svelte UI.
+1. User drops a PDF, DOCX, or UTF-8 text file into the Svelte UI.
 2. Svelte creates a request-scoped Tauri v2 `Channel<IngestionProgress>` and submits a typed upload request with the UTF-8 filename and raw file bytes.
-3. Rust validates the filename and PDF signature, saves the file to the OS's specific App Data directory, and inserts a `queued` row into SQLite.
+3. Rust validates the source format, saves the original file to the OS's specific App Data directory, and inserts a `queued` row into SQLite.
 4. Rust enqueues an in-memory job containing the document ID and, for this upload, its progress channel.
 5. A background `tokio` task consumes the job and bridges its non-blocking pipeline updates to the request channel. The Document UI stores those ordered updates by document ID, so simultaneous uploads cannot overwrite or reorder each other's progress.
 6. The worker:
-   - Emits extraction progress after each physical PDF page is extracted, including blank pages.
-   - Emits chunking progress after each nonblank page has been tokenized, with the actual per-page and cumulative chunk totals.
+   - Emits extraction progress after each physical PDF page is extracted, including blank pages; DOCX and non-paginated UTF-8 text sources use one logical source page.
+   - Emits chunking progress after each nonblank source page has been tokenized, with the actual per-page and cumulative chunk totals.
    - Emits embedding progress after each completed 32-chunk model batch, with actual completed and total batches/chunks.
    - Emits `stored` only after vector replacement and the SQLite indexed/provenance update both succeed.
    - Continues to emit the `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`) for lifecycle compatibility; they are not the ordered UI progress path.
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to refresh durable document metadata instantly.
+8. Citation viewing renders PDFs through bundled PDF.js. Non-PDF sources remain retrieval evidence and show an explicit preview-unavailable state rather than being passed to the PDF renderer.
+
 
 ### Document Deletion
 
 1. Rust marks the SQLite registry row `deleting`, which excludes it from retrieval before any derived data is removed.
-2. It deletes the document's LanceDB chunks, stored PDF, and finally the registry row.
+2. It deletes the document's LanceDB chunks, stored original source, and finally the registry row.
 3. A failed or interrupted deletion remains `deleting`; startup retries it before normal document work.
 
 ### Query Execution (RAG)
@@ -88,9 +90,15 @@ The previous machinery — ephemeral hex tokens, dynamic port binding, `--port N
 Users can opt to use an external OpenAI-compatible endpoint instead of the in-process `mistral.rs` model:
 - Managed by `inference_mode = "external"` and `external_model` in `app_settings`; an absent model falls back to `gpt-4o-mini`.
 - `external_base_url` is stored in local SQLite, while the optional `external_api_key` is stored in the OS keychain under `service = "ragtag"` and `username = "external_api_key"`. The key is never persisted in SQLite or frontend storage, or included in logs or lifecycle payloads.
-- External mode skips local model download/build, normalizes the configured HTTP(S) base URL, and uses the shared HTTP client to call its OpenAI-compatible `/models` endpoint with bearer authentication only when a key is configured. A successful HTTP response must list the configured/default model before `llm_ready` emits. Mode, endpoint, model, and API-key changes re-run that validation while external mode is active.
+- External mode skips local model download/build, normalizes the configured credential-free HTTP(S) base URL, and uses the shared HTTP client to call its OpenAI-compatible `/models` endpoint with bearer authentication only when a key is configured. The Remote provider dialog collects protocol, server address, and optional port, then composes the conventional `/v1` base path; arbitrary version-path discovery is not an OpenAI-compatible standard. It tests that unsaved endpoint with an unsaved in-form API key when supplied, otherwise the key held in the OS keychain, and receives a sorted, deduplicated list of nonempty model IDs in an app-styled dropdown. Testing does not persist a draft or emit lifecycle events. Changing endpoint controls clears the discovered models and selection. The user selects one returned model and saves both values through one SQLite transaction, then external mode runs one readiness validation. A successful response must list the saved model before `llm_ready` emits.
 - A failed validation emits `external_inference_failed` with the serializable typed `AppError` payload (`kind`, `message`), leaves querying unavailable, and does not activate local download or retry UI. `execute_query` repeats the readiness probe before beginning an external inference request so stale lifecycle events cannot bypass validation.
 - Retrieval, prompt construction, citation assembly, provider selection, and Channel event forwarding are shared. The provider enum keeps SSE parsing and `mistral.rs` response decoding source-specific; request and HTTP-status failures reject the IPC command, while failures after either response stream starts send `TokenEvent::Error`.
+
+### Recoverable Failure Presentation
+
+Frontend operation failures are reported through one route-independent, accessible error dialog owned by the application shell. Each notice has safe, task-specific copy and may provide a direct recovery action; raw transport strings, local URLs, and backend error payloads are not rendered in page content. The dialog queues distinct failures and deduplicates repeated lifecycle reports while they remain active. Query failures inspect the typed `AppError` message so a missing-evidence rejection directs users to indexed documents even when external inference is selected, rather than misreporting the provider as unavailable. In particular, an external readiness failure opens a “Remote provider unavailable” notice whose action navigates directly to the Remote provider configuration dialog. Query stream failures retain already-produced text and retrieval-grounded citations, while their failure notice explains that generation stopped. Document, upload, settings, keychain, main…
+
+The full-screen initialization gate remains the exception: if the embedder, desktop IPC listener registration, or first-run initialization prevents the main UI from becoming usable, the gate provides safe startup guidance and a reload action instead of presenting an in-app dialog. A root `error`/`unhandledrejection` handler reports unexpected client failures through the dialog, excluding expected cancellation rejections.
 
 ### Authentication
 **Removed.** Since this is a local application running under the user's OS profile, cloud-style authentication (cookies, sessions, Postgres tables) is no longer required.

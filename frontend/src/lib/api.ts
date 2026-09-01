@@ -1,6 +1,12 @@
 import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AppErrorPayload, Document, IngestionProgress, TokenEvent } from './types';
+import type {
+  AppErrorPayload,
+  Document,
+  ExternalProviderConnection,
+  IngestionProgress,
+  TokenEvent
+} from './types';
 
 export const api = {
   beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
@@ -50,6 +56,12 @@ export const api = {
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
 
   setApiKey: (key: string) => invoke<boolean>('set_api_key', { key }),
+
+  testExternalProvider: (baseUrl: string, apiKey: string | null) =>
+    invoke<ExternalProviderConnection>('test_external_provider', { baseUrl, apiKey }),
+
+  setExternalProviderConfig: (baseUrl: string, model: string) =>
+    invoke<void>('set_external_provider_config', { baseUrl, model }),
 
   hasApiKey: () => invoke<boolean>('has_api_key'),
 

@@ -4,7 +4,6 @@ export class QueryState {
   isLoading = $state(false);
   text = $state('');
   citations = $state<Citation[]>([]);
-  error = $state<{ message: string } | null>(null);
   retrievalWarning = $state<string | null>(null);
   queryText = $state('');
   selectedDocument = $state<{ filename: string; storagePath?: string; page: number } | null>(null);
@@ -15,7 +14,6 @@ export class QueryState {
     this.isLoading = false;
     this.text = '';
     this.citations = [];
-    this.error = null;
     this.retrievalWarning = null;
     this.queryText = '';
     this.selectedDocument = null;

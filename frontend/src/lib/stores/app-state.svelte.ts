@@ -1,4 +1,7 @@
 import { api } from '$lib/api';
+import { errorDialog } from '$lib/stores/error-dialog.svelte';
+import { router } from '$lib/router.svelte';
+import { settingsState } from '$lib/stores/settings.svelte';
 
 type AppPhase = 'starting' | 'downloading_model' | 'ready' | 'error';
 
@@ -29,9 +32,7 @@ export class AppState {
   errorMessage = $state('');
   embedderAvailable = $state(false);
   llmReady = $state(false);
-  modelError = $state('');
   localModelRetrying = $state(false);
-  externalInferenceError = $state('');
 
 
   async init() {
@@ -42,11 +43,24 @@ export class AppState {
         this.#tryBecomeReady();
       });
 
-      await api.listen<{ message: string }>('embedder_failed', (event) => {
-        console.error('[AppState] embedder failed:', event.payload.message);
+      await api.listen<{ message: string }>('embedder_failed', () => {
+        console.error('[AppState] embedder failed');
         this.embedderAvailable = false;
         this.phase = 'error';
-        this.errorMessage = event.payload.message;
+        this.errorMessage = 'Ragtag could not initialize its document tools. Check your internet connection and local storage, then try again.';
+      });
+
+      await api.listen<{ document_id: string }>('document_failed', (event) => {
+        errorDialog.report({
+          dedupeKey: `document-processing-${event.payload.document_id}`,
+          title: 'Document processing failed',
+          message: 'Ragtag could not finish indexing a document.',
+          guidance: 'Review the document status, then remove and upload a new copy if needed.',
+          action: {
+            label: 'Open documents',
+            run: () => router.navigate('documents')
+          }
+        });
       });
 
       await api.listen<DownloadProgress>('model_download_progress', (event) => {
@@ -54,9 +68,17 @@ export class AppState {
         console.log('[AppState] download progress:', p);
 
         if (p.type === 'error') {
-          this.modelError = p.message || `Model download failed: ${p.model_id}`;
           this.localModelRetrying = false;
-          this.downloadIsIndeterminate = false;
+          errorDialog.report({
+            dedupeKey: 'local-model-initialization',
+            title: 'Local model unavailable',
+            message: 'Ragtag could not start the local model.',
+            guidance: 'Check your internet connection and model settings, then retry initialization.',
+            action: {
+              label: 'Retry local model',
+              run: () => void this.retryLocalModel()
+            }
+          });
           return;
         }
 
@@ -100,21 +122,33 @@ export class AppState {
         console.log('[AppState] LLM ready');
         this.localModelRetrying = false;
         this.llmReady = true;
-        this.modelError = '';
-        this.externalInferenceError = '';
+        errorDialog.clear('local-model-initialization');
+        errorDialog.clear('external-inference-readiness');
         this.#tryBecomeReady();
       });
       await api.listen('llm_unready', () => {
         console.log('[AppState] inference initialization requested');
         this.localModelRetrying = false;
         this.llmReady = false;
-        this.modelError = '';
-        this.externalInferenceError = '';
+        errorDialog.clear('local-model-initialization');
+        errorDialog.clear('external-inference-readiness');
       });
-      await api.listenExternalInferenceFailed((event) => {
-        console.warn('[AppState] external inference unavailable:', event.payload.message);
+      await api.listenExternalInferenceFailed(() => {
+        console.warn('[AppState] external inference unavailable');
         this.llmReady = false;
-        this.externalInferenceError = event.payload.message;
+        errorDialog.report({
+          dedupeKey: 'external-inference-readiness',
+          title: 'Remote provider unavailable',
+          message: 'Ragtag could not connect to the configured remote provider.',
+          guidance: 'Start the provider, then verify its base URL, model name, and API key.',
+          action: {
+            label: 'Open remote settings',
+            run: () => {
+              settingsState.openInferenceConfiguration('external');
+              router.navigate('settings');
+            }
+          }
+        });
       });
 
 
@@ -123,15 +157,15 @@ export class AppState {
 
       // All listeners are set up — kick off first-run init (embedder + LLM download)
       console.log('[AppState] Listeners ready, triggering first-run init');
-      api.beginFirstRunInit().catch((e) => {
-        console.error('[AppState] begin_first_run_init failed:', e);
+      api.beginFirstRunInit().catch(() => {
+        console.error('[AppState] begin_first_run_init failed');
         this.phase = 'error';
-        this.errorMessage = `Failed to start initialization: ${e}`;
+        this.errorMessage = 'Ragtag could not finish starting. Check that its local data directory is available, then try again.';
       });
-    } catch (e) {
-      console.error('[AppState] Failed to init event listeners:', e);
+    } catch {
+      console.error('[AppState] Failed to init event listeners');
       this.phase = 'error';
-      this.errorMessage = `Failed to initialize: ${e}`;
+      this.errorMessage = 'Ragtag could not initialize its desktop connection. Restart the app and try again.';
     }
   }
 
@@ -139,14 +173,22 @@ export class AppState {
     if (this.localModelRetrying || this.llmReady) return;
 
     this.localModelRetrying = true;
-    this.modelError = '';
     this.downloadMessage = 'Retrying local model initialization...';
     this.downloadIsIndeterminate = true;
     try {
       await api.retryLocalModelInitialization();
-    } catch (error) {
+    } catch {
       this.localModelRetrying = false;
-      this.modelError = error instanceof Error ? error.message : String(error);
+      errorDialog.report({
+        dedupeKey: 'local-model-initialization',
+        title: 'Local model retry failed',
+        message: 'Ragtag could not restart the local model.',
+        guidance: 'Check your model settings and try again.',
+        action: {
+          label: 'Retry local model',
+          run: () => void this.retryLocalModel()
+        }
+      });
     }
   }
 

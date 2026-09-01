@@ -4,6 +4,8 @@
   import { settingsState } from '$lib/stores/settings.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import AppInitializer from '$lib/components/AppInitializer.svelte';
+  import ErrorDialog from '$lib/components/ErrorDialog.svelte';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
   import { router, type Route } from '$lib/router.svelte';
   import QueryPage from './pages/QueryPage.svelte';
   import DocumentsPage from './pages/DocumentsPage.svelte';
@@ -18,9 +20,43 @@
     }
   }
 
-  onMount(async () => {
-    await settingsState.load();
-    appState.init();
+  function reportUnexpectedClientError() {
+    errorDialog.report({
+      dedupeKey: 'unexpected-client-error',
+      title: 'Something went wrong',
+      message: 'An unexpected error occurred in the app.',
+      guidance: 'Try again. If the problem continues, restart Ragtag.',
+    });
+  }
+
+  function isAbortError(reason: unknown) {
+    return typeof reason === 'object'
+      && reason !== null
+      && 'name' in reason
+      && reason.name === 'AbortError';
+  }
+
+  onMount(() => {
+    const handleError = (event: ErrorEvent) => {
+      event.preventDefault();
+      reportUnexpectedClientError();
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (isAbortError(event.reason)) return;
+
+      event.preventDefault();
+      reportUnexpectedClientError();
+    };
+
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+
+    void settingsState.load().then(() => appState.init());
+
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+    };
   });
 </script>
 
@@ -79,6 +115,7 @@
       {/key}
     </main>
   </div>
+  <ErrorDialog />
 </AppInitializer>
 
 <style>

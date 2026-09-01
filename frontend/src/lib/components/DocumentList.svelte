@@ -4,6 +4,7 @@
   import { api } from '$lib/api';
   import type { Document } from '$lib/types';
   import { documentProgressState } from '$lib/stores/document-progress.svelte';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
 
   let documents: Document[] = $state([]);
   let isLoading = $state(false);
@@ -35,9 +36,19 @@
         );
         documents = await Promise.race([listPromise, timeoutPromise]);
         schedulePolling();
-      } catch (e) {
+      } catch {
         if (!silent) {
-          error = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Failed to load documents';
+          error = 'Document library is unavailable.';
+          errorDialog.report({
+            dedupeKey: 'document-list-load',
+            title: 'Document library unavailable',
+            message: 'Ragtag could not load your document library.',
+            guidance: 'Try again after checking that Ragtag can access its local data directory.',
+            action: {
+              label: 'Retry',
+              run: () => void fetchDocuments()
+            }
+          });
         }
         clearTimeout(pollTimeout);
       } finally {
@@ -79,9 +90,14 @@
     try {
       await api.deleteDocument(id);
       await fetchDocuments(true);
-    } catch (e) {
-      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
-      error = `Failed to delete: ${msg}`;
+    } catch {
+      error = 'The document could not be deleted.';
+      errorDialog.report({
+        dedupeKey: `document-delete-${id}`,
+        title: 'Document was not deleted',
+        message: 'Ragtag could not remove the selected document.',
+        guidance: 'Try again. The document and its index remain unchanged.'
+      });
     } finally {
       deleting = null;
     }
@@ -106,8 +122,14 @@
         }),
       ]);
       unlistenFns = [unlistenIndexed, unlistenFailed, unlistenDeleted];
-    } catch (err) {
-      console.error('Failed to register document event listeners:', err);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'document-event-listener',
+        title: 'Document updates unavailable',
+        message: 'Ragtag could not receive document processing updates.',
+        guidance: 'Refresh the document library to check the current status.'
+      });
+      console.error('Failed to register document event listeners');
     }
   });
 
@@ -199,11 +221,11 @@
                 {:else if progress?.type === 'stored'}
                   <span class="doc-stage">(stored {progress.chunk_count} chunks)</span>
                 {:else if progress?.type === 'error'}
-                  <span class="doc-stage">(failed: {progress.message})</span>
+                  <span class="doc-stage">(processing failed)</span>
                 {/if}
               </span>
-              {#if doc.status === 'failed' && doc.error_message}
-                <span class="doc-error" title={doc.error_message}>{doc.error_message}</span>
+              {#if doc.status === 'failed'}
+                <span class="doc-error">Processing failed. Remove and upload a new copy if needed.</span>
               {/if}
             </div>
             <div class="actions">

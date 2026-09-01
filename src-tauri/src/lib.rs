@@ -33,27 +33,65 @@ const RETRIEVAL_RESULT_LIMIT: usize = 10;
 const EXTERNAL_READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_EXTERNAL_BASE_URL: &str = "http://localhost:11434/v1";
 
-fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
+fn validate_upload(filename: &str, bytes: &[u8]) -> Result<&'static str, AppError> {
     let name = std::path::Path::new(filename);
     if filename.is_empty()
         || filename.len() > 255
         || name.file_name().and_then(|name| name.to_str()) != Some(filename)
-        || !filename.to_ascii_lowercase().ends_with(".pdf")
     {
         return Err(AppError::InvalidInput(
-            "Upload filename must be a PDF filename".into(),
+            "Upload filename must be a single file name no longer than 255 characters".into(),
         ));
     }
     if bytes.len() > MAX_UPLOAD_BYTES {
         return Err(AppError::InvalidInput(
-            "PDF exceeds the 50 MiB upload limit".into(),
+            "Document exceeds the 50 MiB upload limit".into(),
         ));
     }
-    let prefix = &bytes[..bytes.len().min(1024)];
-    if !prefix.windows(5).any(|window| window == b"%PDF-") {
-        return Err(AppError::InvalidInput("Upload is not a PDF".into()));
+
+    match name
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("pdf") => {
+            let prefix = &bytes[..bytes.len().min(1024)];
+            if !prefix.windows(5).any(|window| window == b"%PDF-") {
+                return Err(AppError::InvalidInput("Upload is not a PDF".into()));
+            }
+            Ok("pdf")
+        }
+        Some("docx") => {
+            if !bytes.starts_with(b"PK\x03\x04") {
+                return Err(AppError::InvalidInput(
+                    "Upload is not a DOCX archive".into(),
+                ));
+            }
+            Ok("docx")
+        }
+        _ => {
+            if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+                return Err(AppError::InvalidInput(
+                    "Ragtag accepts UTF-8 text files, PDF documents, and DOCX documents".into(),
+                ));
+            }
+            Ok("text")
+        }
     }
-    Ok(())
+}
+
+fn storage_extension(filename: &str, file_type: &str) -> String {
+    std::path::Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| {
+            !extension.is_empty()
+                && extension.len() <= 16
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| file_type.to_string())
 }
 
 fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -131,6 +169,11 @@ struct ExternalModel {
     id: String,
 }
 
+#[derive(serde::Serialize)]
+struct ExternalProviderConnection {
+    models: Vec<String>,
+}
+
 fn normalize_external_base_url(value: &str) -> Result<reqwest::Url, AppError> {
     let url = reqwest::Url::parse(value.trim()).map_err(|_| {
         AppError::InvalidInput("External base URL must be a valid HTTP(S) URL".into())
@@ -196,16 +239,30 @@ async fn external_inference_config(
 }
 
 fn external_model_is_available(models: &ExternalModelsResponse, configured_model: &str) -> bool {
+    let configured_model = configured_model.trim();
     models
         .data
         .iter()
-        .any(|available_model| available_model.id == configured_model)
+        .any(|available_model| available_model.id.trim() == configured_model)
 }
 
-async fn probe_external_inference_readiness(
+fn external_model_ids(models: &ExternalModelsResponse) -> Vec<String> {
+    let mut ids = models
+        .data
+        .iter()
+        .map(|model| model.id.trim())
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+async fn fetch_external_models(
     client: &reqwest::Client,
     config: &ExternalInferenceConfig,
-) -> Result<(), AppError> {
+) -> Result<ExternalModelsResponse, AppError> {
     let models_url = config.models_url()?;
     let response = apply_external_auth(
         client.get(models_url).timeout(EXTERNAL_READINESS_TIMEOUT),
@@ -226,14 +283,21 @@ async fn probe_external_inference_readiness(
         )));
     }
 
-    let models = response
+    response
         .json::<ExternalModelsResponse>()
         .await
         .map_err(|error| {
             AppError::Inference(format!(
                 "External inference readiness check received an invalid /models response: {error}"
             ))
-        })?;
+        })
+}
+
+async fn probe_external_inference_readiness(
+    client: &reqwest::Client,
+    config: &ExternalInferenceConfig,
+) -> Result<(), AppError> {
+    let models = fetch_external_models(client, config).await?;
     if !external_model_is_available(&models, &config.model) {
         return Err(AppError::Inference(format!(
             "External inference model '{}' is not available from the configured endpoint",
@@ -1479,7 +1543,7 @@ async fn upload_document(
     file_bytes: Vec<u8>,
     channel: tauri::ipc::Channel<IngestionProgress>,
 ) -> Result<String, AppError> {
-    validate_upload(&filename, &file_bytes)?;
+    let file_type = validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
     let repo = DocumentRepository::new(state.db_pool.clone());
 
@@ -1509,7 +1573,7 @@ async fn upload_document(
     }
 
     let doc_id = uuid::Uuid::now_v7().to_string();
-    let storage_filename = format!("{}.pdf", &doc_id);
+    let storage_filename = format!("{}.{}", &doc_id, storage_extension(&filename, file_type));
     let storage_path = docs_dir.join(&storage_filename);
     let relative_storage_path = format!("documents/{}", storage_filename);
 
@@ -1520,7 +1584,7 @@ async fn upload_document(
     let doc = Document {
         id: doc_id.clone(),
         filename,
-        file_type: "pdf".to_string(),
+        file_type: file_type.to_string(),
         file_size_bytes: Some(file_bytes.len() as i64),
         file_hash: Some(hash),
         storage_path: relative_storage_path,
@@ -1720,7 +1784,7 @@ async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Documen
     repo.list_all().await
 }
 
-fn document_pdf_path(
+fn document_storage_path(
     app_local_data: &std::path::Path,
     storage_path: &str,
 ) -> Result<std::path::PathBuf, AppError> {
@@ -1746,8 +1810,8 @@ async fn finish_document_deletion(
 ) -> Result<(), AppError> {
     vector_db.delete_chunks(&document.id).await?;
 
-    let pdf_path = document_pdf_path(app_local_data, &document.storage_path)?;
-    match tokio::fs::remove_file(pdf_path).await {
+    let source_path = document_storage_path(app_local_data, &document.storage_path)?;
+    match tokio::fs::remove_file(source_path).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(AppError::Io(error.to_string())),
@@ -1798,7 +1862,7 @@ async fn delete_document(
             .path()
             .app_local_data_dir()
             .map_err(|error| AppError::Io(error.to_string()))?;
-        document_pdf_path(&app_local_data, &document.storage_path)?;
+        document_storage_path(&app_local_data, &document.storage_path)?;
         repo.mark_deleting(&id).await?;
         finish_document_deletion(&repo, &state.vector_db, &app_local_data, &document).await?;
     } else {
@@ -1855,6 +1919,48 @@ async fn get_settings(
     }
 
     Ok(settings)
+}
+
+#[tauri::command]
+async fn test_external_provider(
+    state: tauri::State<'_, AppState>,
+    base_url: String,
+    api_key: Option<String>,
+) -> Result<ExternalProviderConnection, AppError> {
+    let candidate_api_key = api_key
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty());
+    let config = ExternalInferenceConfig {
+        base_url: normalize_external_base_url(&base_url)?,
+        model: DEFAULT_EXTERNAL_MODEL.to_string(),
+        api_key: match candidate_api_key {
+            Some(key) => Some(key),
+            None => read_external_api_key().await?,
+        },
+    };
+    let models = external_model_ids(&fetch_external_models(&state.http_client, &config).await?);
+    if models.is_empty() {
+        return Err(AppError::Inference(
+            "External provider returned no usable models".into(),
+        ));
+    }
+
+    Ok(ExternalProviderConnection { models })
+}
+
+#[tauri::command]
+async fn set_external_provider_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    base_url: String,
+    model: String,
+) -> Result<(), AppError> {
+    let normalized_base_url = normalize_external_base_url(&base_url)?;
+    validate_setting("external_model", &model)?;
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+    repo.set_external_inference_config(normalized_base_url.as_str(), model.trim())
+        .await?;
+    revalidate_external_readiness_if_active(&app, &state).await
 }
 
 #[tauri::command]
@@ -2252,27 +2358,30 @@ pub fn run() {
                             registry_read_retries_worker.lock().await.remove(&doc_id);
                             let settings_repo = AppSettingsRepository::new(pool.clone());
                             match desired_indexing_provenance(&settings_repo).await {
-                                Ok(provenance) => {
-                                    let pdf_path = docs_dir.join(&doc.storage_path);
-                                    let app_for_stage = app_handle.clone();
-                                    let doc_id_for_stage = doc_id.clone();
-                                    rag_pipeline::process_document(
-                                        &pdf_path,
-                                        &doc_id,
-                                        provenance,
-                                        embedder,
-                                        &repo,
-                                        &vector_db,
-                                        move |stage| {
-                                            let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
-                                                "document_id": &doc_id_for_stage,
-                                                "stage": stage,
-                                            }));
-                                        },
-                                        Arc::clone(&progress_callback),
-                                    )
-                                    .await
-                                }
+                                Ok(provenance) => match document_storage_path(&docs_dir, &doc.storage_path) {
+                                    Ok(source_path) => {
+                                        let app_for_stage = app_handle.clone();
+                                        let doc_id_for_stage = doc_id.clone();
+                                        rag_pipeline::process_document(
+                                            &source_path,
+                                            &doc.file_type,
+                                            &doc_id,
+                                            provenance,
+                                            embedder,
+                                            &repo,
+                                            &vector_db,
+                                            move |stage| {
+                                                let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
+                                                    "document_id": &doc_id_for_stage,
+                                                    "stage": stage,
+                                                }));
+                                            },
+                                            Arc::clone(&progress_callback),
+                                        )
+                                        .await
+                                    }
+                                    Err(error) => Err(error),
+                                },
                                 Err(error) => Err(error),
                             }
                         }
@@ -2356,6 +2465,8 @@ pub fn run() {
             get_settings,
             set_setting,
             set_api_key,
+            test_external_provider,
+            set_external_provider_config,
             has_api_key,
             delete_api_key,
             get_storage_info,
@@ -2370,16 +2481,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternalInferenceConfig, ExternalModelsResponse, IngestionJob, enqueue_requeued_documents,
-        external_model_is_available, finish_llm_initialization, invalidate_llm_initialization,
+        DEFAULT_EXTERNAL_MODEL, ExternalInferenceConfig, ExternalModelsResponse, IngestionJob,
+        enqueue_requeued_documents, external_model_ids, external_model_is_available,
+        fetch_external_models, finish_llm_initialization, invalidate_llm_initialization,
         llm_initialization_is_current, normalize_external_base_url, registry_read_retry_delay,
         remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
-        sse_event_data, validate_setting, validate_upload,
+        sse_event_data, storage_extension, validate_setting, validate_upload,
     };
     use domain::AppError;
     use std::{sync::Arc, time::Duration};
-    use tokio::sync::{Mutex, mpsc};
     use tokio::time::timeout;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::{Mutex, mpsc},
+    };
 
     #[test]
     fn validates_external_model() {
@@ -2419,11 +2535,22 @@ mod tests {
     #[test]
     fn requires_configured_external_model_in_models_response() {
         let models: ExternalModelsResponse =
-            serde_json::from_str(r#"{"data":[{"id":"gpt-4o-mini"},{"id":"other-model"}]}"#)
+            serde_json::from_str(r#"{"data":[{"id":"gpt-4o-mini"},{"id":"  other-model  "}]}"#)
                 .unwrap();
 
         assert!(external_model_is_available(&models, "gpt-4o-mini"));
+        assert!(external_model_is_available(&models, "other-model"));
         assert!(!external_model_is_available(&models, "missing-model"));
+    }
+
+    #[test]
+    fn lists_unique_nonempty_external_models() {
+        let models: ExternalModelsResponse = serde_json::from_str(
+            r#"{"data":[{"id":"gpt-4o-mini"},{"id":"  "},{"id":"gpt-4o-mini"},{"id":"llama"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(external_model_ids(&models), ["gpt-4o-mini", "llama"]);
     }
 
     #[test]
@@ -2441,6 +2568,39 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn discovers_models_from_a_valid_external_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(
+                std::str::from_utf8(&request[..read])
+                    .unwrap()
+                    .starts_with("GET /v1/models HTTP/1.1")
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 61\r\nConnection: close\r\n\r\n{\"data\":[{\"id\":\"model-b\"},{\"id\":\"model-a\"},{\"id\":\"model-a\"}]}",
+                )
+                .await
+                .unwrap();
+        });
+        let config = ExternalInferenceConfig {
+            base_url: normalize_external_base_url(&format!("http://{address}/v1")).unwrap(),
+            model: DEFAULT_EXTERNAL_MODEL.into(),
+            api_key: None,
+        };
+
+        let models = fetch_external_models(&reqwest::Client::new(), &config)
+            .await
+            .unwrap();
+        assert_eq!(external_model_ids(&models), ["model-a", "model-b"]);
+        response.await.unwrap();
+    }
+
     #[test]
     fn refuses_queries_without_retrieved_citations() {
         let error = require_retrieved_citations(&[]).unwrap_err();
@@ -2454,6 +2614,26 @@ mod tests {
     #[test]
     fn accepts_utf8_pdf_filename_in_typed_upload() {
         assert!(validate_upload("操作说明.pdf", b"%PDF-").is_ok());
+    }
+
+    #[test]
+    fn classifies_utf8_text_and_docx_uploads() {
+        assert_eq!(
+            validate_upload("advisor.md", b"# Notes\n\nUTF-8 text").unwrap(),
+            "text"
+        );
+        assert_eq!(
+            validate_upload("manual.DOCX", b"PK\x03\x04").unwrap(),
+            "docx"
+        );
+        assert!(validate_upload("binary.dat", &[0, 159, 146, 150]).is_err());
+    }
+
+    #[test]
+    fn preserves_safe_source_extensions_in_storage() {
+        assert_eq!(storage_extension("advisor.md", "text"), "md");
+        assert_eq!(storage_extension("notes", "text"), "text");
+        assert_eq!(storage_extension("manual.DOCX", "docx"), "docx");
     }
     #[test]
     fn removes_non_fastembed_model_entries() {

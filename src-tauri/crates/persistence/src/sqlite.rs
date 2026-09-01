@@ -483,6 +483,39 @@ impl AppSettingsRepository {
         Ok(())
     }
 
+    pub async fn set_external_inference_config(
+        &self,
+        base_url: &str,
+        model: &str,
+    ) -> Result<(), AppError> {
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+
+        sqlx::query(
+            "INSERT INTO app_settings (key, value)
+             VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind("external_base_url")
+        .bind(base_url)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
+
+        sqlx::query(
+            "INSERT INTO app_settings (key, value)
+             VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind("external_model")
+        .bind(model)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
+
+        transaction.commit().await.map_err(sql_err)?;
+        Ok(())
+    }
+
     pub async fn set_indexing_setting_and_requeue_stale_documents(
         &self,
         key: &str,
@@ -588,6 +621,29 @@ mod tests {
         assert_eq!(requeued.embedding_model, None);
         assert_eq!(requeued.indexing_provenance, Some(stale));
         assert_eq!(requeued.retry_count, 0);
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_inference_config_persists_base_url_and_model() {
+        let (pool, path) = temporary_pool().await;
+        let settings = AppSettingsRepository::new(pool.clone());
+
+        settings
+            .set_external_inference_config("https://inference.example/v1", "model-a")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            settings.get("external_base_url").await.unwrap().as_deref(),
+            Some("https://inference.example/v1")
+        );
+        assert_eq!(
+            settings.get("external_model").await.unwrap().as_deref(),
+            Some("model-a")
+        );
 
         pool.close().await;
         std::fs::remove_dir_all(path).unwrap();

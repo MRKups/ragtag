@@ -55,6 +55,10 @@ export interface AppErrorPayload {
   message: string;
 }
 
+export interface ExternalProviderConnection {
+  models: string[];
+}
+
 
 export type IngestionProgress =
   | {

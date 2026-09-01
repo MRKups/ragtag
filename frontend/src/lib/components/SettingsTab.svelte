@@ -3,7 +3,9 @@
   import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
   import { Cpu, Database, HardDrive, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
   import Toggle from './Toggle.svelte';
+  import AppSelect, { type SelectOption } from './AppSelect.svelte';
 
   type InferenceConfig = 'local' | 'external';
 
@@ -12,8 +14,21 @@
   let apiKeyExists = $state(false);
   let apiKeySaved = $state(false);
 
+  const protocolOptions: SelectOption[] = [
+    { value: 'http', label: 'HTTP' },
+    { value: 'https', label: 'HTTPS' }
+  ];
+
   let configuringInference = $state<InferenceConfig | null>(null);
   let isRestoringLocalDefaults = $state(false);
+  let externalProtocolDraft = $state('http');
+  let externalServerAddressDraft = $state('');
+  let externalPortDraft = $state('');
+  let externalModelDraft = $state('');
+  let availableExternalModels = $state<string[]>([]);
+  let externalConnectionStatus = $state('');
+  let isTestingExternalProvider = $state(false);
+  let isSavingExternalProvider = $state(false);
   const pendingSettingUpdates = new Map<string, Promise<boolean>>();
 
   // Storage management
@@ -30,11 +45,88 @@
   onMount(async () => {
     try {
       apiKeyExists = await api.hasApiKey();
-    } catch (e) {
-      console.error('Failed to check API key:', e);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'api-key-status',
+        title: 'Keychain unavailable',
+        message: 'Ragtag could not check the remote provider API key.',
+        guidance: 'Open remote settings and try again after the system keychain is available.'
+      });
+      console.error('Failed to check API key');
     }
     await loadStorageInfo();
   });
+
+  $effect(() => {
+    const requested = settingsState.requestedInferenceConfiguration;
+    if (requested) {
+      openInferenceConfiguration(settingsState.consumeInferenceConfiguration()!);
+    }
+  });
+
+  function resetExternalModelDiscovery() {
+    externalModelDraft = '';
+    availableExternalModels = [];
+    externalConnectionStatus = '';
+  }
+
+  function loadExternalEndpointDraft(value: string) {
+    try {
+      const endpoint = new URL(value.trim() || 'http://localhost:11434/v1');
+      externalProtocolDraft = endpoint.protocol === 'https:' ? 'https' : 'http';
+      externalServerAddressDraft = endpoint.hostname;
+      externalPortDraft = endpoint.port;
+    } catch {
+      externalProtocolDraft = 'http';
+      externalServerAddressDraft = 'localhost';
+      externalPortDraft = '11434';
+    }
+  }
+
+  function buildExternalBaseUrl(): string | null {
+    const serverAddress = externalServerAddressDraft.trim();
+    const port = externalPortDraft.trim();
+    const isBracketedIpv6 = serverAddress.startsWith('[') && serverAddress.endsWith(']');
+    if (
+      !serverAddress
+      || serverAddress.includes('://')
+      || serverAddress.includes('/')
+      || serverAddress.includes('@')
+      || serverAddress.includes('?')
+      || serverAddress.includes('#')
+      || (!isBracketedIpv6 && serverAddress.includes(':'))
+    ) {
+      errorDialog.report({
+        dedupeKey: 'external-provider-address',
+        title: 'Server address is invalid',
+        message: 'Enter a hostname or IP address only, without a protocol, path, or port.',
+        guidance: 'For example: localhost, 192.168.1.50, or [fd00::1].'
+      });
+      return null;
+    }
+    if (port && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+      errorDialog.report({
+        dedupeKey: 'external-provider-port',
+        title: 'Port is invalid',
+        message: 'Enter a whole port number between 1 and 65535.',
+        guidance: 'Leave the port blank only when the provider uses the default HTTP or HTTPS port.'
+      });
+      return null;
+    }
+
+    const authority = `${serverAddress}${port ? `:${port}` : ''}`;
+    return new URL(`${externalProtocolDraft}://${authority}/v1`).toString().replace(/\/$/, '');
+  }
+
+  function openInferenceConfiguration(mode: InferenceConfig) {
+    configuringInference = mode;
+    if (mode === 'external') {
+      loadExternalEndpointDraft(settingsState.external_base_url);
+      externalModelDraft = settingsState.external_model;
+      availableExternalModels = [];
+      externalConnectionStatus = '';
+    }
+  }
 
   function updateSetting(key: string, value: string): Promise<boolean> {
     const previous = pendingSettingUpdates.get(key);
@@ -93,8 +185,14 @@
       apiKeySaved = true;
       apiKeyValue = '';
       setTimeout(() => (apiKeySaved = false), 2000);
-    } catch (e) {
-      console.error('Failed to save API key:', e);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'api-key-save',
+        title: 'API key not saved',
+        message: 'Ragtag could not save the API key in your system keychain.',
+        guidance: 'Check that your system keychain is available, then try again.'
+      });
+      console.error('Failed to save API key');
     }
   }
 
@@ -103,8 +201,72 @@
       await api.deleteApiKey();
       apiKeyExists = false;
       apiKeyValue = '';
-    } catch (e) {
-      console.error('Failed to delete API key:', e);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'api-key-delete',
+        title: 'API key not removed',
+        message: 'Ragtag could not remove the API key from your system keychain.',
+        guidance: 'Try again after the system keychain is available.'
+      });
+      console.error('Failed to delete API key');
+    }
+  }
+
+  async function testExternalProvider() {
+    const baseUrl = buildExternalBaseUrl();
+    if (!baseUrl) return;
+
+    isTestingExternalProvider = true;
+    externalConnectionStatus = '';
+    try {
+      const connection = await api.testExternalProvider(baseUrl, apiKeyValue.trim() || null);
+      availableExternalModels = connection.models;
+      if (!availableExternalModels.includes(externalModelDraft)) {
+        externalModelDraft = '';
+      }
+      externalConnectionStatus = `Connected. ${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available.`;
+    } catch {
+      externalConnectionStatus = 'Connection test failed. Review the error dialog and try again.';
+      errorDialog.report({
+        dedupeKey: 'external-provider-test',
+        title: 'Remote provider unavailable',
+        message: 'Ragtag could not connect to that remote provider.',
+        guidance: 'Verify the base URL, start the provider, and save an API key if it requires authentication.'
+      });
+    } finally {
+      isTestingExternalProvider = false;
+    }
+  }
+
+  async function saveExternalProvider() {
+    const baseUrl = buildExternalBaseUrl();
+    const model = externalModelDraft.trim();
+    if (!baseUrl || !model || !availableExternalModels.includes(model)) {
+      errorDialog.report({
+        dedupeKey: 'external-provider-save-input',
+        title: 'Provider configuration incomplete',
+        message: 'Test the provider, then select one of its available models before saving.',
+        guidance: 'Saving keeps the existing provider configuration unchanged until both fields are valid.'
+      });
+      return;
+    }
+
+    isSavingExternalProvider = true;
+    try {
+      await api.setExternalProviderConfig(baseUrl, model);
+      settingsState.external_base_url = baseUrl;
+      settingsState.external_model = model;
+      externalConnectionStatus = 'Provider saved. Ragtag is validating it for queries.';
+    } catch {
+      externalConnectionStatus = 'Provider was not saved. Review the error dialog and try again.';
+      errorDialog.report({
+        dedupeKey: 'external-provider-save',
+        title: 'Provider configuration was not saved',
+        message: 'Ragtag could not save the tested remote provider configuration.',
+        guidance: 'Your previous provider configuration remains in effect. Try again.'
+      });
+    } finally {
+      isSavingExternalProvider = false;
     }
   }
 
@@ -118,8 +280,14 @@
   async function loadStorageInfo() {
     try {
       storageInfo = await api.getStorageInfo();
-    } catch (e) {
-      console.error('Failed to load storage info:', e);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'storage-info',
+        title: 'Storage information unavailable',
+        message: 'Ragtag could not read its local storage information.',
+        guidance: 'Try again after checking that Ragtag can access its local data directory.'
+      });
+      console.error('Failed to load storage info');
     }
   }
 
@@ -128,10 +296,16 @@
       await api.compactVectorStore();
       storageMessage = 'Vector store compacted.';
       await loadStorageInfo();
-    } catch (e) {
-      storageMessage = `Compact failed: ${e}`;
+    } catch {
+      storageMessage = '';
+      errorDialog.report({
+        dedupeKey: 'vector-store-compact',
+        title: 'Vector store was not compacted',
+        message: 'Ragtag could not compact the local vector store.',
+        guidance: 'Try again. Your indexed documents remain available.'
+      });
     }
-    setTimeout(() => (storageMessage = ''), 3000);
+    if (storageMessage) setTimeout(() => (storageMessage = ''), 3000);
   }
 
   async function doVacuum() {
@@ -139,18 +313,30 @@
       await api.vacuumDatabase();
       storageMessage = 'Database vacuumed.';
       await loadStorageInfo();
-    } catch (e) {
-      storageMessage = `VACUUM failed: ${e}`;
+    } catch {
+      storageMessage = '';
+      errorDialog.report({
+        dedupeKey: 'database-vacuum',
+        title: 'Database was not vacuumed',
+        message: 'Ragtag could not optimize the local database.',
+        guidance: 'Try again. Your documents and settings remain unchanged.'
+      });
     }
-    setTimeout(() => (storageMessage = ''), 3000);
+    if (storageMessage) setTimeout(() => (storageMessage = ''), 3000);
   }
 
   async function doReset() {
     try {
       storageMessage = 'Restarting to reset local data...';
       await api.resetAllData(resetDeleteModels);
-    } catch (e) {
-      storageMessage = `Reset failed: ${e}`;
+    } catch {
+      storageMessage = '';
+      errorDialog.report({
+        dedupeKey: 'reset-data',
+        title: 'Data reset did not start',
+        message: 'Ragtag could not start the local data reset.',
+        guidance: 'Your documents and settings remain unchanged. Try again.'
+      });
     }
   }
 </script>
@@ -166,9 +352,6 @@
     {#if settingsState.isLoading}
       <div class="loading" role="status">Loading settings...</div>
     {:else}
-      {#if settingsState.loadError}
-        <div class="error-message" role="alert">{settingsState.loadError}</div>
-      {/if}
 
       <section class="setting-group" aria-labelledby="inference-heading">
         <div class="section-heading inference-heading">
@@ -209,7 +392,7 @@
                 <small>On this device</small>
               </div>
             </button>
-            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'local')}>
+            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => openInferenceConfiguration('local')}>
               Configure
             </button>
           </article>
@@ -231,7 +414,7 @@
                 <small>OpenAI-compatible endpoint</small>
               </div>
             </button>
-            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => (configuringInference = 'external')}>
+            <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => openInferenceConfiguration('external')}>
               Configure
             </button>
           </article>
@@ -315,33 +498,66 @@
                 <p class="config-modal-intro">Configure an OpenAI-compatible provider independently from the default selection.</p>
 
                 <div class="inference-fields">
-                  <div class="setting-field">
-                    <label for="external_base_url">
-                      <Link size={14} class="field-label-icon" />
-                      External base URL
-                    </label>
-                    <input
-                      id="external_base_url"
-                      type="text"
-                      placeholder="http://localhost:11434/v1"
-                      bind:value={settingsState.external_base_url}
-                      onblur={() => { const value = settingsState.external_base_url.trim(); if (value) updateSetting('external_base_url', value); }}
-                    />
+                  <div class="provider-endpoint-fields">
+                    <div class="setting-field">
+                      <span class="field-label">Protocol</span>
+                      <AppSelect
+                        id="external_protocol"
+                        options={protocolOptions}
+                        bind:value={externalProtocolDraft}
+                        placeholder="Protocol"
+                        ariaLabel="Provider protocol"
+                        onvaluechange={resetExternalModelDiscovery}
+                      />
+                    </div>
+
+                    <div class="setting-field">
+                      <label for="external_server_address">
+                        <Link size={14} class="field-label-icon" />
+                        Server address
+                      </label>
+                      <input
+                        id="external_server_address"
+                        type="text"
+                        placeholder="192.168.1.50"
+                        bind:value={externalServerAddressDraft}
+                        oninput={resetExternalModelDiscovery}
+                      />
+                    </div>
+
+                    <div class="setting-field">
+                      <label for="external_port">Port <span>(optional)</span></label>
+                      <input
+                        id="external_port"
+                        type="text"
+                        inputmode="numeric"
+                        maxlength="5"
+                        placeholder="1234"
+                        bind:value={externalPortDraft}
+                        oninput={resetExternalModelDiscovery}
+                      />
+                    </div>
                   </div>
+                  <p class="help-text">Ragtag uses the conventional OpenAI-compatible <code>/v1</code> API path automatically.</p>
 
                   <div class="setting-field">
-                    <label for="external_model">
+                    <span class="field-label">
                       <BrainCircuit size={14} class="field-label-icon" />
                       External model
-                    </label>
-                    <input
+                    </span>
+                    <AppSelect
                       id="external_model"
-                      type="text"
-                      placeholder="gpt-4o-mini"
-                      bind:value={settingsState.external_model}
-                      onblur={() => { const value = settingsState.external_model.trim(); if (value) updateSetting('external_model', value); }}
+                      options={availableExternalModels.map((model) => ({ value: model, label: model }))}
+                      bind:value={externalModelDraft}
+                      placeholder="Select a model"
+                      disabled={availableExternalModels.length === 0 || isTestingExternalProvider}
+                      ariaLabel="External model"
                     />
-                    <p class="help-text">The model name accepted by your OpenAI-compatible endpoint.</p>
+                    <p class="help-text">
+                      {availableExternalModels.length === 0
+                        ? 'Test the connection to load models from this provider.'
+                        : 'Select the model Ragtag should use for remote answers.'}
+                    </p>
                   </div>
 
                   <div class="setting-field">
@@ -371,13 +587,35 @@
                     {#if apiKeySaved}
                       <p class="success-text" role="status">API key saved securely.</p>
                     {/if}
-                    <p class="help-text">Stored in the OS keychain, never in the database or on disk.</p>
+                    <p class="help-text">Stored in the OS keychain, never in the database or on disk. Save it before testing when required by the provider.</p>
                   </div>
                 </div>
+
+                {#if externalConnectionStatus}
+                  <p class="provider-connection-status" role="status">{externalConnectionStatus}</p>
+                {/if}
               {/if}
 
               <div class="config-modal-actions">
-                <button type="button" class="btn" onclick={() => (configuringInference = null)}>Done</button>
+                {#if configuringInference === 'external'}
+                  <button
+                    type="button"
+                    class="btn btn-secondary"
+                    disabled={isTestingExternalProvider || isSavingExternalProvider || !externalServerAddressDraft.trim()}
+                    onclick={testExternalProvider}
+                  >
+                    {isTestingExternalProvider ? 'Testing connection…' : 'Test connection'}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={isTestingExternalProvider || isSavingExternalProvider || !externalServerAddressDraft.trim() || !externalModelDraft.trim() || !availableExternalModels.includes(externalModelDraft.trim())}
+                    onclick={saveExternalProvider}
+                  >
+                    {isSavingExternalProvider ? 'Saving provider…' : 'Save provider'}
+                  </button>
+                {/if}
+                <button type="button" class="btn btn-secondary" onclick={() => (configuringInference = null)}>Done</button>
               </div>
             </div>
           </div>
@@ -508,9 +746,6 @@
           <p class="success-text storage-status" role="status">{storageMessage}</p>
         {/if}
       </section>
-      {#if settingsState.saveError}
-        <div class="error-banner" role="alert">{settingsState.saveError}</div>
-      {/if}
     {/if}
   </div>
 </div>
@@ -804,6 +1039,17 @@
     display: grid;
     gap: 1rem;
   }
+  .provider-endpoint-fields {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 0.8fr) minmax(0, 2fr) minmax(5.5rem, 0.7fr);
+    gap: 0.75rem;
+  }
+
+  .provider-endpoint-fields label span {
+    color: var(--text-subtle);
+    font-weight: 500;
+  }
+
 
   .field-label {
     display: flex;
@@ -879,11 +1125,11 @@
   .config-modal-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 0.75rem;
     margin-top: 1.25rem;
     padding-top: 1.25rem;
     border-top: 1px solid var(--border);
   }
-
 
   label {
     display: flex;
@@ -920,7 +1166,6 @@
     transition: border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out;
   }
 
-
   input::placeholder {
     color: var(--text-subtle);
   }
@@ -938,6 +1183,17 @@
     color: var(--text-subtle);
     cursor: not-allowed;
     opacity: 0.65;
+  }
+
+  .provider-connection-status {
+    margin: 1rem 0 0;
+    padding: 0.625rem 0.75rem;
+    color: var(--success);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    background: var(--success-soft);
+    border: 1px solid var(--success-border);
+    border-radius: var(--radius-sm);
   }
 
   .help-text {
@@ -996,6 +1252,11 @@
   .btn:hover {
     background: var(--primary-hover);
   }
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
 
   .btn:focus-visible {
     outline: none;
@@ -1133,40 +1394,16 @@
     border-radius: var(--radius-sm);
   }
 
-  .loading,
-  .error-message {
+  .loading {
     padding: 1rem;
     border-radius: var(--radius-md);
     font-size: 0.8125rem;
-  }
-
-  .loading {
     color: var(--text-muted);
     text-align: center;
     background: var(--surface-subtle);
     border: 1px solid var(--border);
   }
 
-  .error-message {
-    color: var(--danger-text-muted);
-    background: var(--danger-soft);
-    border: 1px solid var(--danger-border);
-  }
-
-  .error-banner {
-    position: fixed;
-    right: 1rem;
-    bottom: 1rem;
-    z-index: 100;
-    max-width: min(25rem, calc(100vw - 2rem));
-    padding: 0.75rem 1rem;
-    color: var(--danger-text);
-    font-size: 0.8125rem;
-    background: var(--danger-banner);
-    border: 1px solid var(--danger);
-    border-radius: var(--radius-sm);
-    box-shadow: var(--shadow-raised);
-  }
 
   .reset-modal-overlay {
     position: fixed;
@@ -1289,6 +1526,10 @@
     .pipeline-fields {
       grid-template-columns: 1fr;
     }
+    .provider-endpoint-fields {
+      grid-template-columns: 1fr;
+    }
+
 
 
     .restore-defaults {

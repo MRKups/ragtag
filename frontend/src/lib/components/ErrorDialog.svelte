@@ -1,0 +1,204 @@
+<script lang="ts">
+  import { tick } from 'svelte';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
+
+  let closeButton = $state<HTMLButtonElement>();
+
+  $effect(() => {
+    if (!errorDialog.active) return;
+
+    void tick().then(() => closeButton?.focus());
+  });
+
+  function dismiss() {
+    errorDialog.dismiss();
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || !errorDialog.active) return;
+
+    event.preventDefault();
+    dismiss();
+  }
+
+  async function runAction() {
+    const action = errorDialog.active?.action;
+    if (!action) return;
+
+    dismiss();
+    await action.run();
+  }
+</script>
+
+<svelte:window onkeydown={handleKeydown} />
+
+{#if errorDialog.active}
+  <div class="error-dialog-overlay">
+    <button
+      type="button"
+      class="error-dialog-backdrop"
+      aria-label="Dismiss error dialog"
+      tabindex="-1"
+      onclick={dismiss}
+    ></button>
+    <dialog
+      class="error-dialog"
+      open
+      aria-labelledby="error-dialog-title"
+      aria-describedby="error-dialog-description"
+    >
+      <div class="error-dialog-header">
+        <h2 id="error-dialog-title">{errorDialog.active.title}</h2>
+      </div>
+
+      <div id="error-dialog-description" class="error-dialog-description">
+        <p class="error-dialog-message">{errorDialog.active.message}</p>
+        {#if errorDialog.active.guidance}
+          <p class="error-dialog-guidance">{errorDialog.active.guidance}</p>
+        {/if}
+      </div>
+
+      <div class="error-dialog-actions">
+        <button bind:this={closeButton} type="button" class="dismiss-button" onclick={dismiss}>Close</button>
+        {#if errorDialog.active.action}
+          <button type="button" class="action-button" onclick={runAction}>
+            {errorDialog.active.action.label}
+          </button>
+        {/if}
+      </div>
+    </dialog>
+  </div>
+{/if}
+
+<style>
+  .error-dialog-overlay {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    background: rgba(2, 6, 23, 0.72);
+  }
+
+  .error-dialog-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    cursor: default;
+    background: transparent;
+    border: 0;
+  }
+
+  .error-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(100%, 32rem);
+    margin: 0;
+    padding: 1.5rem;
+    color: #e5e7eb;
+    background: #1e293b;
+    border: 1px solid #475569;
+    border-radius: 0.75rem;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+  }
+
+  .error-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  h2 {
+    margin: 0;
+    color: #f9fafb;
+    font-size: 1.25rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+
+
+  .error-dialog-description {
+    margin-top: 1rem;
+  }
+
+  .error-dialog-message,
+  .error-dialog-guidance {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.55;
+  }
+
+  .error-dialog-message {
+    color: #e2e8f0;
+  }
+
+  .error-dialog-guidance {
+    margin-top: 0.75rem;
+    color: #94a3b8;
+  }
+
+  .error-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid #475569;
+  }
+
+  .dismiss-button,
+  .action-button {
+    min-height: 2.5rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: 0.5rem;
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .dismiss-button {
+    color: #e2e8f0;
+    background: #334155;
+    border: 1px solid #475569;
+  }
+
+  .dismiss-button:hover {
+    background: #475569;
+  }
+
+  .action-button {
+    color: white;
+    background: #2563eb;
+    border: 1px solid #3b82f6;
+  }
+
+  .action-button:hover {
+    background: #1d4ed8;
+  }
+
+  .dismiss-button:focus-visible,
+  .action-button:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+  }
+
+  @media (max-width: 30rem) {
+    .error-dialog {
+      padding: 1.25rem;
+    }
+
+    .error-dialog-actions {
+      flex-direction: column-reverse;
+    }
+
+    .dismiss-button,
+    .action-button {
+      width: 100%;
+    }
+  }
+</style>

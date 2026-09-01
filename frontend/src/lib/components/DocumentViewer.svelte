@@ -23,6 +23,7 @@
     }
     return null;
   });
+  let isPdf = $derived(filename?.toLowerCase().endsWith('.pdf') ?? false);
 </script>
 
 <div class="viewer-container">
@@ -34,8 +35,16 @@
       <h3>Document Preview</h3>
       <p>Select a citation to view the source document.</p>
     </div>
-  {:else if pdfUrl}
+  {:else if pdfUrl && isPdf}
     <PdfViewer url={pdfUrl} {page} {citedPages} />
+  {:else if pdfUrl}
+    <div class="doc-placeholder">
+      <div class="icon-circle">
+        <FileText size={48} color="#9ca3af" />
+      </div>
+      <h3>{filename}</h3>
+      <p>This source was indexed as text. Preview is available for PDF sources only.</p>
+    </div>
   {:else}
     <div class="doc-placeholder">
       <div class="icon-circle">

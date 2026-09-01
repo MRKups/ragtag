@@ -11,6 +11,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test:errors": "node --experimental-strip-types src/lib/error.test.ts && node --experimental-strip-types src/lib/stores/error-dialog.test.ts",
 		"check:watch": "svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {

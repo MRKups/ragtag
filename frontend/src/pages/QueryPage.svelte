@@ -6,6 +6,47 @@
   import { queryState } from '$lib/stores/query.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import type { TokenEvent } from '$lib/types';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
+  import { errorMessage } from '$lib/error';
+  import { router } from '$lib/router.svelte';
+  import { settingsState } from '$lib/stores/settings.svelte';
+
+  function openRemoteSettings() {
+    settingsState.openInferenceConfiguration('external');
+    router.navigate('settings');
+  }
+
+
+  function reportQueryFailure(streamStarted: boolean, noEvidence = false) {
+    if (!noEvidence && settingsState.inference_mode === 'external') {
+      errorDialog.report({
+        dedupeKey: 'external-inference-readiness',
+        title: streamStarted ? 'Remote answer interrupted' : 'Remote provider unavailable',
+        message: streamStarted
+          ? 'The configured remote provider stopped responding before the answer finished.'
+          : 'Ragtag could not start an answer with the configured remote provider.',
+        guidance: 'Check that the provider is running and that its endpoint, model name, and API key are correct.',
+        action: { label: 'Open remote settings', run: openRemoteSettings }
+      });
+      return;
+    }
+
+    errorDialog.report({
+      dedupeKey: streamStarted ? 'query-stream-failed' : 'query-request-failed',
+      title: streamStarted ? 'Answer interrupted' : 'Ragtag could not answer that question',
+      message: streamStarted
+        ? 'The answer stopped before Ragtag finished generating it.'
+        : 'Ragtag could not prepare an answer from your indexed documents.',
+      guidance: streamStarted
+        ? 'Any completed text and sources remain available. Try the question again if you need a complete answer.'
+        : 'Make sure at least one relevant document has finished indexing, then try again.',
+      action: {
+        label: 'Open documents',
+        run: () => router.navigate('documents')
+      }
+    });
+  }
+
   async function handleQuery(text: string) {
     if (queryState.currentRequestId) {
       void api.cancelQuery(queryState.currentRequestId);
@@ -30,17 +71,16 @@
           queryState.isStreaming = false;
           queryState.isLoading = false;
         } else if (event.type === 'error') {
-          queryState.error = { message: event.message };
+          reportQueryFailure(true);
           queryState.citations = event.citations;
           queryState.currentRequestId = null;
           queryState.isStreaming = false;
           queryState.isLoading = false;
         }
       });
-    } catch (e) {
+    } catch (error) {
       if (queryState.currentRequestId !== requestId) return;
-      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Query failed';
-      queryState.error = { message: msg };
+      reportQueryFailure(false, errorMessage(error).includes('No usable document excerpts were retrieved'));
       queryState.currentRequestId = null;
       queryState.isStreaming = false;
       queryState.isLoading = false;
@@ -68,7 +108,7 @@
           <div class="spinner"></div>
           <p>Searching manuals...</p>
         </div>
-      {:else if queryState.text || queryState.error || queryState.retrievalWarning}
+      {:else if queryState.text || queryState.citations.length > 0 || queryState.retrievalWarning}
         {#if queryState.retrievalWarning}
           <p class="retrieval-warning" role="status">{queryState.retrievalWarning}</p>
         {/if}
@@ -76,7 +116,6 @@
           text={queryState.text}
           citations={queryState.citations}
           isStreaming={queryState.isStreaming}
-          error={queryState.error?.message ?? null}
           onCitationClick={handleCitationClick}
         />
       {:else}
@@ -93,24 +132,11 @@
           isLoading={queryState.isLoading}
           isStreaming={queryState.isStreaming}
           unavailable={!appState.queryAvailable}
-          unavailableMessage={appState.externalInferenceError || appState.modelError || 'The selected inference model is still preparing.'}
+          unavailableMessage={'The selected inference model is unavailable. Resolve the issue in the dialog to continue.'}
           onSubmit={handleQuery}
           onCancel={handleCancel}
           bind:text={queryState.queryText}
         />
-        {#if appState.externalInferenceError}
-          <p class="external-inference-error" role="alert">{appState.externalInferenceError}</p>
-        {/if}
-        {#if appState.modelError && !appState.externalInferenceError}
-          <button
-            class="retry-model-button"
-            type="button"
-            onclick={() => void appState.retryLocalModel()}
-            disabled={appState.localModelRetrying}
-          >
-            {appState.localModelRetrying ? 'Retrying local model…' : 'Retry local model'}
-          </button>
-        {/if}
       </div>
     </div>
   </div>
@@ -168,29 +194,6 @@
     width: 100%;
   }
 
-  .external-inference-error {
-    margin: 0.75rem 0 0;
-    color: #fecaca;
-    font-size: 0.875rem;
-    line-height: 1.4;
-  }
-
-  .retry-model-button {
-    display: block;
-    margin: 0.75rem auto 0;
-    border: 1px solid #3b82f6;
-    border-radius: 0.5rem;
-    background: #1d4ed8;
-    color: #eff6ff;
-    cursor: pointer;
-    font-weight: 600;
-    padding: 0.5rem 0.875rem;
-  }
-
-  .retry-model-button:disabled {
-    cursor: progress;
-    opacity: 0.65;
-  }
   .loading-state, .welcome-state {
 
     display: flex;

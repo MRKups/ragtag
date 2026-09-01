@@ -25,7 +25,8 @@ pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
 }
 
 pub async fn process_document(
-    pdf_path: &Path,
+    source_path: &Path,
+    file_type: &str,
     document_id: &str,
     provenance: IndexProvenance,
     embedder: Arc<std::sync::Mutex<TextEmbedding>>,
@@ -37,17 +38,22 @@ pub async fn process_document(
     repo.mark_embedding(document_id).await?;
 
     on_stage("extracting");
-    let pdf_path = pdf_path.to_path_buf();
+    let source_path = source_path.to_path_buf();
+    let file_type = file_type.to_string();
     let extraction_progress = Arc::clone(&on_progress);
     let extraction_document_id = document_id.to_string();
     let extracted_pages = tokio::task::spawn_blocking(move || {
-        extractor::extract_pages(&pdf_path, move |current_page, total_pages| {
-            extraction_progress(IngestionProgress::Extraction {
-                document_id: extraction_document_id.clone(),
-                current_page,
-                total_pages,
-            });
-        })
+        extractor::extract_pages(
+            &source_path,
+            &file_type,
+            move |current_page, total_pages| {
+                extraction_progress(IngestionProgress::Extraction {
+                    document_id: extraction_document_id.clone(),
+                    current_page,
+                    total_pages,
+                });
+            },
+        )
     })
     .await
     .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;

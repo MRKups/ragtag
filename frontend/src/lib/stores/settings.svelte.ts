@@ -1,10 +1,13 @@
 import { api } from '../api';
+import { errorDialog } from './error-dialog.svelte';
 
 export const DEFAULT_LOCAL_INFERENCE = {
   generation_model: 'unsloth/Qwen3-1.7B-GGUF',
   tokenizer_model: 'Qwen/Qwen3-1.7B',
   gguf_filename: 'Qwen3-1.7B-Q4_K_M.gguf'
 } as const;
+
+export type InferenceConfiguration = 'local' | 'external';
 
 export class SettingsState {
   inference_mode = $state('local');
@@ -18,8 +21,8 @@ export class SettingsState {
   chunk_overlap = $state(80);
 
   isLoading = $state(true);
-  loadError = $state<string | null>(null);
-  saveError = $state<string | null>(null);
+  requestedInferenceConfiguration = $state<InferenceConfiguration | null>(null);
+
 
   async load() {
     this.isLoading = true;
@@ -34,10 +37,14 @@ export class SettingsState {
       if (settings.use_query_enhancement) this.use_query_enhancement = settings.use_query_enhancement === 'true';
       if (settings.chunk_size) this.chunk_size = parseInt(settings.chunk_size, 10);
       if (settings.chunk_overlap) this.chunk_overlap = parseInt(settings.chunk_overlap, 10);
-    } catch (e) {
-      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
-      this.loadError = `Failed to load settings: ${msg}`;
-      console.error("Failed to load settings", e);
+    } catch {
+      errorDialog.report({
+        dedupeKey: 'settings-load',
+        title: 'Settings unavailable',
+        message: 'Ragtag could not load your settings.',
+        guidance: 'Try again. If this continues after restarting Ragtag, check that its local data directory is available.'
+      });
+      console.error('Failed to load settings');
     } finally {
       this.isLoading = false;
     }
@@ -57,13 +64,26 @@ export class SettingsState {
       if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);
       if (key === 'chunk_overlap') this.chunk_overlap = parseInt(value, 10);
       return true;
-    } catch (e) {
-      const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Unknown error';
-      this.saveError = `Failed to save ${key}: ${msg}`;
-      console.error(`Failed to update setting ${key}`, e);
-      setTimeout(() => { this.saveError = null; }, 5000);
+    } catch {
+      errorDialog.report({
+        dedupeKey: `settings-save-${key}`,
+        title: 'Setting not saved',
+        message: 'Ragtag could not save this setting. Your previous setting is still in effect.',
+        guidance: 'Check the value and try again.'
+      });
+      console.error(`Failed to update setting ${key}`);
       return false;
     }
+  }
+
+  openInferenceConfiguration(mode: InferenceConfiguration) {
+    this.requestedInferenceConfiguration = mode;
+  }
+
+  consumeInferenceConfiguration(): InferenceConfiguration | null {
+    const requested = this.requestedInferenceConfiguration;
+    this.requestedInferenceConfiguration = null;
+    return requested;
   }
 }
 

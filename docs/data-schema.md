@@ -16,7 +16,7 @@ CREATE TABLE documents (
     
     -- File info
     filename TEXT NOT NULL,
-    file_type TEXT NOT NULL,                   -- 'pdf'
+    file_type TEXT NOT NULL,                   -- 'pdf', 'docx', or 'text'
     file_size_bytes BIGINT,
     file_hash BLOB,                            -- SHA-512 hash stored as raw bytes (not hex string) to prevent duplicates
     storage_path TEXT NOT NULL,                -- Relative path inside the AppData folder
@@ -84,7 +84,7 @@ CREATE TABLE app_settings (
 ```
 Example keys:
 - `inference_mode`: `"local"` or `"external"`; selects the default generation route for new queries.
-- `external_base_url`: Credential-free HTTP(S) base URL for an OpenAI-compatible endpoint, normalized before `/models` readiness and chat-completions requests.
+- `external_base_url`: Credential-free HTTP(S) OpenAI-compatible endpoint stored as a canonical base URL including `/v1`, normalized before `/models` readiness and chat-completions requests.
 - `external_model`: Model name required in the endpoint’s `/models` response and sent to that endpoint; absent values fall back to `"gpt-4o-mini"`.
 - `use_query_enhancement`: `"true"` or `"false"`; expands recognized technical abbreviations only for retrieval, leaving the user prompt unchanged.
 - `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
@@ -98,7 +98,7 @@ Changing `generation_model`, `tokenizer_model`, or `gguf_filename` while `infere
 
 `chunk_size` and `chunk_overlap` are validated together when a setting changes. Under the document-operations write lock, the final pair is persisted and all indexed documents with absent or mismatched provenance are atomically returned to `queued`; their saved provenance remains until the successful replacement records the new values. After the transaction and lock release, the command uses `try_send()` for reindex jobs: a full queue returns typed `QueueFull` immediately while a background producer awaits capacity for every remaining durable queued job. Chunks are split and counted with the active embedding tokenizer, including the `passage: ` prefix and special tokens, so no stored chunk is silently truncated during embedding.
 
-The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Local model modal initializes absent local settings with the defaults above and can restore those three local settings without changing `inference_mode` or the external configuration.
+The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Remote provider modal collects protocol, server address, and optional port, composes the conventional `/v1` endpoint, then tests that unsaved credential-free endpoint with a supplied in-form API key or, when blank, the OS-keychain key; it lists the returned `/models` identifiers in an app-styled dropdown. Testing does not persist settings; changing any endpoint control clears prior models and selection. Save remains disabled until a discovered model is selected, then atomically persists `external_base_url` plus `external_model` before one active-external readiness revalidation. The Local model modal initiates the existing generation-tagged local initialization flow only after durable local settings change.
 
 *Note:* Sensitive data like the `external_api_key` for BYO inference must **never** be stored in SQLite. Instead, it is managed securely in the OS keychain using the `keyring` crate.
 

@@ -7,12 +7,14 @@
     pdfDoc,
     pageNumber,
     scale = 1.0,
-    isCitation = false
+    isCitation = false,
+    onError = () => {}
   } = $props<{
     pdfDoc: PDFDocumentProxy;
     pageNumber: number;
     scale?: number;
     isCitation?: boolean;
+    onError?: () => void;
   }>();
 
   let canvas: HTMLCanvasElement;
@@ -87,12 +89,16 @@
           });
           await textLayer.render();
         }
-      } catch (_) {}
+      } catch {
+        if (myId === renderId) onError();
+      }
 
       loading = false;
     } catch (e: any) {
       if (e.name !== 'RenderingCancelledException') {
+        loading = false;
         console.error(`Error rendering page ${pageNumber}:`, e);
+        onError();
       }
     }
   }

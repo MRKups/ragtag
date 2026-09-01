@@ -4,6 +4,7 @@
   import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
   import PdfPage from './PdfPage.svelte';
   import 'pdfjs-dist/web/pdf_viewer.css';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
 
   let {
     url = '',
@@ -64,6 +65,17 @@
     el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
+
+  function reportPdfError(action: () => void) {
+    errorDialog.report({
+      dedupeKey: 'pdf-rendering',
+      title: 'Document preview unavailable',
+      message: 'Ragtag could not display this PDF page.',
+      guidance: 'Try again. If the problem continues, remove and upload a new copy of the document.',
+      action: { label: 'Retry preview', run: action }
+    });
+  }
+
   async function loadDocument(docUrl: string) {
     const myLoadId = ++loadId;
     void loadingTask?.destroy();
@@ -83,10 +95,11 @@
       loading = false;
       await tick();
       scrollToPage(pageNum);
-    } catch (e) {
+    } catch {
       if (myLoadId !== loadId) return;
-      error = 'Failed to load PDF document.';
+      error = 'Document preview unavailable.';
       loading = false;
+      reportPdfError(() => void loadDocument(docUrl));
     }
   }
 
@@ -148,7 +161,13 @@
         <div class="pages-list">
           {#each pagesToRender as p (p)}
             {@const isCited = citedPages.length > 0 ? citedPages.includes(p) : p === page}
-            <PdfPage {pdfDoc} pageNumber={p} {scale} isCitation={isCited} />
+            <PdfPage
+              {pdfDoc}
+              pageNumber={p}
+              {scale}
+              isCitation={isCited}
+              onError={() => reportPdfError(() => void loadDocument(url))}
+            />
           {/each}
         </div>
       {/if}

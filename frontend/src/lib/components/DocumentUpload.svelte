@@ -2,6 +2,8 @@
   import { Upload, FileText, CheckCircle, AlertCircle, X } from '@lucide/svelte';
   import { api } from '$lib/api';
   import { documentProgressState } from '$lib/stores/document-progress.svelte';
+  import { errorDialog } from '$lib/stores/error-dialog.svelte';
+  import { errorMessage } from '$lib/error';
 
   let { onUploadComplete }: { onUploadComplete?: () => void } = $props();
 
@@ -11,6 +13,7 @@
 
   // Track each selected file with its upload status
   interface FileStatus {
+    id: number;
     file: File;
     status: 'pending' | 'uploading' | 'success' | 'error' | 'rejected';
     progress: number;
@@ -19,6 +22,7 @@
 
   // We only handle one file at a time, but UI can still list what's selected
   let files: FileStatus[] = $state([]);
+  let nextFileId = 0;
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
@@ -47,21 +51,29 @@
   }
 
   function addFiles(newFiles: File[]) {
-    const allowedExtensions = ['.pdf']; // Currently only PDF
-    const maxFileSize = 50 * 1024 * 1024; // 50MB
+    const maxFileSize = 50 * 1024 * 1024;
+    const oversizedFiles = newFiles.filter((file) => file.size > maxFileSize);
+    if (oversizedFiles.length > 0) {
+      errorDialog.report({
+        dedupeKey: 'upload-file-size',
+        title: 'Files cannot be uploaded',
+        message: `${oversizedFiles.length} selected file${oversizedFiles.length === 1 ? '' : 's'} exceed${oversizedFiles.length === 1 ? 's' : ''} Ragtag’s 50 MB upload limit.`,
+        guidance: 'Remove the oversized files and try again.'
+      });
+    }
 
-    const newFileStatuses = newFiles.map(f => {
-      const name = f.name.toLowerCase();
-      const hasValidExtension = allowedExtensions.some(ext => name.endsWith(ext));
-
-      if (!hasValidExtension) {
-        return { file: f, status: 'rejected' as const, progress: 0, errorMsg: 'Unsupported file type' };
+    const newFileStatuses = newFiles.map((file) => {
+      if (file.size > maxFileSize) {
+        return {
+          id: nextFileId++,
+          file,
+          status: 'rejected' as const,
+          progress: 0,
+          errorMsg: 'File exceeds the 50 MB limit'
+        };
       }
-      if (f.size > maxFileSize) {
-        return { file: f, status: 'rejected' as const, progress: 0, errorMsg: 'File too large (>50MB)' };
-      }
 
-      return { file: f, status: 'pending' as const, progress: 0 };
+      return { id: nextFileId++, file, status: 'pending' as const, progress: 0 };
     });
 
     files = [...files, ...newFileStatuses];
@@ -93,12 +105,26 @@
         await api.uploadDocument(files[i].file, (progress) => documentProgressState.record(progress));
         files[i] = { ...files[i], status: 'success', errorMsg: 'Queued' };
         successCount++;
-      } catch (e) {
-        const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Upload failed';
-        files[i] = { ...files[i], status: 'error', errorMsg: msg };
+      } catch (error) {
+        const message = errorMessage(error);
+        const rejected = message.startsWith('Invalid input:') || message.startsWith('A document with this content already exists:');
+        files[i] = {
+          ...files[i],
+          status: rejected ? 'rejected' : 'error',
+          errorMsg: rejected ? 'Upload rejected' : 'Upload did not start'
+        };
+        errorDialog.report({
+          dedupeKey: rejected ? 'document-upload-rejected' : `document-upload-${files[i].file.name}`,
+          title: rejected ? 'File cannot be uploaded' : 'Document upload failed',
+          message: rejected
+            ? 'Ragtag could not accept this file as a PDF, DOCX, or UTF-8 text document.'
+            : 'Ragtag could not add this document to the processing queue.',
+          guidance: rejected
+            ? 'Choose a valid PDF, DOCX, or UTF-8 text file and try again.'
+            : 'Check that Ragtag can access its local data directory, then try again.'
+        });
       }
     }
-
     if (successCount > 0) {
       onUploadComplete?.();
     }
@@ -127,8 +153,7 @@
     <input
       bind:this={fileInput}
       type="file"
-      accept=".pdf"
-      multiple
+      accept=".pdf,.docx,text/*,.md,.markdown,.rst,.csv,.tsv,.json,.yaml,.yml,.toml,.xml,.html,.htm,.log,.ini,.cfg,.conf,.properties"
       class="hidden"
       onchange={handleFileSelect}
       disabled={isUploading}
@@ -140,7 +165,7 @@
       </div>
       <div class="text-content">
         <p class="primary-text">Click to upload or drag and drop</p>
-        <p class="secondary-text">PDF (max 50MB)</p>
+        <p class="secondary-text">PDF, DOCX, or UTF-8 text files (max 50 MB)</p>
       </div>
     </div>
   </div>
@@ -148,9 +173,8 @@
   <!-- File List -->
   {#if files.length > 0}
     <div class="file-list">
-      {#each files as file, i (file.file.name)}
+      {#each files as file, i (file.id)}
         <div class="file-item">
-          <FileText size={20} color="#9ca3af" class="file-icon" />
           
           <div class="file-info">
             <p class="file-name" title={file.file.name}>
