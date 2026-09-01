@@ -9,6 +9,8 @@ use tokio::sync::{Mutex, RwLock, mpsc::Sender, watch};
 pub struct LlmInitializationState {
     pub generation: u64,
     pub in_progress: bool,
+    pub in_progress_generation: Option<u64>,
+    pub restart_requested: bool,
 }
 
 pub struct AppState {

@@ -719,6 +719,140 @@ impl Drop for ActiveQuery {
     }
 }
 
+fn invalidate_llm_initialization(initialization: &mut state::LlmInitializationState) {
+    initialization.generation = initialization.generation.wrapping_add(1);
+}
+
+async fn finish_llm_initialization(
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+) -> bool {
+    let mut current = initialization.lock().await;
+    if current.in_progress_generation != Some(generation) {
+        return false;
+    }
+
+    current.in_progress = false;
+    current.in_progress_generation = None;
+    if current.generation == generation {
+        current.restart_requested = false;
+        return false;
+    }
+
+    let restart = current.restart_requested;
+    current.restart_requested = false;
+    restart
+}
+
+async fn llm_initialization_is_current(
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+) -> bool {
+    let current = initialization.lock().await;
+    current.generation == generation && current.in_progress_generation == Some(generation)
+}
+
+async fn emit_model_download_progress_if_current(
+    app: &tauri::AppHandle,
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+    progress: model_download::ModelDownloadProgress,
+) -> bool {
+    let current = initialization.lock().await;
+    if current.generation != generation || current.in_progress_generation != Some(generation) {
+        return false;
+    }
+
+    let _ = app.emit("model_download_progress", progress);
+    true
+}
+
+async fn finish_llm_initialization_with_progress(
+    app: &tauri::AppHandle,
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+    progress: model_download::ModelDownloadProgress,
+) -> bool {
+    let mut current = initialization.lock().await;
+    if current.in_progress_generation != Some(generation) {
+        return false;
+    }
+
+    current.in_progress = false;
+    current.in_progress_generation = None;
+    if current.generation != generation {
+        let restart = current.restart_requested;
+        current.restart_requested = false;
+        return restart;
+    }
+
+    current.restart_requested = false;
+    let _ = app.emit("model_download_progress", progress);
+    false
+}
+
+async fn finish_external_readiness_probe(
+    app: &tauri::AppHandle,
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+    readiness: Result<(), AppError>,
+) -> bool {
+    let mut current = initialization.lock().await;
+    if current.in_progress_generation != Some(generation) {
+        return false;
+    }
+
+    current.in_progress = false;
+    current.in_progress_generation = None;
+    if current.generation != generation {
+        let restart = current.restart_requested;
+        current.restart_requested = false;
+        return restart;
+    }
+
+    current.restart_requested = false;
+    match readiness {
+        Ok(()) => {
+            info!("external inference endpoint and model are ready");
+            let _ = app.emit("llm_ready", ());
+        }
+        Err(error) => {
+            warn!("external inference readiness check failed: {error}");
+            let _ = app.emit("external_inference_failed", error);
+        }
+    }
+    false
+}
+
+async fn finish_local_model_initialization(
+    app: &tauri::AppHandle,
+    llm_state: &Arc<tokio::sync::RwLock<Option<Arc<mistralrs::Model>>>>,
+    initialization: &Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    generation: u64,
+    model: mistralrs::Model,
+) -> bool {
+    let mut current = initialization.lock().await;
+    if current.in_progress_generation != Some(generation) {
+        return false;
+    }
+
+    if current.generation != generation {
+        current.in_progress = false;
+        current.in_progress_generation = None;
+        let restart = current.restart_requested;
+        current.restart_requested = false;
+        return restart;
+    }
+
+    *llm_state.write().await = Some(Arc::new(model));
+    current.in_progress = false;
+    current.in_progress_generation = None;
+    current.restart_requested = false;
+    info!("mistral.rs pipeline built and ready");
+    let _ = app.emit("llm_ready", ());
+    false
+}
+
 async fn restart_external_readiness_probe(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -726,13 +860,14 @@ async fn restart_external_readiness_probe(
 ) -> Result<(), AppError> {
     {
         let mut initialization = state.llm_initialization.lock().await;
-        initialization.generation = initialization.generation.wrapping_add(1);
+        invalidate_llm_initialization(&mut initialization);
         initialization.in_progress = false;
-    }
-    let _ = app.emit("llm_unready", ());
-
-    if clear_local_model {
-        *state.local_llm.write().await = None;
+        initialization.in_progress_generation = None;
+        initialization.restart_requested = false;
+        if clear_local_model {
+            *state.local_llm.write().await = None;
+        }
+        let _ = app.emit("llm_unready", ());
     }
     let models_dir = app
         .path()
@@ -740,6 +875,75 @@ async fn restart_external_readiness_probe(
         .map_err(|e| AppError::Io(e.to_string()))?
         .join("models");
     request_llm_initialization(app, state, models_dir).await;
+    Ok(())
+}
+
+async fn set_local_model_setting_and_restart_if_active(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    key: &str,
+    value: &str,
+) -> Result<(), AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    let should_start = {
+        let mut initialization = state.llm_initialization.lock().await;
+        let changed = settings.get(key).await?.as_deref() != Some(value);
+        settings.set(key, value).await?;
+        let local_mode_active = settings.get("inference_mode").await?.as_deref() == Some("local");
+        if !changed || !local_mode_active {
+            false
+        } else {
+            invalidate_llm_initialization(&mut initialization);
+            let should_start = !initialization.in_progress;
+            if !should_start {
+                initialization.restart_requested = true;
+            }
+            *state.local_llm.write().await = None;
+            let _ = app.emit("llm_unready", ());
+            should_start
+        }
+    };
+
+    if should_start {
+        let models_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| AppError::Io(e.to_string()))?
+            .join("models");
+        request_llm_initialization(app, state, models_dir).await;
+    }
+    Ok(())
+}
+
+async fn restart_local_model_initialization_if_active(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    if settings.get("inference_mode").await?.as_deref() != Some("local") {
+        return Ok(());
+    }
+
+    let should_start = {
+        let mut initialization = state.llm_initialization.lock().await;
+        invalidate_llm_initialization(&mut initialization);
+        let should_start = !initialization.in_progress;
+        if !should_start {
+            initialization.restart_requested = true;
+        }
+        *state.local_llm.write().await = None;
+        let _ = app.emit("llm_unready", ());
+        should_start
+    };
+
+    if should_start {
+        let models_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| AppError::Io(e.to_string()))?
+            .join("models");
+        request_llm_initialization(app, state, models_dir).await;
+    }
     Ok(())
 }
 
@@ -759,23 +963,58 @@ async fn request_llm_initialization(
     state: &AppState,
     models_dir: std::path::PathBuf,
 ) {
+    request_llm_initialization_with_resources(
+        app.clone(),
+        state.local_llm.clone(),
+        state.llm_initialization.clone(),
+        state.db_pool.clone(),
+        state.http_client.clone(),
+        models_dir,
+    )
+    .await;
+}
+
+fn schedule_llm_initialization_with_resources(
+    app: tauri::AppHandle,
+    llm_state: Arc<tokio::sync::RwLock<Option<Arc<mistralrs::Model>>>>,
+    initialization: Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    pool: sqlx::SqlitePool,
+    http_client: reqwest::Client,
+    models_dir: std::path::PathBuf,
+) {
+    tauri::async_runtime::spawn(async move {
+        request_llm_initialization_with_resources(
+            app,
+            llm_state,
+            initialization,
+            pool,
+            http_client,
+            models_dir,
+        )
+        .await;
+    });
+}
+
+async fn request_llm_initialization_with_resources(
+    app: tauri::AppHandle,
+    llm_state: Arc<tokio::sync::RwLock<Option<Arc<mistralrs::Model>>>>,
+    initialization: Arc<tokio::sync::Mutex<state::LlmInitializationState>>,
+    pool: sqlx::SqlitePool,
+    http_client: reqwest::Client,
+    models_dir: std::path::PathBuf,
+) {
     let generation = {
-        let mut initialization = state.llm_initialization.lock().await;
-        if initialization.in_progress {
+        let mut current = initialization.lock().await;
+        if current.in_progress {
             return;
         }
-        initialization.in_progress = true;
-        initialization.generation
+        current.in_progress = true;
+        current.in_progress_generation = Some(current.generation);
+        current.generation
     };
 
-    let llm_state = state.local_llm.clone();
-    let initialization = state.llm_initialization.clone();
-    let app = app.clone();
-    let pool = state.db_pool.clone();
-    let http_client = state.http_client.clone();
-
     tauri::async_runtime::spawn(async move {
-        let app_settings = AppSettingsRepository::new(pool);
+        let app_settings = AppSettingsRepository::new(pool.clone());
         let mode = app_settings
             .get("inference_mode")
             .await
@@ -788,82 +1027,148 @@ async fn request_llm_initialization(
                 probe_external_inference_readiness(&http_client, &config).await
             }
             .await;
-
-            let mut current = initialization.lock().await;
-            if current.generation != generation {
-                return;
-            }
-            current.in_progress = false;
-            match readiness {
-                Ok(()) => {
-                    info!("external inference endpoint and model are ready");
-                    let _ = app.emit("llm_ready", ());
-                }
-                Err(error) => {
-                    warn!("external inference readiness check failed: {error}");
-                    let _ = app.emit("external_inference_failed", error);
-                }
+            let restart =
+                finish_external_readiness_probe(&app, &initialization, generation, readiness).await;
+            if restart {
+                schedule_llm_initialization_with_resources(
+                    app.clone(),
+                    llm_state.clone(),
+                    initialization.clone(),
+                    pool.clone(),
+                    http_client.clone(),
+                    models_dir.clone(),
+                );
             }
             return;
         }
 
-        let model_id = app_settings
-            .get("generation_model")
-            .await
-            .unwrap_or_default()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
-        let tokenizer_model = app_settings
-            .get("tokenizer_model")
-            .await
-            .unwrap_or_default()
-            .filter(|model| is_valid_hugging_face_model_id(model))
-            .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
-        let gguf_filename = app_settings
-            .get("gguf_filename")
-            .await
-            .unwrap_or_default()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
+        let local_config = async {
+            let model_id = app_settings
+                .get("generation_model")
+                .await?
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
+            let tokenizer_model = app_settings
+                .get("tokenizer_model")
+                .await?
+                .filter(|model| is_valid_hugging_face_model_id(model))
+                .unwrap_or_else(|| DEFAULT_TOKENIZER_MODEL.to_string());
+            let gguf_filename = app_settings
+                .get("gguf_filename")
+                .await?
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
+            Ok::<_, AppError>((model_id, tokenizer_model, gguf_filename))
+        }
+        .await;
+        let (model_id, tokenizer_model, gguf_filename) = match local_config {
+            Ok(config) => config,
+            Err(error) => {
+                let message = format!("Failed to read local model configuration: {error}");
+                error!("{message}");
+                let restart = finish_llm_initialization_with_progress(
+                    &app,
+                    &initialization,
+                    generation,
+                    model_download::ModelDownloadProgress {
+                        model_id: String::new(),
+                        current_file: String::new(),
+                        file_downloaded: 0,
+                        file_total: 0,
+                        files_completed: 0,
+                        total_files: 0,
+                        stage: model_download::DownloadStage::Error { message },
+                    },
+                )
+                .await;
+                if restart {
+                    schedule_llm_initialization_with_resources(
+                        app.clone(),
+                        llm_state.clone(),
+                        initialization.clone(),
+                        pool.clone(),
+                        http_client.clone(),
+                        models_dir.clone(),
+                    );
+                }
+                return;
+            }
+        };
+
+        if !llm_initialization_is_current(&initialization, generation).await {
+            let restart = finish_llm_initialization(&initialization, generation).await;
+            if restart {
+                schedule_llm_initialization_with_resources(
+                    app.clone(),
+                    llm_state.clone(),
+                    initialization.clone(),
+                    pool.clone(),
+                    http_client.clone(),
+                    models_dir.clone(),
+                );
+            }
+            return;
+        }
 
         info!("downloading model '{model_id}' ({gguf_filename}) via hf-hub...");
+        let progress_initialization = initialization.clone();
+        let progress_app = app.clone();
+        let progress_emitter: model_download::ProgressEmitter = Arc::new(move |progress| {
+            let Ok(current) = progress_initialization.try_lock() else {
+                return;
+            };
+            if current.generation == generation
+                && current.in_progress_generation == Some(generation)
+            {
+                let _ = progress_app.emit("model_download_progress", progress);
+            }
+        });
         let gguf_path = match model_download::download_model(
             &model_id,
             &gguf_filename,
             &models_dir,
-            &app,
+            progress_emitter,
         )
         .await
         {
             Ok(path) => path,
             Err(error) => {
                 error!("model download failed after all retries: {error}");
-                let progress = model_download::ModelDownloadProgress {
-                    model_id: model_id.to_string(),
-                    current_file: String::new(),
-                    file_downloaded: 0,
-                    file_total: 0,
-                    files_completed: 0,
-                    total_files: 0,
-                    stage: model_download::DownloadStage::Error {
-                        message: error.to_string(),
+                let restart = finish_llm_initialization_with_progress(
+                    &app,
+                    &initialization,
+                    generation,
+                    model_download::ModelDownloadProgress {
+                        model_id: model_id.to_string(),
+                        current_file: String::new(),
+                        file_downloaded: 0,
+                        file_total: 0,
+                        files_completed: 0,
+                        total_files: 0,
+                        stage: model_download::DownloadStage::Error {
+                            message: error.to_string(),
+                        },
                     },
-                };
-                let mut current = initialization.lock().await;
-                if current.generation != generation {
-                    return;
+                )
+                .await;
+                if restart {
+                    schedule_llm_initialization_with_resources(
+                        app.clone(),
+                        llm_state.clone(),
+                        initialization.clone(),
+                        pool.clone(),
+                        http_client.clone(),
+                        models_dir.clone(),
+                    );
                 }
-                current.in_progress = false;
-                let _ = app.emit("model_download_progress", progress);
                 return;
             }
         };
 
-        if initialization.lock().await.generation != generation {
-            return;
-        }
-        let _ = app.emit(
-            "model_download_progress",
+        if !emit_model_download_progress_if_current(
+            &app,
+            &initialization,
+            generation,
             model_download::ModelDownloadProgress {
                 model_id: model_id.to_string(),
                 current_file: String::new(),
@@ -873,7 +1178,22 @@ async fn request_llm_initialization(
                 total_files: 1,
                 stage: model_download::DownloadStage::LoadingModel,
             },
-        );
+        )
+        .await
+        {
+            let restart = finish_llm_initialization(&initialization, generation).await;
+            if restart {
+                schedule_llm_initialization_with_resources(
+                    app.clone(),
+                    llm_state.clone(),
+                    initialization.clone(),
+                    pool.clone(),
+                    http_client.clone(),
+                    models_dir.clone(),
+                );
+            }
+            return;
+        }
 
         let Some(parent_dir) = gguf_path.parent() else {
             let message = format!(
@@ -881,21 +1201,31 @@ async fn request_llm_initialization(
                 gguf_path.display()
             );
             error!("{message}");
-            let progress = model_download::ModelDownloadProgress {
-                model_id: model_id.to_string(),
-                current_file: String::new(),
-                file_downloaded: 0,
-                file_total: 0,
-                files_completed: 0,
-                total_files: 0,
-                stage: model_download::DownloadStage::Error { message },
-            };
-            let mut current = initialization.lock().await;
-            if current.generation != generation {
-                return;
+            let restart = finish_llm_initialization_with_progress(
+                &app,
+                &initialization,
+                generation,
+                model_download::ModelDownloadProgress {
+                    model_id: model_id.to_string(),
+                    current_file: String::new(),
+                    file_downloaded: 0,
+                    file_total: 0,
+                    files_completed: 0,
+                    total_files: 0,
+                    stage: model_download::DownloadStage::Error { message },
+                },
+            )
+            .await;
+            if restart {
+                schedule_llm_initialization_with_resources(
+                    app.clone(),
+                    llm_state.clone(),
+                    initialization.clone(),
+                    pool.clone(),
+                    http_client.clone(),
+                    models_dir.clone(),
+                );
             }
-            current.in_progress = false;
-            let _ = app.emit("model_download_progress", progress);
             return;
         };
 
@@ -913,36 +1243,68 @@ async fn request_llm_initialization(
                     .await
                     .unwrap_or_default()
                     .unwrap_or_else(|| "local".to_string());
-                let mut current = initialization.lock().await;
-                if current.generation != generation {
-                    return;
-                }
-                current.in_progress = false;
                 if current_mode != "local" {
+                    let restart = finish_llm_initialization(&initialization, generation).await;
+                    if restart {
+                        schedule_llm_initialization_with_resources(
+                            app.clone(),
+                            llm_state.clone(),
+                            initialization.clone(),
+                            pool.clone(),
+                            http_client.clone(),
+                            models_dir.clone(),
+                        );
+                    }
                     return;
                 }
-                *llm_state.write().await = Some(Arc::new(model));
-                info!("mistral.rs pipeline built and ready");
-                let _ = app.emit("llm_ready", ());
+
+                let restart = finish_local_model_initialization(
+                    &app,
+                    &llm_state,
+                    &initialization,
+                    generation,
+                    model,
+                )
+                .await;
+                if restart {
+                    schedule_llm_initialization_with_resources(
+                        app.clone(),
+                        llm_state.clone(),
+                        initialization.clone(),
+                        pool.clone(),
+                        http_client.clone(),
+                        models_dir.clone(),
+                    );
+                }
             }
             Err(error) => {
                 let message = format!("Failed to initialize local model: {error}");
                 error!("{message}");
-                let progress = model_download::ModelDownloadProgress {
-                    model_id,
-                    current_file: String::new(),
-                    file_downloaded: 0,
-                    file_total: 0,
-                    files_completed: 0,
-                    total_files: 0,
-                    stage: model_download::DownloadStage::Error { message },
-                };
-                let mut current = initialization.lock().await;
-                if current.generation != generation {
-                    return;
+                let restart = finish_llm_initialization_with_progress(
+                    &app,
+                    &initialization,
+                    generation,
+                    model_download::ModelDownloadProgress {
+                        model_id,
+                        current_file: String::new(),
+                        file_downloaded: 0,
+                        file_total: 0,
+                        files_completed: 0,
+                        total_files: 0,
+                        stage: model_download::DownloadStage::Error { message },
+                    },
+                )
+                .await;
+                if restart {
+                    schedule_llm_initialization_with_resources(
+                        app.clone(),
+                        llm_state.clone(),
+                        initialization.clone(),
+                        pool.clone(),
+                        http_client.clone(),
+                        models_dir.clone(),
+                    );
                 }
-                current.in_progress = false;
-                let _ = app.emit("model_download_progress", progress);
             }
         }
     });
@@ -1234,7 +1596,7 @@ async fn execute_query(
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
     let repo = DocumentRepository::new(state.db_pool.clone());
-    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(false);
     state
         .active_queries
         .lock()
@@ -1518,8 +1880,15 @@ async fn set_setting(
     value: String,
 ) -> Result<(), AppError> {
     validate_setting(&key, &value)?;
-    let repo = AppSettingsRepository::new(state.db_pool.clone());
+    if matches!(
+        key.as_str(),
+        "generation_model" | "tokenizer_model" | "gguf_filename"
+    ) {
+        set_local_model_setting_and_restart_if_active(&app, &state, &key, &value).await?;
+        return Ok(());
+    }
 
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
     let requeued_ids = if matches!(key.as_str(), "chunk_size" | "chunk_overlap") {
         {
             let _document_operation = state.document_operations.write().await;
@@ -1548,13 +1917,7 @@ async fn set_setting(
         if value == "external" {
             restart_external_readiness_probe(&app, &state, true).await?;
         } else {
-            {
-                let mut initialization = state.llm_initialization.lock().await;
-                initialization.generation = initialization.generation.wrapping_add(1);
-                initialization.in_progress = false;
-            }
-            let _ = app.emit("llm_unready", ());
-            begin_first_run_init(app, state).await?;
+            restart_local_model_initialization_if_active(&app, &state).await?;
         }
     } else if matches!(key.as_str(), "external_base_url" | "external_model") {
         revalidate_external_readiness_if_active(&app, &state).await?;
@@ -1692,8 +2055,7 @@ async fn vacuum_database(state: tauri::State<'_, AppState>) -> Result<serde_json
     sqlx::query("VACUUM")
         .execute(&state.db_pool)
         .await
-        .map_err(|e| AppError::Database(e.to_string()))?;
-
+        .map_err(|error| AppError::Database(error.to_string()))?;
     Ok(serde_json::json!({"status": "vacuumed"}))
 }
 
@@ -2001,13 +2363,14 @@ pub fn run() {
 mod tests {
     use super::{
         ExternalInferenceConfig, ExternalModelsResponse, decode_upload_filename,
-        enqueue_requeued_documents, external_model_is_available, normalize_external_base_url,
+        enqueue_requeued_documents, external_model_is_available, finish_llm_initialization,
+        invalidate_llm_initialization, llm_initialization_is_current, normalize_external_base_url,
         registry_read_retry_delay, remove_non_fastembed_models, require_retrieved_citations,
         sse_event_boundary, sse_event_data, validate_setting, validate_upload,
     };
     use domain::AppError;
-    use std::time::Duration;
-    use tokio::sync::mpsc;
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::{Mutex, mpsc};
     use tokio::time::timeout;
 
     #[test]
@@ -2139,6 +2502,44 @@ mod tests {
                 .as_deref(),
             Some("second-stale")
         );
+    }
+
+    #[tokio::test]
+    async fn local_model_config_invalidations_coalesce_to_the_latest_generation() {
+        let initialization = Arc::new(Mutex::new(super::state::LlmInitializationState::default()));
+        let first_generation = {
+            let mut current = initialization.lock().await;
+            let generation = current.generation;
+            current.in_progress = true;
+            current.in_progress_generation = Some(generation);
+            generation
+        };
+
+        {
+            let mut current = initialization.lock().await;
+            invalidate_llm_initialization(&mut current);
+            current.restart_requested = true;
+            invalidate_llm_initialization(&mut current);
+            current.restart_requested = true;
+            assert_eq!(current.generation, first_generation.wrapping_add(2));
+            assert_eq!(current.in_progress_generation, Some(first_generation));
+        }
+
+        assert!(!llm_initialization_is_current(&initialization, first_generation).await);
+        assert!(finish_llm_initialization(&initialization, first_generation).await);
+        assert!(!finish_llm_initialization(&initialization, first_generation).await);
+
+        let latest_generation = {
+            let mut current = initialization.lock().await;
+            assert!(!current.in_progress);
+            assert_eq!(current.in_progress_generation, None);
+            let generation = current.generation;
+            current.in_progress = true;
+            current.in_progress_generation = Some(generation);
+            generation
+        };
+        assert!(llm_initialization_is_current(&initialization, latest_generation).await);
+        assert!(!finish_llm_initialization(&initialization, latest_generation).await);
     }
 
     #[test]

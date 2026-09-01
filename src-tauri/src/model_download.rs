@@ -7,7 +7,6 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize, Debug)]
 pub struct ModelDownloadProgress {
@@ -31,9 +30,11 @@ pub enum DownloadStage {
     Error { message: String },
 }
 
+pub type ProgressEmitter = Arc<dyn Fn(ModelDownloadProgress) + Send + Sync>;
+
 #[derive(Clone)]
 struct ProgressReporter {
-    app_handle: AppHandle,
+    emit_progress: ProgressEmitter,
     model_id: String,
     filename: String,
     total_bytes: Arc<AtomicU64>,
@@ -105,7 +106,7 @@ impl ProgressHandler for ProgressReporter {
         };
 
         if let Some(progress) = progress {
-            let _ = self.app_handle.emit("model_download_progress", progress);
+            (self.emit_progress.as_ref())(progress);
         }
     }
 }
@@ -114,7 +115,7 @@ pub async fn download_model(
     model_id: &str,
     filename: &str,
     cache_dir: &std::path::Path,
-    app_handle: &AppHandle,
+    emit_progress: ProgressEmitter,
 ) -> Result<PathBuf, AppError> {
     tokio::fs::create_dir_all(cache_dir).await?;
 
@@ -125,18 +126,15 @@ pub async fn download_model(
     let (owner, name) = hf_hub::split_id(model_id);
     let repo = client.model(owner, name);
 
-    let _ = app_handle.emit(
-        "model_download_progress",
-        ModelDownloadProgress {
-            model_id: model_id.to_string(),
-            current_file: String::new(),
-            file_downloaded: 0,
-            file_total: 0,
-            files_completed: 0,
-            total_files: 1,
-            stage: DownloadStage::FetchingInfo,
-        },
-    );
+    (emit_progress.as_ref())(ModelDownloadProgress {
+        model_id: model_id.to_string(),
+        current_file: String::new(),
+        file_downloaded: 0,
+        file_total: 0,
+        files_completed: 0,
+        total_files: 1,
+        stage: DownloadStage::FetchingInfo,
+    });
 
     let mut attempts = 0u32;
     let max_attempts = 3u32;
@@ -145,7 +143,7 @@ pub async fn download_model(
         attempts += 1;
 
         let reporter = ProgressReporter {
-            app_handle: app_handle.clone(),
+            emit_progress: emit_progress.clone(),
             model_id: model_id.to_string(),
             filename: filename.to_string(),
             total_bytes: Arc::new(AtomicU64::new(0)),

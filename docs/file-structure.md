@@ -56,9 +56,9 @@ The Tauri adapter layer connecting the OS, the UI, and the Rust backend.
 The binary crate — entry point and thin command wrappers.
 
 - `main.rs`: Barebones entry point calling `mrk_ragtag_app::run()`.
-- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; generation-tags local-model initialization so external mode releases stale local models and local mode rebuilds current settings; and routes local/external streaming through an `InferenceProvider` enum with one Channel-event forwarder.
-- `state.rs`: Defines `AppState`, the Tauri managed state holding the SQLite pool, document-work queue, late-initialized embedder, vector database, local MistralRS model, and shared HTTP client.
-- `model_download.rs`: `hf-hub` 1.0 model-download logic with resume support and a 3-attempt retry loop. Emits byte-level `model_download_progress` lifecycle events through its synchronous `ProgressHandler`.
+- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; generation-tags local-model initialization and coalesces rapid local-model configuration changes so stale downloads, builds, progress, errors, and readiness cannot publish; and routes local/external streaming through an `InferenceProvider` enum with one Channel-event forwarder.
+- `state.rs`: Defines `AppState`, the Tauri managed state holding the SQLite pool, document-work queue, late-initialized embedder, vector database, Arc-shared local MistralRS model, generation-tagged initialization state, and shared HTTP client.
+- `model_download.rs`: `hf-hub` 1.0 model-download logic with resume support and a 3-attempt retry loop. Emits byte-level `model_download_progress` lifecycle events through a caller-supplied generation-safe progress handler.
 
 ### `src-tauri/crates/` (Business Logic Workspace)
 

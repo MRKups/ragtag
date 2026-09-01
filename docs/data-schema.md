@@ -90,6 +90,9 @@ Example keys:
 - `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
 - `tokenizer_model`: Hugging Face tokenizer repository compatible with the local GGUF model. Default: `"Qwen/Qwen3-1.7B"`.
 - `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
+
+Changing `generation_model`, `tokenizer_model`, or `gguf_filename` while `inference_mode` is `"local"` immediately withdraws the loaded local model, emits `llm_unready`, and starts one generation-tagged initialization from the persisted settings. Rapid edits coalesce behind the active initialization, so an obsolete initializer cannot publish progress, readiness, errors, or a model and only the newest persisted configuration is subsequently initialized. While `"external"` is selected, those local settings are stored without downloading or building a local model; switching back to `"local"` uses the stored values.
+
 - `chunk_size`: Token count per embedding-safe chunk (default `"512"`, maximum `"2048"`).
 - `chunk_overlap`: Token overlap between chunks on the same page (default `"80"`).
 
