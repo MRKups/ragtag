@@ -3,5 +3,5 @@ pub mod events;
 pub mod models;
 
 pub use error::AppError;
-pub use events::{Citation, TokenEvent};
+pub use events::{Citation, IngestionProgress, TokenEvent};
 pub use models::{Document, DocumentStatus, IndexProvenance};

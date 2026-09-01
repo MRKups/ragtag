@@ -32,7 +32,6 @@ hf-hub = "1.0.0"
 futures-util = "0.3.34"
 log = "0.4.34"
 env_logger = "0.11.11"
-percent-encoding = "2.3.2"
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 mistralrs = { version = "=0.8.1", features = ["metal"] }

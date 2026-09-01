@@ -55,9 +55,39 @@ export interface AppErrorPayload {
   message: string;
 }
 
-export interface IngestionProgressEvent {
-  document_id: string;
-  stage: "extracting" | "chunking" | "embedding" | "storing";
-}
+
+export type IngestionProgress =
+  | {
+      type: "extraction";
+      document_id: string;
+      current_page: number;
+      total_pages: number;
+    }
+  | {
+      type: "chunking";
+      document_id: string;
+      current_page: number;
+      total_pages: number;
+      chunks_on_page: number;
+      total_chunks: number;
+    }
+  | {
+      type: "embedding";
+      document_id: string;
+      current_batch: number;
+      total_batches: number;
+      embedded_chunks: number;
+      total_chunks: number;
+    }
+  | {
+      type: "stored";
+      document_id: string;
+      chunk_count: number;
+    }
+  | {
+      type: "error";
+      document_id: string;
+      message: string;
+    };
 
 

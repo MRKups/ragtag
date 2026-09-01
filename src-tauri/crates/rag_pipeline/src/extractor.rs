@@ -1,15 +1,44 @@
 use domain::AppError;
 use std::path::Path;
 
-pub fn extract_pages(pdf_path: &Path) -> Result<Vec<(i32, String)>, AppError> {
-    let page_count = pdf_extract::Document::load(pdf_path)
-        .map_err(|e| AppError::Io(format!("PDF page enumeration failed: {e}")))?
-        .get_pages()
-        .len();
-    let pages = pdf_extract::extract_text_by_pages(pdf_path)
-        .map_err(|e| AppError::Io(format!("PDF extraction failed: {e}")))?;
+pub struct ExtractedPages {
+    pub pages: Vec<(i32, String)>,
+    pub total_pages: usize,
+}
 
-    pages_from_page_texts(pages, page_count)
+pub fn extract_pages(
+    pdf_path: &Path,
+    on_page_extracted: impl Fn(usize, usize),
+) -> Result<ExtractedPages, AppError> {
+    let mut document = pdf_extract::Document::load(pdf_path)
+        .map_err(|e| AppError::Io(format!("PDF page enumeration failed: {e}")))?;
+    if document.is_encrypted() {
+        document
+            .decrypt("")
+            .map_err(|e| AppError::Io(format!("PDF extraction failed: {e}")))?;
+    }
+
+    let total_pages = document.get_pages().len();
+    let mut page_texts = Vec::with_capacity(total_pages);
+    for page_index in 1..=total_pages {
+        let page_number = u32::try_from(page_index)
+            .map_err(|_| AppError::Io("PDF has more pages than this extractor supports".into()))?;
+        let mut text = String::new();
+        let extraction = {
+            let mut output = pdf_extract::PlainTextOutput::new(&mut text);
+            pdf_extract::output_doc_page(&document, &mut output, page_number)
+        };
+        if extraction.is_err() {
+            break;
+        }
+        on_page_extracted(page_index, total_pages);
+        page_texts.push(text);
+    }
+
+    Ok(ExtractedPages {
+        pages: pages_from_page_texts(page_texts, total_pages)?,
+        total_pages,
+    })
 }
 
 fn pages_from_page_texts(

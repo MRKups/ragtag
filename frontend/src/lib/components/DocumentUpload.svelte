@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Upload, FileText, CheckCircle, AlertCircle, X } from '@lucide/svelte';
   import { api } from '$lib/api';
+  import { documentProgressState } from '$lib/stores/document-progress.svelte';
 
   let { onUploadComplete }: { onUploadComplete?: () => void } = $props();
 
@@ -89,8 +90,8 @@
       if (files[i].status !== 'uploading') continue;
       
       try {
-        await api.uploadDocument(files[i].file);
-        files[i] = { ...files[i], status: 'success', errorMsg: 'Uploaded' };
+        await api.uploadDocument(files[i].file, (progress) => documentProgressState.record(progress));
+        files[i] = { ...files[i], status: 'success', errorMsg: 'Queued' };
         successCount++;
       } catch (e) {
         const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : 'Upload failed';

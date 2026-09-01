@@ -22,6 +22,16 @@ pub fn chunk_pages(
     overlap_tokens: usize,
     tokenizer: Tokenizer,
 ) -> Result<Vec<Chunk>, AppError> {
+    chunk_pages_with_progress(pages, max_tokens, overlap_tokens, tokenizer, |_, _, _| {})
+}
+
+pub fn chunk_pages_with_progress(
+    pages: Vec<(i32, String)>,
+    max_tokens: usize,
+    overlap_tokens: usize,
+    tokenizer: Tokenizer,
+    on_page_chunked: impl Fn(i32, usize, usize),
+) -> Result<Vec<Chunk>, AppError> {
     let mut tokenizer = tokenizer;
     tokenizer
         .with_truncation(None)
@@ -35,6 +45,7 @@ pub fn chunk_pages(
             continue;
         }
 
+        let chunks_before = chunks.len();
         append_page_chunks(
             &mut chunks,
             page,
@@ -43,6 +54,7 @@ pub fn chunk_pages(
             overlap_tokens,
             &tokenizer,
         )?;
+        on_page_chunked(page, chunks.len() - chunks_before, chunks.len());
     }
 
     Ok(chunks)
@@ -154,8 +166,9 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<usize, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::chunk_pages;
+    use super::{chunk_pages, chunk_pages_with_progress};
     use domain::AppError;
+    use std::cell::RefCell;
     use tokenizers::Tokenizer;
 
     fn tokenizer() -> Tokenizer {
@@ -221,6 +234,32 @@ mod tests {
                 .len()
                 <= MAX_TOKENS
         }));
+    }
+
+    #[test]
+    fn reports_actual_page_and_cumulative_chunk_totals() {
+        let progress = RefCell::new(Vec::new());
+        let chunks = chunk_pages_with_progress(
+            vec![(1, "one two".into()), (3, "three four".into())],
+            8,
+            0,
+            tokenizer(),
+            |page, chunks_on_page, total_chunks| {
+                progress
+                    .borrow_mut()
+                    .push((page, chunks_on_page, total_chunks));
+            },
+        )
+        .expect("token-safe chunks should be produced");
+        let progress = progress.into_inner();
+
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].0, 1);
+        assert_eq!(progress[0].1, 1);
+        assert_eq!(progress[0].2, 1);
+        assert_eq!(progress[1].0, 3);
+        assert_eq!(progress[1].1, 1);
+        assert_eq!(progress[1].2, chunks.len());
     }
 
     #[test]

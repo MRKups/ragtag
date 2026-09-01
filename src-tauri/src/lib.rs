@@ -1,8 +1,11 @@
 mod state;
-pub use state::AppState;
+pub use state::{AppState, IngestionJob};
 mod model_download;
 
-use domain::{AppError, Citation, Document, DocumentStatus, TokenEvent, models::IndexProvenance};
+use domain::{
+    AppError, Citation, Document, DocumentStatus, IngestionProgress, TokenEvent,
+    models::IndexProvenance,
+};
 use log::{debug, error, info, warn};
 use persistence::lancedb::RetrievalMode;
 use persistence::{AppSettingsRepository, DocumentRepository, VectorDb, init_pool};
@@ -51,37 +54,6 @@ fn validate_upload(filename: &str, bytes: &[u8]) -> Result<(), AppError> {
         return Err(AppError::InvalidInput("Upload is not a PDF".into()));
     }
     Ok(())
-}
-
-fn decode_upload_filename(encoded_filename: &str) -> Result<String, AppError> {
-    if !encoded_filename.is_ascii() {
-        return Err(AppError::InvalidInput(
-            "X-Filename must be percent-encoded UTF-8".into(),
-        ));
-    }
-
-    let bytes = encoded_filename.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            if index + 2 >= bytes.len()
-                || !bytes[index + 1].is_ascii_hexdigit()
-                || !bytes[index + 2].is_ascii_hexdigit()
-            {
-                return Err(AppError::InvalidInput(
-                    "X-Filename contains an invalid percent escape".into(),
-                ));
-            }
-            index += 3;
-        } else {
-            index += 1;
-        }
-    }
-
-    percent_encoding::percent_decode_str(encoded_filename)
-        .decode_utf8()
-        .map(|filename| filename.into_owned())
-        .map_err(|_| AppError::InvalidInput("X-Filename is not valid UTF-8".into()))
 }
 
 fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -573,6 +545,20 @@ async fn forward_inference_events(
     }
 }
 
+fn start_ingestion_progress_forwarder(
+    channel: tauri::ipc::Channel<IngestionProgress>,
+) -> mpsc::UnboundedSender<IngestionProgress> {
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    tauri::async_runtime::spawn(async move {
+        while let Some(progress) = receiver.recv().await {
+            if channel.send(progress).is_err() {
+                return;
+            }
+        }
+    });
+    sender
+}
+
 fn registry_read_retry_delay(attempt: u32) -> Duration {
     let multiplier = 1_u32 << attempt.saturating_sub(1).min(7);
     REGISTRY_READ_RETRY_BASE_DELAY
@@ -674,18 +660,18 @@ async fn desired_indexing_provenance(
 }
 
 fn enqueue_requeued_documents(
-    queue: mpsc::Sender<String>,
+    queue: mpsc::Sender<IngestionJob>,
     document_ids: Vec<String>,
 ) -> Result<(), AppError> {
     let mut remaining = document_ids.into_iter();
 
     while let Some(document_id) = remaining.next() {
-        match queue.try_send(document_id) {
+        match queue.try_send(IngestionJob::background(document_id)) {
             Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(document_id)) => {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(job)) => {
                 tauri::async_runtime::spawn(async move {
-                    for document_id in std::iter::once(document_id).chain(remaining) {
-                        if let Err(error) = queue.send(document_id).await {
+                    for job in std::iter::once(job).chain(remaining.map(IngestionJob::background)) {
+                        if let Err(error) = queue.send(job).await {
                             error!(
                                 "stale document reindex recovery producer stopped before enqueue: {error}"
                             );
@@ -1412,7 +1398,8 @@ async fn begin_first_run_init(
 
                     let recovered_count = recovered_ids.len();
                     for id in recovered_ids {
-                        if let Err(e) = embedder_job_queue.send(id).await {
+                        if let Err(e) = embedder_job_queue.send(IngestionJob::background(id)).await
+                        {
                             error!(
                                 "startup recovery — document worker stopped before recovery completed: {e}"
                             );
@@ -1488,22 +1475,10 @@ async fn retry_local_model_initialization(
 #[tauri::command]
 async fn upload_document(
     app: tauri::AppHandle,
-    request: tauri::ipc::Request<'_>,
+    filename: String,
+    file_bytes: Vec<u8>,
+    channel: tauri::ipc::Channel<IngestionProgress>,
 ) -> Result<String, AppError> {
-    let encoded_filename = request
-        .headers()
-        .get("x-filename")
-        .ok_or_else(|| AppError::InvalidInput("Missing X-Filename header".into()))?
-        .to_str()
-        .map_err(|_| AppError::InvalidInput("X-Filename must be percent-encoded UTF-8".into()))?;
-    let filename = decode_upload_filename(encoded_filename)?;
-    let file_bytes = match request.body() {
-        tauri::ipc::InvokeBody::Raw(b) => b.clone(),
-        tauri::ipc::InvokeBody::Json(_) => {
-            return Err(AppError::Io("Expected raw binary body".into()));
-        }
-    };
-
     validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
     let repo = DocumentRepository::new(state.db_pool.clone());
@@ -1566,7 +1541,14 @@ async fn upload_document(
         return Err(e);
     }
 
-    if state.job_queue.try_send(doc_id.clone()).is_err() {
+    if state
+        .job_queue
+        .try_send(IngestionJob {
+            document_id: doc_id.clone(),
+            progress_channel: Some(channel),
+        })
+        .is_err()
+    {
         if let Err(cleanup_error) = repo.delete_by_id(&doc_id).await {
             warn!(
                 "queue-full upload rollback could not delete document {doc_id}; scheduling durable enqueue: {cleanup_error}"
@@ -1574,7 +1556,10 @@ async fn upload_document(
             let queue = state.job_queue.clone();
             let queued_document_id = doc_id.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(send_error) = queue.send(queued_document_id).await {
+                if let Err(send_error) = queue
+                    .send(IngestionJob::background(queued_document_id))
+                    .await
+                {
                     error!("queue-full upload recovery producer stopped: {send_error}");
                 }
             });
@@ -2187,7 +2172,7 @@ pub fn run() {
             let embedder: Arc<tokio::sync::RwLock<Option<Arc<std::sync::Mutex<fastembed::TextEmbedding>>>>> =
                 Arc::new(tokio::sync::RwLock::new(None));
 
-            let (tx, mut rx) = mpsc::channel::<String>(32);
+            let (tx, mut rx) = mpsc::channel::<IngestionJob>(32);
 
             let lancedb_dir = app_local_data.join(".lancedb");
             let vector_db = tauri::async_runtime::block_on(VectorDb::init(&lancedb_dir))
@@ -2236,7 +2221,19 @@ pub fn run() {
             let registry_read_retries_worker = registry_read_retries;
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
-                while let Some(doc_id) = rx.recv().await {
+                while let Some(job) = rx.recv().await {
+                    let IngestionJob {
+                        document_id: doc_id,
+                        progress_channel,
+                    } = job;
+                    let retry_progress_channel = progress_channel.clone();
+                    let progress_callback: Arc<dyn Fn(IngestionProgress) + Send + Sync> =
+                        match progress_channel.map(start_ingestion_progress_forwarder) {
+                            Some(sender) => Arc::new(move |progress| {
+                                let _ = sender.send(progress);
+                            }),
+                            None => Arc::new(|_| {}),
+                        };
                     info!("processing document {doc_id}");
 
                     let embedder = {
@@ -2250,7 +2247,6 @@ pub fn run() {
 
                     let _document_operation = document_operations_worker.read().await;
 
-
                     let result = match repo.get_by_id(&doc_id).await {
                         Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
                             registry_read_retries_worker.lock().await.remove(&doc_id);
@@ -2258,8 +2254,8 @@ pub fn run() {
                             match desired_indexing_provenance(&settings_repo).await {
                                 Ok(provenance) => {
                                     let pdf_path = docs_dir.join(&doc.storage_path);
-                                    let app_for_progress = app_handle.clone();
-                                    let doc_id_for_progress = doc_id.clone();
+                                    let app_for_stage = app_handle.clone();
+                                    let doc_id_for_stage = doc_id.clone();
                                     rag_pipeline::process_document(
                                         &pdf_path,
                                         &doc_id,
@@ -2268,11 +2264,12 @@ pub fn run() {
                                         &repo,
                                         &vector_db,
                                         move |stage| {
-                                            let _ = app_for_progress.emit("ingestion_progress", serde_json::json!({
-                                                "document_id": &doc_id_for_progress,
+                                            let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
+                                                "document_id": &doc_id_for_stage,
                                                 "stage": stage,
                                             }));
                                         },
+                                        Arc::clone(&progress_callback),
                                     )
                                     .await
                                 }
@@ -2307,7 +2304,13 @@ pub fn run() {
                             let retry_document_id = doc_id.clone();
                             tauri::async_runtime::spawn(async move {
                                 tokio::time::sleep(delay).await;
-                                if let Err(error) = queue.send(retry_document_id).await {
+                                if let Err(error) = queue
+                                    .send(IngestionJob {
+                                        document_id: retry_document_id,
+                                        progress_channel: retry_progress_channel,
+                                    })
+                                    .await
+                                {
                                     error!("registry read retry producer stopped: {error}");
                                 }
                             });
@@ -2323,12 +2326,17 @@ pub fn run() {
                                 "status": "indexed",
                             }));
                         }
-                        Err(e) => {
-                            error!("document {doc_id} processing failed: {e}");
-                            let _ = repo.mark_failed(&doc_id, &e.to_string()).await;
+                        Err(error) => {
+                            let message = error.to_string();
+                            error!("document {doc_id} processing failed: {message}");
+                            let _ = repo.mark_failed(&doc_id, &message).await;
+                            progress_callback(IngestionProgress::Error {
+                                document_id: doc_id.clone(),
+                                message: message.clone(),
+                            });
                             let _ = app_handle.emit("document_failed", serde_json::json!({
                                 "document_id": &doc_id,
-                                "error": e.to_string(),
+                                "error": message,
                             }));
                         }
                     }
@@ -2362,11 +2370,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExternalInferenceConfig, ExternalModelsResponse, decode_upload_filename,
-        enqueue_requeued_documents, external_model_is_available, finish_llm_initialization,
-        invalidate_llm_initialization, llm_initialization_is_current, normalize_external_base_url,
-        registry_read_retry_delay, remove_non_fastembed_models, require_retrieved_citations,
-        sse_event_boundary, sse_event_data, validate_setting, validate_upload,
+        ExternalInferenceConfig, ExternalModelsResponse, IngestionJob, enqueue_requeued_documents,
+        external_model_is_available, finish_llm_initialization, invalidate_llm_initialization,
+        llm_initialization_is_current, normalize_external_base_url, registry_read_retry_delay,
+        remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
+        sse_event_data, validate_setting, validate_upload,
     };
     use domain::AppError;
     use std::{sync::Arc, time::Duration};
@@ -2444,6 +2452,10 @@ mod tests {
     }
 
     #[test]
+    fn accepts_utf8_pdf_filename_in_typed_upload() {
+        assert!(validate_upload("操作说明.pdf", b"%PDF-").is_ok());
+    }
+    #[test]
     fn removes_non_fastembed_model_entries() {
         let models_dir =
             std::env::temp_dir().join(format!("ragtag-model-cleanup-{}", uuid::Uuid::now_v7()));
@@ -2462,16 +2474,6 @@ mod tests {
     }
 
     #[test]
-    fn decodes_percent_encoded_utf8_filename_strictly() {
-        assert_eq!(
-            decode_upload_filename("%E6%93%8D%E4%BD%9C%E8%AF%B4%E6%98%8E.pdf").unwrap(),
-            "操作说明.pdf",
-        );
-        assert!(decode_upload_filename("report%2.pdf").is_err());
-        assert!(decode_upload_filename("%FF.pdf").is_err());
-    }
-
-    #[test]
     fn accepts_pdf_signature_in_short_payload() {
         assert!(validate_upload("minimal.pdf", b"%PDF-").is_ok());
     }
@@ -2479,7 +2481,9 @@ mod tests {
     #[tokio::test]
     async fn reindex_queue_overflow_returns_without_blocking_and_recovers_in_background() {
         let (queue, mut receiver) = mpsc::channel(1);
-        queue.try_send("already-queued".to_string()).unwrap();
+        queue
+            .try_send(IngestionJob::background("already-queued".to_string()))
+            .unwrap();
 
         let error = enqueue_requeued_documents(
             queue.clone(),
@@ -2487,11 +2491,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, AppError::QueueFull));
-        assert_eq!(receiver.recv().await.as_deref(), Some("already-queued"));
+        assert_eq!(
+            receiver.recv().await.map(|job| job.document_id).as_deref(),
+            Some("already-queued")
+        );
         assert_eq!(
             timeout(Duration::from_secs(1), receiver.recv())
                 .await
                 .unwrap()
+                .map(|job| job.document_id)
                 .as_deref(),
             Some("first-stale")
         );
@@ -2499,6 +2507,7 @@ mod tests {
             timeout(Duration::from_secs(1), receiver.recv())
                 .await
                 .unwrap()
+                .map(|job| job.document_id)
                 .as_deref(),
             Some("second-stale")
         );

@@ -1,3 +1,4 @@
+use domain::IngestionProgress;
 use fastembed::TextEmbedding;
 use persistence::VectorDb;
 use sqlx::SqlitePool;
@@ -13,9 +14,23 @@ pub struct LlmInitializationState {
     pub restart_requested: bool,
 }
 
+pub struct IngestionJob {
+    pub document_id: String,
+    pub progress_channel: Option<tauri::ipc::Channel<IngestionProgress>>,
+}
+
+impl IngestionJob {
+    pub fn background(document_id: String) -> Self {
+        Self {
+            document_id,
+            progress_channel: None,
+        }
+    }
+}
+
 pub struct AppState {
     pub db_pool: SqlitePool,
-    pub job_queue: Sender<String>,
+    pub job_queue: Sender<IngestionJob>,
     pub embedder: Arc<RwLock<Option<Arc<StdMutex<TextEmbedding>>>>>,
     pub vector_db: Arc<VectorDb>,
     pub local_llm: Arc<RwLock<Option<Arc<mistralrs::Model>>>>,

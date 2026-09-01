@@ -80,13 +80,15 @@ While tools like `pdfium-render` (wrapping Google's C++ Pdfium) offer superior l
 
 **Rationale:** Each chunk is split and then counted using the active EmbeddingGemma tokenizer with the `passage: ` prefix and special tokens included. This makes the configured size a real embedding bound rather than a character estimate. The effective overlap is capped at half of each token window to prevent pathological near-duplicates. Every successful index records its extraction version and exact chunk pair in SQLite. Changing either setting validates the final pair, atomically requeues indexed documents whose provenance is stale, and preserves their old provenance until replacement vectors are stored successfully.
 
-## 10. Streaming AI Responses
+## 10. Request-Scoped Streaming
 
-**Decision:** The application streams tokens from the LLM back to the frontend using Tauri v2 Channels (`Channel<TokenEvent>`).
+**Decision:** The application uses Tauri v2 Channels for both LLM responses (`Channel<TokenEvent>`) and document-ingestion progress (`Channel<IngestionProgress>`). Application events remain limited to lifecycle/readiness compatibility signals.
 
 **Rationale:**
-- Channels offer ordered delivery and backpressure compared to the older global `app.emit` event system, ensuring the UI does not hang or drop tokens during rapid text generation.
-- `mistral.rs` exposes `model.stream_chat_request(...)` as `Response::Chunk` deltas, which map to `TokenEvent::Token`. External SSE stream failures and local model stream errors are emitted as `TokenEvent::Error`; failures before a stream starts reject the IPC command.
+- Channels preserve ordered, request-scoped delivery where simultaneous work must not race in global listeners. Each document UI update is keyed by its document ID.
+- Ingestion creates a channel-bearing queue job only for the originating upload. The worker pushes completed progress records through a separate unbounded bridge, so Tauri-channel delivery never blocks extraction, chunking, embedding, or storage. Startup/recovery jobs run without a UI channel.
+- Progress values describe completed work, not estimates: a physical PDF page is reported after extraction, a nonblank page after chunking, an embedding batch after the model returns it, and `stored` only after vector and registry writes succeed.
+- `mistral.rs` exposes `model.stream_chat_request(...)` as `Response::Chunk` deltas, which map to `TokenEvent::Token`. External SSE stream failures and local model stream errors are emitted as `TokenEvent::Error`; failures before a stream starts reject the `execute_query` IPC command.
 
 ## 11. Model File Sourcing
 

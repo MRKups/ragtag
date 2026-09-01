@@ -1,23 +1,23 @@
 import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AppErrorPayload, Document, TokenEvent } from './types';
+import type { AppErrorPayload, Document, IngestionProgress, TokenEvent } from './types';
 
 export const api = {
   beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
   retryLocalModelInitialization: () => invoke<void>('retry_local_model_initialization'),
   
-  uploadDocument: async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
-    
-    return invoke<string>('upload_document', bytes, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'X-Filename': encodeURIComponent(file.name),
-      }
-    });
+  uploadDocument: (file: File, onProgress: (progress: IngestionProgress) => void): Promise<string> => {
+    const channel = new Channel<IngestionProgress>();
+    channel.onmessage = onProgress;
+
+    return file.arrayBuffer().then((buffer) =>
+      invoke<string>('upload_document', {
+        filename: file.name,
+        fileBytes: new Uint8Array(buffer),
+        channel,
+      })
+    );
   },
-  
   executeQuery: (query: string, requestId: string, onEvent: (e: TokenEvent) => void): Promise<void> => {
     const channel = new Channel<TokenEvent>();
     channel.onmessage = (event) => onEvent(event);

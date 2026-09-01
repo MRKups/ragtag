@@ -41,17 +41,17 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 
 ### Document Upload & Processing
 1. User drops a PDF into the Svelte UI.
-2. Svelte percent-encodes the UTF-8 filename in the ASCII `X-Filename` IPC header and sends the raw file bytes; Rust decodes and validates it before persistence.
-3. Rust saves the file to the OS's specific App Data directory.
-4. Rust inserts a `queued` row into SQLite and emits a job down the `tokio` channel.
-5. Svelte receives the new document ID and listens for `ingestion_progress` stage events plus terminal document events.
-6. A background `tokio` task consumes the job:
-   - Extracts text using the `pdf-extract` crate, then verifies that its per-page result count matches the physical PDF page count before blank pages are filtered. A partial page-extraction result fails indexing rather than silently losing citation pages.
-   - Chunks text.
-   - Generates embeddings locally using `fastembed`.
-   - **Write Order Discipline:** After the vector upsert succeeds, SQLite marks the row `indexed` and records the extraction version, chunk size, and chunk overlap that produced those vectors. A failed replacement can therefore leave a failed document without vectors until a retry, rather than an indexed document with missing vectors.
-
-7. Rust emits a `document_indexed` Tauri Event back to Svelte to update the UI instantly.
+2. Svelte creates a request-scoped Tauri v2 `Channel<IngestionProgress>` and submits a typed upload request with the UTF-8 filename and raw file bytes.
+3. Rust validates the filename and PDF signature, saves the file to the OS's specific App Data directory, and inserts a `queued` row into SQLite.
+4. Rust enqueues an in-memory job containing the document ID and, for this upload, its progress channel.
+5. A background `tokio` task consumes the job and bridges its non-blocking pipeline updates to the request channel. The Document UI stores those ordered updates by document ID, so simultaneous uploads cannot overwrite or reorder each other's progress.
+6. The worker:
+   - Emits extraction progress after each physical PDF page is extracted, including blank pages.
+   - Emits chunking progress after each nonblank page has been tokenized, with the actual per-page and cumulative chunk totals.
+   - Emits embedding progress after each completed 32-chunk model batch, with actual completed and total batches/chunks.
+   - Emits `stored` only after vector replacement and the SQLite indexed/provenance update both succeed.
+   - Continues to emit the `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`) for lifecycle compatibility; they are not the ordered UI progress path.
+7. Rust emits a `document_indexed` Tauri Event back to Svelte to refresh durable document metadata instantly.
 
 ### Document Deletion
 

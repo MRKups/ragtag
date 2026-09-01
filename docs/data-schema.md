@@ -104,7 +104,7 @@ The Settings UI keeps local and external configuration independent. Its header r
 
 ## IPC Data Types
 
-These types define the shape of data sent from Rust to the frontend, specifically for the LLM streaming responses via Tauri v2 Channels.
+These types define the shapes sent from Rust to the frontend through request-scoped Tauri v2 Channels.
 
 ```rust
 // In crates/domain/src/events.rs
@@ -128,8 +128,32 @@ pub struct Citation {
     pub is_hybrid:   bool,
 }
 
+
+#[derive(serde::Serialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum IngestionProgress {
+    Extraction { document_id: String, current_page: usize, total_pages: usize },
+    Chunking {
+        document_id: String,
+        current_page: i32,
+        total_pages: usize,
+        chunks_on_page: usize,
+        total_chunks: usize,
+    },
+    Embedding {
+        document_id: String,
+        current_batch: usize,
+        total_batches: usize,
+        embedded_chunks: usize,
+        total_chunks: usize,
+    },
+    Stored { document_id: String, chunk_count: usize },
+    Error { document_id: String, message: String },
+}
 ```
 
 `Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
 
 `TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—including no usable retrieved excerpts, retrieval failures, or an external request/status error—reject the `execute_query` IPC command instead.
+
+`upload_document` accepts a typed `{ filename, fileBytes, channel }` envelope rather than a raw request, because the upload payload and its `Channel<IngestionProgress>` must share one IPC invocation. Each uploaded document keeps its own channel through the queue worker. Progress notifications are emitted only after the represented work completes: every physical page extraction, each nonblank page's token chunking, each completed 32-item embedding batch, and durable storage. There are intentionally no intra-page, intra-chunk, or intra-batch estimates because the underlying operations do not expose truthful finer callbacks. The worker places notifications on an unbounded bridge before a separate forwarder calls the Tauri channel, so slow UI delivery never awaits within PDF extraction, chunking, embedding, or storage. Existing `ingestion_progress` application events remain stage-only lifecycle compatibility broadcasts and are not an ordered data stream.

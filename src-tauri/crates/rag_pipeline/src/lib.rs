@@ -2,7 +2,7 @@ pub mod chunker;
 pub mod extractor;
 
 use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
-use domain::{AppError, models::IndexProvenance};
+use domain::{AppError, IngestionProgress, models::IndexProvenance};
 use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
 use persistence::{DocumentRepository, VectorDb};
 use std::path::Path;
@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub use chunker::Chunk;
 
 const EMBEDDING_MAX_TOKENS: usize = 2_048;
+
+const EMBEDDING_BATCH_SIZE: usize = 32;
 
 pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
     std::fs::create_dir_all(cache_dir)?;
@@ -29,17 +31,28 @@ pub async fn process_document(
     embedder: Arc<std::sync::Mutex<TextEmbedding>>,
     repo: &DocumentRepository,
     vector_db: &VectorDb,
-    on_progress: impl Fn(&str) + Send + Sync + 'static,
+    on_stage: impl Fn(&str) + Send + Sync + 'static,
+    on_progress: Arc<dyn Fn(IngestionProgress) + Send + Sync>,
 ) -> Result<(), AppError> {
     repo.mark_embedding(document_id).await?;
 
-    on_progress("extracting");
+    on_stage("extracting");
     let pdf_path = pdf_path.to_path_buf();
-    let pages = tokio::task::spawn_blocking(move || extractor::extract_pages(&pdf_path))
-        .await
-        .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
+    let extraction_progress = Arc::clone(&on_progress);
+    let extraction_document_id = document_id.to_string();
+    let extracted_pages = tokio::task::spawn_blocking(move || {
+        extractor::extract_pages(&pdf_path, move |current_page, total_pages| {
+            extraction_progress(IngestionProgress::Extraction {
+                document_id: extraction_document_id.clone(),
+                current_page,
+                total_pages,
+            });
+        })
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
 
-    on_progress("chunking");
+    on_stage("chunking");
     let (tokenizer, embedding_token_limit) = {
         let model = embedder
             .lock()
@@ -63,12 +76,24 @@ pub async fn process_document(
         ));
     }
 
+    let chunking_progress = Arc::clone(&on_progress);
+    let chunking_document_id = document_id.to_string();
+    let total_pages = extracted_pages.total_pages;
     let chunks = tokio::task::spawn_blocking(move || {
-        let chunks = chunker::chunk_pages(
-            pages,
+        let chunks = chunker::chunk_pages_with_progress(
+            extracted_pages.pages,
             embedding_token_limit.min(chunk_size),
             chunk_overlap,
             tokenizer,
+            move |current_page, chunks_on_page, total_chunks| {
+                chunking_progress(IngestionProgress::Chunking {
+                    document_id: chunking_document_id.clone(),
+                    current_page,
+                    total_pages,
+                    chunks_on_page,
+                    total_chunks,
+                });
+            },
         )?;
         if chunks.is_empty() {
             return Err(AppError::Internal("No text chunks produced".into()));
@@ -78,24 +103,38 @@ pub async fn process_document(
     .await
     .map_err(|e| AppError::Internal(format!("Chunking task panicked: {e}")))??;
 
-    on_progress("embedding");
-
+    on_stage("embedding");
     let (chunks, embeddings) = {
         let embedder = Arc::clone(&embedder);
+        let embedding_progress = Arc::clone(&on_progress);
+        let embedding_document_id = document_id.to_string();
         tokio::task::spawn_blocking(move || {
             let mut model = embedder
                 .lock()
                 .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
-            let texts = chunks
-                .iter()
-                .map(|chunk| format!("passage: {}", chunk.content))
-                .collect::<Vec<_>>();
-            let embeddings = model
-                .embed(
-                    texts.iter().map(String::as_str).collect::<Vec<_>>(),
-                    Some(32),
-                )
-                .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?;
+            let total_chunks = chunks.len();
+            let total_batches = embedding_batch_count(total_chunks);
+            let mut embeddings = Vec::with_capacity(total_chunks);
+
+            for (batch_index, chunk_batch) in chunks.chunks(EMBEDDING_BATCH_SIZE).enumerate() {
+                let texts = chunk_batch
+                    .iter()
+                    .map(|chunk| format!("passage: {}", chunk.content))
+                    .collect::<Vec<_>>();
+                embeddings.extend(
+                    model
+                        .embed(texts, Some(EMBEDDING_BATCH_SIZE))
+                        .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?,
+                );
+                embedding_progress(IngestionProgress::Embedding {
+                    document_id: embedding_document_id.clone(),
+                    current_batch: batch_index + 1,
+                    total_batches,
+                    embedded_chunks: embeddings.len(),
+                    total_chunks,
+                });
+            }
+
             Ok::<_, AppError>((chunks, embeddings))
         })
         .await
@@ -104,7 +143,7 @@ pub async fn process_document(
 
     let batch = build_record_batch(document_id, &chunks, &embeddings)?;
 
-    on_progress("storing");
+    on_stage("storing");
     vector_db.delete_chunks(document_id).await?;
     vector_db.upsert_chunks(std::iter::once(batch)).await?;
 
@@ -115,8 +154,15 @@ pub async fn process_document(
         &provenance,
     )
     .await?;
+    on_progress(IngestionProgress::Stored {
+        document_id: document_id.to_string(),
+        chunk_count: chunks.len(),
+    });
 
     Ok(())
+}
+fn embedding_batch_count(total_chunks: usize) -> usize {
+    total_chunks.div_ceil(EMBEDDING_BATCH_SIZE)
 }
 
 fn build_record_batch(
@@ -218,7 +264,7 @@ pub fn enhance_query(query: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::enhance_query;
+    use super::{embedding_batch_count, enhance_query};
 
     #[test]
     fn adds_unique_technical_expansions() {
@@ -231,6 +277,13 @@ mod tests {
     #[test]
     fn preserves_queries_without_known_abbreviations() {
         assert_eq!(enhance_query("installation guide"), "installation guide");
+    }
+
+    #[test]
+    fn calculates_embedding_progress_batches_from_actual_chunk_totals() {
+        assert_eq!(embedding_batch_count(1), 1);
+        assert_eq!(embedding_batch_count(32), 1);
+        assert_eq!(embedding_batch_count(33), 2);
     }
 }
 

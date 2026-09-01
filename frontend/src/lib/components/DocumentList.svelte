@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { FileText, RefreshCw, AlertCircle, Trash2, CheckCircle, Clock, XCircle, Loader2 } from '@lucide/svelte';
   import { api } from '$lib/api';
-  import type { Document, IngestionProgressEvent } from '$lib/types';
+  import type { Document } from '$lib/types';
+  import { documentProgressState } from '$lib/stores/document-progress.svelte';
 
   let documents: Document[] = $state([]);
   let isLoading = $state(false);
@@ -12,7 +13,6 @@
   let pollTimeout: ReturnType<typeof setTimeout>;
   let unlistenFns: Array<() => void> = [];
   let fetchPromise: Promise<void> | null = null;
-  let documentStageMap = new Map<string, string>();
 
   export async function refresh() {
     await fetchDocuments();
@@ -91,18 +91,21 @@
     await fetchDocuments();
 
     try {
-      const [unlistenIndexed, unlistenFailed, unlistenDeleted, unlistenProgress] = await Promise.all([
+      const [unlistenIndexed, unlistenFailed, unlistenDeleted] = await Promise.all([
         api.listen<{ document_id: string }>('document_indexed', (event) => {
-          documentStageMap.delete(event.payload.document_id);
+          documentProgressState.remove(event.payload.document_id);
           void fetchDocuments(true);
         }),
-        api.listen('document_failed', () => void fetchDocuments(true)),
-        api.listen('document_deleted', () => void fetchDocuments(true)),
-        api.listen<IngestionProgressEvent>('ingestion_progress', (event) => {
-          documentStageMap.set(event.payload.document_id, event.payload.stage);
+        api.listen<{ document_id: string }>('document_failed', (event) => {
+          documentProgressState.remove(event.payload.document_id);
+          void fetchDocuments(true);
+        }),
+        api.listen<{ document_id: string }>('document_deleted', (event) => {
+          documentProgressState.remove(event.payload.document_id);
+          void fetchDocuments(true);
         }),
       ]);
-      unlistenFns = [unlistenIndexed, unlistenFailed, unlistenDeleted, unlistenProgress];
+      unlistenFns = [unlistenIndexed, unlistenFailed, unlistenDeleted];
     } catch (err) {
       console.error('Failed to register document event listeners:', err);
     }
@@ -167,6 +170,7 @@
     {:else}
       <ul class="document-list">
         {#each documents as doc (doc.id)}
+          {@const progress = documentProgressState.get(doc.id)}
           <li class="document-item">
             <span class="doc-icon-wrapper">
               <FileText size={16} />
@@ -186,8 +190,16 @@
                   <Clock size={12} />
                 {/if}
                 {doc.status}
-                {#if documentStageMap.get(doc.id)}
-                  <span class="doc-stage">({documentStageMap.get(doc.id)})</span>
+                {#if progress?.type === 'extraction'}
+                  <span class="doc-stage">(extracting page {progress.current_page}/{progress.total_pages})</span>
+                {:else if progress?.type === 'chunking'}
+                  <span class="doc-stage">(chunking page {progress.current_page}/{progress.total_pages}: {progress.chunks_on_page} chunks, {progress.total_chunks} total)</span>
+                {:else if progress?.type === 'embedding'}
+                  <span class="doc-stage">(embedding batch {progress.current_batch}/{progress.total_batches}: {progress.embedded_chunks}/{progress.total_chunks} chunks)</span>
+                {:else if progress?.type === 'stored'}
+                  <span class="doc-stage">(stored {progress.chunk_count} chunks)</span>
+                {:else if progress?.type === 'error'}
+                  <span class="doc-stage">(failed: {progress.message})</span>
                 {/if}
               </span>
               {#if doc.status === 'failed' && doc.error_message}

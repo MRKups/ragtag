@@ -29,8 +29,8 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
   - `SettingsPage.svelte`: Application configuration.
 - `src/lib/`:
   - `index.ts`: Barrel re-export entry for the `$lib` path alias.
-  - `api.ts`: Typed wrappers around Tauri `invoke` commands.
-  - `types.ts`: TypeScript interfaces mirroring Rust models.
+  - `api.ts`: Typed wrappers around Tauri `invoke` commands; the typed document-upload envelope owns its request-scoped `Channel<IngestionProgress>`.
+  - `types.ts`: TypeScript interfaces mirroring Rust models, lifecycle events, and the typed ingestion progress union.
   - `pdf-init.ts`: pdf.js worker initialization.
   - `router.svelte.ts`: Hash-based micro-router using Svelte 5 `$state` runes. Routes: `query`, `documents`, `settings`.
   - `assets/`: Static assets bundled by Vite (e.g., `favicon.svg`).
@@ -38,6 +38,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `app-state.svelte.ts` — exports `AppState` and the `appState` singleton; tracks staged embedder/model readiness and model-load status.
     - `query.svelte.ts` — exports `QueryState` and the `queryState` singleton.
     - `settings.svelte.ts` — exports `SettingsState`, the `settingsState` singleton, and the shared local-inference defaults.
+    - `document-progress.svelte.ts` — exports the route-independent `DocumentProgressState` singleton that immutably stores the latest request-scoped progress per document ID.
   - `components/`: Reusable UI components — `AppInitializer`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `SettingsTab` presents local and remote inference cards as an accessible radio group; its header reports the active inference route, while each card opens an independent configuration modal.
 - `static/`: Static frontend assets.
 
@@ -56,8 +57,8 @@ The Tauri adapter layer connecting the OS, the UI, and the Rust backend.
 The binary crate — entry point and thin command wrappers.
 
 - `main.rs`: Barebones entry point calling `mrk_ragtag_app::run()`.
-- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; generation-tags local-model initialization and coalesces rapid local-model configuration changes so stale downloads, builds, progress, errors, and readiness cannot publish; and routes local/external streaming through an `InferenceProvider` enum with one Channel-event forwarder.
-- `state.rs`: Defines `AppState`, the Tauri managed state holding the SQLite pool, document-work queue, late-initialized embedder, vector database, Arc-shared local MistralRS model, generation-tagged initialization state, and shared HTTP client.
+- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; generation-tags local-model initialization and coalesces rapid local-model configuration changes so stale downloads, builds, progress, errors, and readiness cannot publish; routes local/external inference through one Channel-event forwarder; and bridges channel-bearing document queue jobs to non-blocking ingestion-progress forwarders while retaining lifecycle events.
+- `state.rs`: Defines `AppState` and `IngestionJob`; managed state holds the SQLite pool, document-work queue, late-initialized embedder, vector database, Arc-shared local MistralRS model, generation-tagged initialization state, and shared HTTP client.
 - `model_download.rs`: `hf-hub` 1.0 model-download logic with resume support and a 3-attempt retry loop. Emits byte-level `model_download_progress` lifecycle events through a caller-supplied generation-safe progress handler.
 
 ### `src-tauri/crates/` (Business Logic Workspace)
@@ -72,7 +73,7 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 - `src/lib.rs`: Re-exports all public types.
 - `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, successful-index provenance, error tracking), `IndexProvenance` (extraction version, chunk size, chunk overlap), and `DocumentStatus` enum (`Queued | Embedding | Indexed | Deleting | Failed`).
 - `src/error.rs`: `AppError` enum with variants `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`. Includes manual `Serialize` impl for Tauri IPC (structured `{ kind, message }`). `From<std::io::Error>` impl for `?` convenience.
-- `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`) and `Citation` struct — both derive `Serialize` + `Deserialize` for Tauri event streaming channels. `Citation::is_hybrid` prevents RRF rank from being presented as calibrated confidence.
+- `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`), `IngestionProgress` (`Extraction | Chunking | Embedding | Stored | Error`), and `Citation` — all derive `Serialize` + `Deserialize` for Tauri channels. `Citation::is_hybrid` prevents RRF rank from being presented as calibrated confidence.
 
 #### `crates/persistence/` — Data Layer
 
@@ -101,6 +102,6 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
 End-to-end document ingestion logic. Depends on `domain`, `persistence`, `pdf-extract`, `fastembed`, `arrow-array`, `arrow-schema`, `tokio`.
 
 - `Cargo.toml`: Dependencies for PDF extraction (`pdf-extract 0.12`), embeddings (`fastembed 6.0.2` backed by ONNX Runtime), tokenizer-boundary chunking (`tokenizers`), and the matching Arrow `58.4` API family.
-- `src/lib.rs`: Re-exports `Chunk`. `init_embedder(cache_dir)` configures EmbeddingGemma with its 2,048-token limit. `process_document` receives typed `IndexProvenance`, verifies complete page extraction, splits raw display/prompt text at the active tokenizer's boundaries, prefixes only embedding inputs with `"passage: "`, writes vectors before SQLite `indexed` plus provenance, and propagates typed failures.
+- `src/lib.rs`: Re-exports `Chunk`. `init_embedder(cache_dir)` configures EmbeddingGemma with its 2,048-token limit. `process_document` receives typed `IndexProvenance`, a lifecycle-stage callback, and a typed progress callback; it reports completed physical-page extraction, per-nonblank-page chunk totals, completed 32-item embedding batches, and durable storage only after the SQLite indexed/provenance update. It verifies complete extraction, prefixes only embedding inputs with `"passage: "`, writes vectors before SQLite `indexed` plus provenance, and propagates typed failures.
 - `src/extractor.rs`: PDF text extraction verifies `pdf-extract` returns exactly the physical page count before filtering blank pages, preserving page numbers and rejecting partial output.
 - `src/chunker.rs`: Tokenizer-boundary chunker counts each temporary `"passage: "` embedding input with special tokens and keeps stored `Chunk { page, chunk_index, content }` raw for citations and prompts.
