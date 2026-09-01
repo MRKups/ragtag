@@ -24,7 +24,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
 - `src/main.ts`: Entry point — mounts `App.svelte` into `#app`.
 - `src/App.svelte`: Root app shell with a compact, draggable macOS-overlay titlebar, header nav, `AppInitializer` boot gate, hash-based page routing via `{#key}` blocks, and CSS View Transitions.
 - `src/pages/`:
-  - `QueryPage.svelte`: Query interface with streaming chat (left) and PDF viewer panel (right).
+  - `QueryPage.svelte`: Query interface with streaming chat (left) and PDF viewer panel (right). Its keyed route lifecycle never cancels or resets the singleton query state, so active and completed answers survive hash-route navigation; the user-visible Cancel control remains the sole cancellation path.
   - `DocumentsPage.svelte`: Document management — upload (left) and list (right).
   - `SettingsPage.svelte`: Application configuration.
 - `src/lib/`:

@@ -12,7 +12,6 @@
 > **F10 reconciliation (2026-08-31):** B112, B121, B132, B133, B134, and B137 remain active follow-ups. `docs/review-2026-08-31.md` records completed remediation of the earlier confirmed findings, not completion of these six broader contracts.
 
 - [ ] B52: Consolidate local `mistralrs` and external `reqwest` streaming behind a shared inference abstraction. They share retrieval, prompt construction, and citation assembly today, but `execute_query` still contains separate local and external stream loops rather than the claimed trait/enum dispatch.
-- [ ] B107: Verify chat streaming survives page navigation (SPA state persistence).
 - [ ] B112: Restore a recoverable local-model download failure path. A download error emits `model_download_progress` with an error and does not emit `llm_ready`; once the embedder is ready the Settings UI remains available, but query stays disabled and changing settings does not restart initialization.
 - [ ] B121: Provide a recoverable local-model build failure path. A `GgufModelBuilder` error emits `model_download_progress` with an error and does not emit `llm_ready`; the query UI remains unavailable until initialization is retried.
 - [ ] B132: Strengthen page-aware reindex accounting. A global `extraction_version` mismatch requeues every indexed document after the embedder becomes ready, but no extraction version is stored with individual documents or vector rows, so the application cannot show or verify per-document migration completion.

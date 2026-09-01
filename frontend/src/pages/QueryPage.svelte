@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
   import QueryInput from '$lib/components/QueryInput.svelte';
   import QueryResult from '$lib/components/QueryResult.svelte';
   import DocumentViewer from '$lib/components/DocumentViewer.svelte';
@@ -59,7 +58,6 @@
     queryState.selectedDocument = detail;
   }
 
-  onDestroy(handleCancel);
 </script>
 
 <div class="page-container">

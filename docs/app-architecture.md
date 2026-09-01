@@ -68,6 +68,8 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 5. Rust retrieves associated document metadata from SQLite, discards non-indexed or blank excerpts, and returns a typed no-evidence error without invoking inference when no usable citation remains.
 6. Rust builds the chat messages and either calls `model.stream_chat_request(messages).await?` on the in-process `mistral.rs` model or POSTs to the configured OpenAI-compatible endpoint via `reqwest`, including the selected external model.
 7. Rust assembles external SSE as raw bytes, decodes only complete events as UTF-8, and streams ordered tokens to Svelte using Tauri v2 Channels (`Channel<TokenEvent>`). For local inference, the loop pulls `Response::Chunk` deltas off the `mistral.rs` stream and forwards each `Delta::content` as a `TokenEvent::Token`. This ensures ordered, fast streaming with backpressure, avoiding older `app.emit` event mechanisms.
+8. Query state and its request-scoped Channel callback live in the application singleton, not the keyed query page. Hash-route navigation remounts the page without cancelling an active request or clearing completed text, citations, warnings, or selected pages; only the explicit query cancel control ends and resets that state.
+
 
 **Citation Engine (Retrieval-Grounded)**
 To eliminate hallucination risks, the application uses a retrieval-grounded citation approach (Option A). The LLM is *not* asked to generate page numbers. Instead, Rust attaches the top-K chunk metadata (which already contains the exact `page` integer) directly to the final `TokenEvent::Done` payload as structured citations. The UI then displays these precise sources (e.g., "Sources: page 4, page 11").
