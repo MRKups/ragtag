@@ -105,5 +105,5 @@ Instead of bundling massive AI model files into the application binary, model fi
 
 ### Retrieval Lifecycle Limits
 
-- LanceDB has no query-time join to SQLite document status. Retrieval overfetches a bounded candidate set, then `execute_query` discards candidates whose documents are not `indexed`; exceptionally stale-heavy stores can still reduce the usable result set.
+- Under the document-operations read lock, `execute_query` snapshots SQLite `indexed` document IDs and passes an escaped `document_id IN (...)` predicate to both hybrid and vector-only LanceDB queries before their candidate limit. It still verifies each returned registry row is `indexed` before creating citations; the lock makes that final check defensive rather than allowing a deletion or reindex transition to starve top-K retrieval.
 - Active queries register request-scoped cancellation senders. `cancel_query` interrupts pending external HTTP/local stream reads by dropping their futures; already-running blocking embedding work remains non-interruptible.

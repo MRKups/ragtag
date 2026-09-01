@@ -90,7 +90,7 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
   - `schema()`: Arrow schema with `FixedSizeList(Float32, 768)` vectors, plus `document_id`, `page`, `chunk_index`, `content` columns.
   - `get_or_create_table()`: Serializes table discovery/creation only while `chunks` does not exist; subsequent calls open it concurrently. FTS index creation is deferred to the first write.
   - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, creates FTS after rows exist, and defers 8-bit IVF-PQ until the table reaches 256 vectors.
-  - `hybrid_search()`: Performs FTS + dense vector hybrid search via Reciprocal Rank Fusion, returning explicit hybrid/vector-only mode. Falls back to vector-only if FTS is missing or errors, returns deduplicated results capped at the requested limit, and does not expose RRF rank as calibrated confidence.
+  - `hybrid_search()`: Receives the SQLite snapshot of eligible indexed document IDs, applies its escaped filter before the FTS+dense hybrid/vector-only candidate limit, then returns deduplicated results capped at the requested limit. Falls back to vector-only if FTS is missing or errors, and does not expose RRF rank as calibrated confidence.
   - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by durable document deletion.
 - `migrations/`:
   - `20240101000000_initial.sql`: Creates `documents` table (id, file metadata, processing status, embedding metadata, timestamps, error tracking) with indexes on `status`, `file_hash` (unique), and `created_at`. Creates `app_settings` key-value table.

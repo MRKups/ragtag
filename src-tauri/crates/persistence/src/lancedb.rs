@@ -17,6 +17,17 @@ static TABLE_CREATION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 static VECTOR_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
+fn indexed_document_filter(document_ids: &[String]) -> Option<String> {
+    (!document_ids.is_empty()).then(|| {
+        let ids = document_ids
+            .iter()
+            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("document_id IN ({ids})")
+    })
+}
+
 pub struct VectorDb {
     pub conn: Connection,
     table_exists: AtomicBool,
@@ -241,8 +252,16 @@ impl VectorDb {
         &self,
         query_text: &str,
         query_vector: &[f32],
+        indexed_document_ids: &[String],
         limit: usize,
     ) -> Result<HybridSearchResult, AppError> {
+        let Some(document_filter) = indexed_document_filter(indexed_document_ids) else {
+            return Ok(HybridSearchResult {
+                results: Vec::new(),
+                retrieval_mode: RetrievalMode::Hybrid,
+            });
+        };
+
         let table = self.get_or_create_table().await?;
 
         let query_vector_f32: Vec<f32> = query_vector.to_vec();
@@ -255,6 +274,7 @@ impl VectorDb {
             .full_text_search(fts_query)
             .nearest_to(query_vector_f32.clone())
             .map_err(|e| AppError::VectorDb(e.to_string()))?
+            .only_if(&document_filter)
             .limit(limit)
             .execute()
             .await
@@ -271,6 +291,7 @@ impl VectorDb {
                     .query()
                     .nearest_to(query_vector_f32)
                     .map_err(|e| AppError::VectorDb(e.to_string()))?
+                    .only_if(&document_filter)
                     .limit(limit)
                     .execute()
                     .await
@@ -385,7 +406,8 @@ pub struct SearchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{VectorDb, should_build_ivf_pq};
+    use super::{VectorDb, indexed_document_filter, should_build_ivf_pq};
+    use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
     use std::sync::Arc;
 
     #[test]
@@ -394,6 +416,74 @@ mod tests {
         assert!(!should_build_ivf_pq(255));
         assert!(should_build_ivf_pq(256));
         assert!(should_build_ivf_pq(257));
+    }
+
+    #[test]
+    fn filters_to_escaped_indexed_document_ids() {
+        assert_eq!(indexed_document_filter(&[]), None);
+        assert_eq!(
+            indexed_document_filter(&["current".to_string(), "quote'identifier".to_string()]),
+            Some("document_id IN ('current', 'quote''identifier')".to_string())
+        );
+    }
+
+    fn vector_batch(document_ids: &[&str]) -> RecordBatch {
+        let schema = VectorDb::schema();
+        let arrow_schema::DataType::FixedSizeList(inner_field, _) = schema.field(0).data_type()
+        else {
+            panic!("vector schema must use a fixed-size list");
+        };
+        let vectors = FixedSizeListArray::try_new(
+            inner_field.clone(),
+            768,
+            Arc::new(Float32Array::from(vec![0.0; document_ids.len() * 768])),
+            None,
+        )
+        .unwrap();
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(vectors),
+                Arc::new(StringArray::from(document_ids.to_vec())),
+                Arc::new(Int32Array::from(vec![1; document_ids.len()])),
+                Arc::new(Int32Array::from(
+                    (0..document_ids.len() as i32).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    document_ids
+                        .iter()
+                        .map(|id| format!("content for {id}"))
+                        .collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_filters_lifecycle_before_limiting_candidates() {
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-lifecycle-filter-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = VectorDb::init(&path).await.unwrap();
+        db.upsert_chunks(vec![vector_batch(&["indexed", "stale"])])
+            .await
+            .unwrap();
+
+        let result = db
+            .hybrid_search("content", &vec![0.0; 768], &["indexed".to_string()], 1)
+            .await
+            .unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.results[0].document_id, "indexed");
+
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[tokio::test]

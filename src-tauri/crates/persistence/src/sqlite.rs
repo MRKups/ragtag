@@ -190,6 +190,13 @@ impl DocumentRepository {
         Ok(rows.into_iter().filter_map(|r| r.id).collect())
     }
 
+    pub async fn get_indexed_ids(&self) -> Result<Vec<String>, AppError> {
+        sqlx::query_scalar("SELECT id FROM documents WHERE status = 'indexed'")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_err)
+    }
+
     pub async fn requeue_indexed_with_stale_provenance(
         &self,
         desired_provenance: &IndexProvenance,

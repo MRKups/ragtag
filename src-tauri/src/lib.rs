@@ -1061,52 +1061,53 @@ async fn execute_query(
             .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
     }?;
 
-    let search = vector_db
-        .hybrid_search(
-            &retrieval_query,
-            &query_embedding,
-            RETRIEVAL_CANDIDATE_LIMIT,
-        )
-        .await?;
-    let is_hybrid = search.retrieval_mode == RetrievalMode::Hybrid;
-    if search.retrieval_mode == RetrievalMode::VectorOnly {
-        let _ = channel.send(TokenEvent::Warning {
-            message: "Full-text retrieval is temporarily unavailable; this answer uses vector-only retrieval.".into(),
-        });
-    }
-    let search_results = search.results;
-
     let app_local_data = app
         .path()
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
-
-    let mut citations = Vec::new();
-    for result in &search_results {
-        let Some(doc) = repo.get_by_id(&result.document_id).await? else {
-            continue;
-        };
-        if doc.status != DocumentStatus::Indexed {
-            continue;
+    let citations = {
+        let _document_operation = state.document_operations.read().await;
+        let indexed_document_ids = repo.get_indexed_ids().await?;
+        let search = vector_db
+            .hybrid_search(
+                &retrieval_query,
+                &query_embedding,
+                &indexed_document_ids,
+                RETRIEVAL_CANDIDATE_LIMIT,
+            )
+            .await?;
+        let is_hybrid = search.retrieval_mode == RetrievalMode::Hybrid;
+        if search.retrieval_mode == RetrievalMode::VectorOnly {
+            let _ = channel.send(TokenEvent::Warning {
+                message: "Full-text retrieval is temporarily unavailable; this answer uses vector-only retrieval.".into(),
+            });
         }
-        if result.content.trim().is_empty() {
-            continue;
-        }
 
-        citations.push(Citation {
-            document_id: result.document_id.clone(),
-            filename: doc.filename,
-            storage_path: app_local_data
-                .join(&doc.storage_path)
-                .to_string_lossy()
-                .to_string(),
-            page: result.page as i32,
-            chunk_content: result.content.clone(),
-            score: 1.0 / (1.0 + result.score),
-            is_hybrid,
-        });
-    }
-    citations.truncate(RETRIEVAL_RESULT_LIMIT);
+        let mut citations = Vec::new();
+        for result in search.results {
+            let Some(doc) = repo.get_by_id(&result.document_id).await? else {
+                continue;
+            };
+            if doc.status != DocumentStatus::Indexed || result.content.trim().is_empty() {
+                continue;
+            }
+
+            citations.push(Citation {
+                document_id: result.document_id,
+                filename: doc.filename,
+                storage_path: app_local_data
+                    .join(&doc.storage_path)
+                    .to_string_lossy()
+                    .to_string(),
+                page: result.page as i32,
+                chunk_content: result.content,
+                score: 1.0 / (1.0 + result.score),
+                is_hybrid,
+            });
+        }
+        citations.truncate(RETRIEVAL_RESULT_LIMIT);
+        citations
+    };
     require_retrieved_citations(&citations)?;
 
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
