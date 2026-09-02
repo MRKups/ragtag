@@ -81,7 +81,7 @@ The **Settings** page can select external inference instead. It stores the endpo
 
 ## Documents and citations
 
-Ragtag accepts PDF and DOCX documents plus UTF-8 text sources such as Markdown, configuration, structured data, logs, and source files. PDF ingestion preserves physical page boundaries; DOCX and non-paginated text use one logical source page. Ingestion extracts text, creates overlapping chunks, and writes 768-dimensional embeddings to the local LanceDB store. Query results combine dense vector and full-text retrieval; the response cites retrieved source metadata rather than model-generated page numbers.
+Ragtag accepts PDF and DOCX documents plus UTF-8 text sources such as Markdown, configuration, structured data, logs, and source files. PDF ingestion preserves physical page boundaries; DOCX and non-paginated text use one logical source page. Citation previews render PDFs with PDF.js; indexed UTF-8 and DOCX previews are processed locally in Rust, with generic text shown verbatim and Markdown rendered from a safe typed model that excludes raw HTML, embeds, images, and unsafe links. Ingestion extracts text, creates overlapping chunks, and writes 768-dimensional embeddings to the local LanceDB store. Query results combine dense vector and full-text retrieval; the response cites retrieved source metadata rather than model-generated page numbers.
 
 Deleting a document removes its derived vectors, registry entry, and stored copy. The **Settings** page also exposes maintenance actions for SQLite vacuuming, vector-store compaction, and an explicitly confirmed reset of local data.
 

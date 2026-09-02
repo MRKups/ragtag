@@ -25,10 +25,27 @@ export interface Document {
   retry_count: number;
 }
 
-export interface TextPreview {
-  content: string;
-  truncated: boolean;
-}
+export type DocumentPreview =
+  | { kind: 'plain_text'; content: string; truncated: boolean }
+  | { kind: 'markdown'; blocks: MarkdownBlock[]; truncated: boolean };
+
+export type MarkdownBlock =
+  | { kind: 'heading'; level: number; content: MarkdownInline[] }
+  | { kind: 'paragraph'; content: MarkdownInline[] }
+  | { kind: 'block_quote'; blocks: MarkdownBlock[] }
+  | { kind: 'list'; start: number | null; items: MarkdownBlock[][] }
+  | { kind: 'code_block'; language: string | null; content: string }
+  | { kind: 'table'; header: MarkdownInline[][]; rows: MarkdownInline[][][] }
+  | { kind: 'thematic_break' };
+
+export type MarkdownInline =
+  | { kind: 'text'; content: string }
+  | { kind: 'code'; content: string }
+  | { kind: 'emphasis'; content: MarkdownInline[] }
+  | { kind: 'strong'; content: MarkdownInline[] }
+  | { kind: 'strikethrough'; content: MarkdownInline[] }
+  | { kind: 'link'; href: string; content: MarkdownInline[] }
+  | { kind: 'break' };
 
 export interface Citation {
   document_id: string;

@@ -52,7 +52,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
    - Emits `stored` only after vector replacement and the SQLite indexed/provenance update both succeed.
    - Continues to emit the `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`) for lifecycle compatibility; they are not the ordered UI progress path.
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to refresh durable document metadata instantly.
-8. Citation viewing renders PDFs through bundled PDF.js. `.txt` previews use `get_text_preview(document_id)`: Rust validates the indexed registry record and safe app-local path, reads at most 1 MiB on a blocking worker, and returns typed escaped text for Svelte to render. Other non-PDF sources remain retrieval evidence and show an explicit preview-unavailable state until they have a format-specific renderer.
+8. Citation viewing renders PDFs through bundled PDF.js. Other previewable sources use `get_document_preview(document_id)`: Rust validates the indexed registry record and safe app-local path, reads at most 1 MiB on a blocking worker, and returns a typed model for Svelte to render. UTF-8 sources render verbatim except `.md`/`.markdown`, which Rust parses into safe headings, paragraphs, lists, quotes, tables, code, and allowlisted links; raw HTML, images, embeds, and unsafe links never cross IPC. DOCX previews return extracted text; if the XML read limit lands inside incomplete markup or an entity reference, parsing retains the already extracted text. Preview values are never generated HTML or frontend-selected paths.
 
 
 ### Document Deletion

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { FileText } from '@lucide/svelte';
   import { api } from '$lib/api';
-  import type { TextPreview } from '$lib/types';
+  import type { DocumentPreview } from '$lib/types';
+  import MarkdownPreview from './MarkdownPreview.svelte';
   import PdfViewer from './PdfViewer.svelte';
 
   let {
@@ -19,7 +20,6 @@
   }>();
 
   let isPdf = $derived(filename?.toLowerCase().endsWith('.pdf') ?? false);
-  let isPlainText = $derived(filename?.toLowerCase().endsWith('.txt') ?? false);
   let sourceUrl = $derived.by(() => {
     if (isPdf && storagePath) {
       // Tauri v2 asset protocol: convertFileSrc builds the correct URL.
@@ -28,25 +28,25 @@
     }
     return null;
   });
-  let textPreview = $state<TextPreview | null>(null);
-  let textPreviewFailed = $state(false);
+  let documentPreview = $state<DocumentPreview | null>(null);
+  let documentPreviewFailed = $state(false);
 
   $effect(() => {
-    if (!documentId || !isPlainText) {
-      textPreview = null;
-      textPreviewFailed = false;
+    if (!documentId || isPdf) {
+      documentPreview = null;
+      documentPreviewFailed = false;
       return;
     }
 
     let cancelled = false;
-    textPreview = null;
-    textPreviewFailed = false;
-    void api.getTextPreview(documentId)
+    documentPreview = null;
+    documentPreviewFailed = false;
+    void api.getDocumentPreview(documentId)
       .then((preview) => {
-        if (!cancelled) textPreview = preview;
+        if (!cancelled) documentPreview = preview;
       })
       .catch(() => {
-        if (!cancelled) textPreviewFailed = true;
+        if (!cancelled) documentPreviewFailed = true;
       });
 
     return () => {
@@ -66,31 +66,36 @@
     </div>
   {:else if sourceUrl && isPdf}
     <PdfViewer url={sourceUrl} {page} {citedPages} />
-  {:else if isPlainText}
-    <section class="text-preview" aria-label={`Text preview: ${filename}`}>
-      <header class="text-preview-header">
-        <FileText size={24} color="#9ca3af" />
-        <h3>{filename}</h3>
-      </header>
-      {#if textPreviewFailed}
-        <p class="text-preview-status">Ragtag could not read this text source.</p>
-      {:else if textPreview === null}
-        <p class="text-preview-status">Loading text source…</p>
-      {:else}
-        <pre>{textPreview.content}</pre>
-        {#if textPreview.truncated}
-          <p class="text-preview-status">Preview is limited to the first 1 MiB of this source.</p>
-        {/if}
-      {/if}
-    </section>
-  {:else if !isPdf}
+  {:else if !isPdf && !documentId}
     <div class="doc-placeholder">
       <div class="icon-circle">
         <FileText size={48} color="#9ca3af" />
       </div>
       <h3>{filename}</h3>
-      <p>A preview is not yet available for this source type.</p>
+      <p>A preview is not available for this source.</p>
     </div>
+  {:else if !isPdf}
+    <section class="text-preview" aria-label={`Source preview: ${filename}`}>
+      <header class="text-preview-header">
+        <FileText size={24} color="#9ca3af" />
+        <h3>{filename}</h3>
+      </header>
+      {#if documentPreviewFailed}
+        <p class="text-preview-status">Ragtag could not read this source preview.</p>
+      {:else if documentPreview === null}
+        <p class="text-preview-status">Loading source preview…</p>
+      {:else if documentPreview.kind === 'plain_text'}
+        <pre>{documentPreview.content}</pre>
+        {#if documentPreview.truncated}
+          <p class="text-preview-status">Preview is limited to the first 1 MiB of this source.</p>
+        {/if}
+      {:else}
+        <MarkdownPreview blocks={documentPreview.blocks} />
+        {#if documentPreview.truncated}
+          <p class="text-preview-status">Preview is limited to the first 1 MiB of this source.</p>
+        {/if}
+      {/if}
+    </section>
   {:else}
     <div class="doc-placeholder">
       <div class="icon-circle">

@@ -39,7 +39,67 @@ pub struct Document {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TextPreview {
-    pub content: String,
-    pub truncated: bool,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocumentPreview {
+    PlainText {
+        content: String,
+        truncated: bool,
+    },
+    Markdown {
+        blocks: Vec<MarkdownBlock>,
+        truncated: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MarkdownBlock {
+    Heading {
+        level: u8,
+        content: Vec<MarkdownInline>,
+    },
+    Paragraph {
+        content: Vec<MarkdownInline>,
+    },
+    BlockQuote {
+        blocks: Vec<MarkdownBlock>,
+    },
+    List {
+        start: Option<u64>,
+        items: Vec<Vec<MarkdownBlock>>,
+    },
+    CodeBlock {
+        language: Option<String>,
+        content: String,
+    },
+    Table {
+        header: Vec<Vec<MarkdownInline>>,
+        rows: Vec<Vec<Vec<MarkdownInline>>>,
+    },
+    ThematicBreak,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MarkdownInline {
+    Text {
+        content: String,
+    },
+    Code {
+        content: String,
+    },
+    Emphasis {
+        content: Vec<MarkdownInline>,
+    },
+    Strong {
+        content: Vec<MarkdownInline>,
+    },
+    Strikethrough {
+        content: Vec<MarkdownInline>,
+    },
+    Link {
+        href: String,
+        content: Vec<MarkdownInline>,
+    },
+    Break,
 }

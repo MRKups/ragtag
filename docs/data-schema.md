@@ -154,13 +154,13 @@ pub enum IngestionProgress {
 
 ```rust
 // In crates/domain/src/models.rs
-pub struct TextPreview {
-    pub content: String,
-    pub truncated: bool,
+pub enum DocumentPreview {
+    PlainText { content: String, truncated: bool },
+    Markdown { blocks: Vec<MarkdownBlock>, truncated: bool },
 }
 ```
 
-`get_text_preview(document_id)` accepts only an indexed `.txt` document ID. The Tauri adapter resolves the registry-owned app-local path rather than receiving a frontend path, and the pipeline returns at most 1 MiB of valid UTF-8 text. `truncated` signals a bounded preview.
+`get_document_preview(document_id)` accepts only indexed `text` or `docx` document IDs. The Tauri adapter resolves the registry-owned app-local path rather than receiving a frontend path. The pipeline returns at most 1 MiB of valid UTF-8 text or typed Markdown blocks; `truncated` signals a bounded preview. If a DOCX XML cap ends in incomplete markup or an entity reference, the preview retains already extracted text. Markdown blocks contain only allowlisted structural/inline values, not generated HTML.
 
 `Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
 

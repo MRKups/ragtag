@@ -3,9 +3,9 @@ import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AppErrorPayload,
   Document,
+  DocumentPreview,
   ExternalProviderConnection,
   IngestionProgress,
-  TextPreview,
   TokenEvent
 } from './types';
 
@@ -49,9 +49,8 @@ export const api = {
   assetUrl: (path: string) => convertFileSrc(path),
   
   listDocuments: () => invoke<Document[]>('list_documents'),
-  getTextPreview: (documentId: string) =>
-    invoke<TextPreview>('get_text_preview', { documentId }),
-  
+  getDocumentPreview: (documentId: string) =>
+    invoke<DocumentPreview>('get_document_preview', { documentId }),
   deleteDocument: (id: string) => invoke<void>('delete_document', { id }),
   
   getSettings: () => invoke<Record<string, string>>('get_settings'),
