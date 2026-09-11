@@ -19,7 +19,8 @@
   }>();
 
   let pdfDoc: PDFDocumentProxy | null = $state(null);
-  let loadingTask: PDFDocumentLoadingTask | null = $state(null);
+  let loadingTask: PDFDocumentLoadingTask | null = null;
+  let loadingTaskDisposal: Promise<void> = Promise.resolve();
   let pageNum = $state(1);
   let scale = $state(1.0);
   let totalPages = $state(0);
@@ -41,7 +42,7 @@
 
   $effect(() => {
     if (url && pdfjsLib) {
-      loadDocument(url);
+      void loadDocument(url);
     }
   });
 
@@ -76,19 +77,41 @@
     });
   }
 
+  function disposeLoadingTask(): Promise<void> {
+    const task = loadingTask;
+    loadingTask = null;
+    if (!task) return loadingTaskDisposal;
+
+    loadingTaskDisposal = loadingTaskDisposal.then(async () => {
+      try {
+        await task.destroy();
+      } catch {
+        // A task canceled by a newer preview must not trigger the global error dialog.
+      }
+    });
+    return loadingTaskDisposal;
+  }
+
   async function loadDocument(docUrl: string) {
     const myLoadId = ++loadId;
-    void loadingTask?.destroy();
     loading = true;
     error = null;
-    const task = pdfjsLib.getDocument({ url: docUrl, withCredentials: false });
-    loadingTask = task;
+    pdfDoc = null;
+    totalPages = 0;
+    await tick();
+    if (myLoadId !== loadId) return;
+
+    await disposeLoadingTask();
+    if (myLoadId !== loadId) return;
+
+    let task: PDFDocumentLoadingTask | null = null;
+
     try {
+      task = pdfjsLib.getDocument({ url: docUrl, withCredentials: false });
+      loadingTask = task;
       const document = await task.promise;
-      if (myLoadId !== loadId) {
-        await task.destroy();
-        return;
-      }
+      if (myLoadId !== loadId) return;
+
       pdfDoc = document;
       totalPages = document.numPages;
       pageNum = (page && page <= totalPages) ? page : 1;
@@ -97,6 +120,10 @@
       scrollToPage(pageNum);
     } catch {
       if (myLoadId !== loadId) return;
+
+      await disposeLoadingTask();
+      if (myLoadId !== loadId) return;
+
       error = 'Document preview unavailable.';
       loading = false;
       reportPdfError(() => void loadDocument(docUrl));
@@ -124,7 +151,7 @@
 
   onDestroy(() => {
     ++loadId;
-    void loadingTask?.destroy();
+    void disposeLoadingTask();
   });
 </script>
 

@@ -20,7 +20,7 @@
     errorMsg?: string;
   }
 
-  // We only handle one file at a time, but UI can still list what's selected
+  // Files are staged together and uploaded sequentially to respect queue backpressure.
   let files: FileStatus[] = $state([]);
   let nextFileId = 0;
 
@@ -164,6 +164,7 @@
     <input
       bind:this={fileInput}
       type="file"
+      multiple
       accept=".pdf,.docx,text/*,.md,.markdown,.rst,.csv,.tsv,.json,.yaml,.yml,.toml,.xml,.html,.htm,.log,.ini,.cfg,.conf,.properties"
       class="hidden"
       onchange={handleFileSelect}

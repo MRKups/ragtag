@@ -1,5 +1,7 @@
 use domain::{AppError, DocumentPreview, MarkdownBlock, MarkdownInline};
-use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    CodeBlockKind, Event as MarkdownEvent, MetadataBlockKind, Options, Parser, Tag, TagEnd,
+};
 use quick_xml::{Reader, escape::unescape, events::Event};
 use std::{fs::File, io::Read, path::Path};
 
@@ -85,7 +87,7 @@ pub fn document_preview(
             let (content, truncated) = utf8_preview(source_path, "Text preview")?;
             if is_markdown_filename(filename) {
                 Ok(DocumentPreview::Markdown {
-                    blocks: markdown_blocks(&content),
+                    blocks: markdown_preview_blocks(&content),
                     truncated,
                 })
             } else {
@@ -261,6 +263,37 @@ enum InlineEnd {
     Strikethrough,
     Link,
     Image,
+}
+
+fn markdown_preview_blocks(markdown: &str) -> Vec<MarkdownBlock> {
+    markdown_blocks(without_leading_yaml_front_matter(markdown))
+}
+
+fn without_leading_yaml_front_matter(markdown: &str) -> &str {
+    let metadata_source = markdown.strip_prefix('\u{feff}').unwrap_or(markdown);
+    let mut events = Parser::new_ext(metadata_source, Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
+        .into_offset_iter();
+
+    let Some((MarkdownEvent::Start(Tag::MetadataBlock(MetadataBlockKind::YamlStyle)), range)) =
+        events.next()
+    else {
+        return metadata_source;
+    };
+    if range.start != 0 {
+        return metadata_source;
+    }
+
+    let Some(end) = events.find_map(|(event, range)| {
+        matches!(
+            event,
+            MarkdownEvent::End(TagEnd::MetadataBlock(MetadataBlockKind::YamlStyle))
+        )
+        .then_some(range.end)
+    }) else {
+        return metadata_source;
+    };
+
+    &metadata_source[end..]
 }
 
 fn markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
@@ -790,7 +823,7 @@ mod tests {
     use super::{
         DOCX_XML_MAX_BYTES, InlineEnd, MARKDOWN_MAX_NESTING, TEXT_PREVIEW_MAX_BYTES,
         bounded_docx_xml, document_preview, docx_body_text, extract_pages, markdown_blocks,
-        nonpaginated_page, pages_from_page_texts, parse_inlines,
+        markdown_preview_blocks, nonpaginated_page, pages_from_page_texts, parse_inlines,
     };
     use domain::{DocumentPreview, MarkdownBlock, MarkdownInline};
     use pulldown_cmark::{Event as MarkdownEvent, Tag, TagEnd};
@@ -1095,6 +1128,97 @@ mod tests {
                 MarkdownInline::Break => "\n".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn omits_canonical_leading_yaml_front_matter_from_markdown_previews() {
+        let blocks = markdown_preview_blocks(
+            "---\n\
+             title: Private metadata\n\
+             depends: [overview.md]\n\
+             ---\n\
+             # Visible document\n",
+        );
+
+        assert!(!block_text(&blocks).contains("Private metadata"));
+        assert!(matches!(
+            blocks.as_slice(),
+            [MarkdownBlock::Heading { level: 1, content }]
+                if content == &vec![MarkdownInline::Text {
+                    content: "Visible document".into()
+                }]
+        ));
+    }
+
+    #[test]
+    fn preserves_yaml_shaped_blocks_after_visible_markdown() {
+        let blocks = markdown_preview_blocks(
+            "# Visible document\n\
+             \n\
+             ---\n\
+             title: Public metadata\n\
+             ---\n",
+        );
+
+        assert!(block_text(&blocks).contains("Public metadata"));
+        assert!(
+            blocks
+                .iter()
+                .any(|block| matches!(block, MarkdownBlock::ThematicBreak))
+        );
+    }
+
+    #[test]
+    fn preserves_incomplete_leading_yaml_front_matter() {
+        let blocks = markdown_preview_blocks(
+            "---\n\
+             title: Still visible\n\
+             depends: [overview.md]\n",
+        );
+
+        assert!(block_text(&blocks).contains("Still visible"));
+    }
+
+    #[test]
+    fn preserves_empty_leading_metadata_delimiters_as_thematic_rules() {
+        let blocks = markdown_preview_blocks("---\n---\n");
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [MarkdownBlock::ThematicBreak, MarkdownBlock::ThematicBreak]
+        ));
+    }
+
+    #[test]
+    fn omits_bom_prefixed_leading_yaml_front_matter_from_markdown_previews() {
+        let blocks = markdown_preview_blocks(
+            "\u{feff}---\n\
+             title: Private metadata\n\
+             ...\n\
+             # Visible document\n",
+        );
+
+        assert!(!block_text(&blocks).contains("Private metadata"));
+        assert!(matches!(
+            blocks.as_slice(),
+            [MarkdownBlock::Heading { level: 1, content }]
+                if content == &vec![MarkdownInline::Text {
+                    content: "Visible document".into()
+                }]
+        ));
+    }
+
+    #[test]
+    fn omits_bom_from_markdown_previews_without_front_matter() {
+        let blocks = markdown_preview_blocks("\u{feff}# Visible document\n");
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [MarkdownBlock::Heading { level: 1, content }]
+                if content == &vec![MarkdownInline::Text {
+                    content: "Visible document".into()
+                }]
+        ));
     }
 
     #[test]

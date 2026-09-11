@@ -32,7 +32,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
   - `api.ts`: Typed wrappers around Tauri `invoke` commands; the typed document-upload envelope owns its request-scoped `Channel<IngestionProgress>`, while remote-provider test/save calls expose model discovery and atomic configuration persistence.
   - `types.ts`: TypeScript interfaces mirroring Rust models, lifecycle events, provider-connection results, and the typed ingestion progress union.
   - `error.ts` and `error.test.ts`: Safe extraction of messages from typed IPC errors for task-specific UI recovery, with regression coverage for serialized `AppError` payloads.
-  - `pdf-init.ts`: pdf.js worker initialization.
+  - `pdf-init.ts`: Initializes PDF.js's matching legacy main library and module worker, avoiding a missing JavaScriptCore API in the generic build.
   - `router.svelte.ts`: Hash-based micro-router using Svelte 5 `$state` runes. Routes: `query`, `documents`, `settings`.
   - `assets/`: Static assets bundled by Vite (e.g., `favicon.svg`).
   - `stores/`: Svelte 5 `$state` stores:
@@ -41,7 +41,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `query.svelte.ts` — exports `QueryState` and the `queryState` singleton.
     - `settings.svelte.ts` — exports `SettingsState`, the `settingsState` singleton, and the shared local-inference defaults; retains persisted values so rejected bound-setting writes restore the screen, and carries requested local/remote configuration dialogs across route navigation.
     - `document-progress.svelte.ts` — exports the route-independent `DocumentProgressState` singleton that immutably stores the latest request-scoped progress per document ID and permanently finalizes terminal document IDs to reject delayed progress callbacks.
-  - `components/`: Reusable UI components — `AppInitializer`, `AppSelect`, `ErrorDialog`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `MarkdownPreview`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `MarkdownPreview` maps the typed Rust preview model to semantic Svelte elements without an HTML sink. `AppSelect` provides the accessible, app-styled listbox control used for remote-provider protocol and discovered-model selection. `ErrorDialog` is the single accessible in-app recovery surface; `SettingsTab` presents local and remote inference cards as an accessible radio group, while either card opens an independent configuration modal.
+  - `components/`: Reusable UI components — `AppInitializer`, `AppSelect`, `ErrorDialog`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `MarkdownPreview`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `MarkdownPreview` maps the typed Rust preview model to semantic Svelte elements without an HTML sink. `PdfViewer` serializes PDF.js document teardown before a replacement load, while `PdfPage` rasterizes the selected page and nearby context to DPR-aware canvases with a PDF.js text-selection layer. `AppSelect` provides the accessible, app-styled listbox control used for remote-provider protocol and discovered-model selection. `ErrorDialog` is the single accessible in-app recovery surface; `SettingsTab` presents local and remote inference cards as an accessible radio group, while either card opens an independent configuration modal.
 - `static/`: Static frontend assets.
 
 ## `src-tauri/` (Tauri App Shell)

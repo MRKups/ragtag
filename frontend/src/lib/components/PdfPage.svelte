@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
   import { pdfjsLib } from '$lib/pdf-init';
-  import type { PDFDocumentProxy } from 'pdfjs-dist';
+  import type {
+    PDFDocumentProxy,
+    PDFPageProxy,
+    PageViewport,
+    RenderTask,
+    TextLayer
+  } from 'pdfjs-dist';
 
   let {
     pdfDoc,
@@ -22,8 +28,9 @@
   let width = $state(900);
   let height = $state(1200);
   let loading = $state(true);
-  let renderTask: any = null;
+  let renderTask: RenderTask | null = null;
   let renderId = 0;
+  let textLayer: TextLayer | null = null;
   let mounted = $state(false);
 
   $effect(() => {
@@ -32,30 +39,33 @@
 
   $effect(() => {
     if (mounted && pdfDoc && pageNumber && scale) {
-      renderPage();
+      void renderPage();
     }
   });
+
+  function cancelRender() {
+    renderTask?.cancel();
+    renderTask = null;
+    textLayer?.cancel();
+    textLayer = null;
+  }
 
   async function renderPage() {
     const myId = ++renderId;
     if (!pdfDoc || !canvas || !textLayerDiv) return;
+
+    cancelRender();
     loading = true;
-
-    if (renderTask) {
-      try { await renderTask.cancel(); } catch (_) {}
-      renderTask = null;
-    }
-
     await tick();
     if (myId !== renderId) return;
 
+    let task: RenderTask | null = null;
     try {
       const page = await pdfDoc.getPage(pageNumber);
       if (myId !== renderId) return;
 
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale });
-
       width = viewport.width;
       height = viewport.height;
 
@@ -64,49 +74,59 @@
       canvas.style.width = `${Math.floor(viewport.width)}px`;
       canvas.style.height = `${Math.floor(viewport.height)}px`;
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.scale(dpr, dpr);
-
-      renderTask = page.render({ canvasContext: ctx, viewport });
-      await renderTask.promise;
-      renderTask = null;
-
-      // Text layer
-      try {
-        const textContent = await page.getTextContent();
-        if (myId !== renderId) return;
-        textLayerDiv.innerHTML = '';
-        (textLayerDiv.style as any).setProperty('--scale-factor', `${scale}`);
-
-        // @ts-ignore
-        if (pdfjsLib.TextLayer) {
-          // @ts-ignore
-          const textLayer = new pdfjsLib.TextLayer({
-            textContentSource: textContent,
-            container: textLayerDiv,
-            viewport
-          });
-          await textLayer.render();
-        }
-      } catch {
-        if (myId === renderId) onError();
-      }
+      const currentTask = page.render({
+        canvas,
+        viewport,
+        transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0]
+      });
+      task = currentTask;
+      renderTask = currentTask;
+      await currentTask.promise;
+      if (myId !== renderId) return;
+      if (renderTask === currentTask) renderTask = null;
 
       loading = false;
-    } catch (e: any) {
-      if (e.name !== 'RenderingCancelledException') {
-        loading = false;
-        console.error(`Error rendering page ${pageNumber}:`, e);
-        onError();
+      await renderTextLayer(page, viewport, myId);
+    } catch (error: unknown) {
+      if (
+        myId !== renderId
+        || (error instanceof Error && error.name === 'RenderingCancelledException')
+      ) {
+        return;
       }
+
+      if (renderTask === task) renderTask = null;
+      loading = false;
+      console.error(`Error rendering PDF page ${pageNumber}:`, error);
+      onError();
+    }
+  }
+
+  async function renderTextLayer(page: PDFPageProxy, viewport: PageViewport, myId: number) {
+    textLayerDiv.replaceChildren();
+    textLayerDiv.style.setProperty('--total-scale-factor', `${scale}`);
+    const layer = new pdfjsLib.TextLayer({
+      textContentSource: page.streamTextContent(),
+      container: textLayerDiv,
+      viewport
+    });
+    textLayer = layer;
+
+    try {
+      await layer.render();
+    } catch (error) {
+      if (myId === renderId) {
+        textLayerDiv.replaceChildren();
+        console.warn(`Text selection unavailable for PDF page ${pageNumber}:`, error);
+      }
+    } finally {
+      if (textLayer === layer) textLayer = null;
     }
   }
 
   onDestroy(() => {
-    if (renderTask) {
-      try { renderTask.cancel(); } catch (_) {}
-    }
+    ++renderId;
+    cancelRender();
   });
 </script>
 
@@ -118,7 +138,7 @@
   <div class="canvas-wrapper">
     <canvas bind:this={canvas}></canvas>
   </div>
-  <div class="text-layer" bind:this={textLayerDiv}></div>
+  <div class="textLayer" bind:this={textLayerDiv}></div>
 
   {#if isCitation}
     <div class="citation-label">Cited Page</div>
@@ -178,7 +198,7 @@
     height: 100%;
   }
 
-  .text-layer {
+  .textLayer {
     position: absolute;
     left: 0; top: 0; right: 0; bottom: 0;
     overflow: hidden;
@@ -186,7 +206,7 @@
     line-height: 1.0;
   }
 
-  .text-layer :global(span) {
+  .textLayer :global(span) {
     color: transparent;
     position: absolute;
     white-space: pre;
@@ -194,12 +214,12 @@
     transform-origin: 0% 0%;
   }
 
-  .text-layer :global(::selection) {
+  .textLayer :global(::selection) {
     background: rgba(37, 99, 235, 0.5) !important;
     color: transparent;
   }
 
-  .text-layer :global(br) {
+  .textLayer :global(br) {
     display: none;
   }
 

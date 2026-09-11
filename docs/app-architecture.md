@@ -20,7 +20,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 ### Tauri & Svelte 5 (The Frontend)
 - No longer makes HTTP requests to a backend server.
 - Uses `invoke('command_name', { args })` to securely request actions from Rust via IPC.
-- Renders PDFs directly from disk using the browser's native renderer via Tauri's custom asset protocol (`http://asset.localhost/...` or `asset://localhost/...`). This is configured with `assetProtocol` in `tauri.conf.json`, not a broad filesystem capability; frontend code constructs asset URLs only through `convertFileSrc()`. Windows WebView2 disables the native PDF viewer by default (`msPdfOOUI`); ship `pdf.js` for consistent cross-platform rendering rather than relying on WebView quirks.
+- Renders citation PDFs from app-local storage through Tauri's custom asset protocol (`http://asset.localhost/...` or `asset://localhost/...`), configured with `assetProtocol` in `tauri.conf.json`; frontend code constructs asset URLs only through `convertFileSrc()`. Bundled legacy PDF.js uses a matching module worker because macOS JavaScriptCore lacks an API required by PDF.js's generic build. PDF.js rasterizes visible pages into device-pixel-ratio-aware canvases and overlays its text layer for selection. Document replacement unmounts outgoing pages before serializing PDF.js task teardown, so worker destruction cannot race a subsequent load.
 
 ### Rust Core (The Backend)
 - **Commands:** Thin `#[tauri::command]` functions acting as IPC handlers.
@@ -40,8 +40,8 @@ The application is a monolithic, secure, and blazing-fast desktop application us
 ## 3. Data Flows
 
 ### Document Upload & Processing
-1. User drops a PDF, DOCX, or UTF-8 text file into the Svelte UI.
-2. Svelte creates a request-scoped Tauri v2 `Channel<IngestionProgress>` and submits a typed upload request with the UTF-8 filename and raw file bytes.
+1. User selects or drops one or more PDF, DOCX, or UTF-8 text files into the Svelte UI. Browser drag-and-drop is enabled in the Tauri WebView; root listeners prevent dropped files outside the upload zone from navigating the application.
+2. Svelte stages every selected file, then creates a request-scoped Tauri v2 `Channel<IngestionProgress>` and submits one typed upload request at a time with the UTF-8 filename and raw file bytes.
 3. Rust validates the source format, saves the original file under a canonical UUID v7 name in the OS's App Data directory, and inserts a `queued` row into SQLite. Insert failure removes the just-written file; startup reconciles a process-crash orphan only when that managed filename has no registry row.
 4. Rust enqueues an in-memory job containing the document ID and, for this upload, its progress channel.
 5. A background `tokio` task consumes the job and bridges its non-blocking pipeline updates to the request channel. The Document UI stores ordered updates by document ID; authoritative terminal lifecycle events finalize that ID before refreshing durable metadata, so a delayed channel callback cannot restore stale progress.
@@ -52,7 +52,7 @@ The application is a monolithic, secure, and blazing-fast desktop application us
    - Emits `stored` only after vector replacement and the SQLite indexed/provenance update both succeed.
    - Continues to emit the `ingestion_progress` stage events (`extracting`, `chunking`, `embedding`, `storing`) for lifecycle compatibility; they are not the ordered UI progress path.
 7. Rust emits a `document_indexed` Tauri Event back to Svelte to refresh durable document metadata instantly.
-8. Citation viewing renders PDFs through bundled PDF.js. Other previewable sources use `get_document_preview(document_id)`: Rust validates the indexed registry record and safe app-local path, reads at most 1 MiB on a blocking worker, and returns a typed model for Svelte to render. UTF-8 sources render verbatim except `.md`/`.markdown`, which Rust parses into safe headings, paragraphs, lists, quotes, tables, code, and allowlisted links; raw HTML, images, embeds, and unsafe links never cross IPC. DOCX previews return extracted text; if the XML read limit lands inside incomplete markup or an entity reference, parsing retains the already extracted text. Preview values are never generated HTML or frontend-selected paths.
+8. Citation viewing renders app-local PDF URLs through the matching legacy PDF.js main library and module worker. It rasterizes the cited page and nearby context into device-pixel-ratio-aware canvases, with a separate text-selection layer; switching documents unmounts outgoing pages before awaiting their PDF.js task teardown. Other previewable sources use `get_document_preview(document_id)`: Rust validates the indexed registry record and safe app-local path, reads at most 1 MiB on a blocking worker, and returns a typed model for Svelte to render. UTF-8 sources render verbatim except `.md`/`.markdown`, which Rust parses into safe headings, paragraphs, lists, quotes, tables, code, and allowlisted links after omitting leading YAML front matter from Markdown previews only; raw HTML, images, embeds, and unsafe links never cross IPC. DOCX previews return extracted text; if the XML read limit lands inside incomplete markup or an entity reference, parsing retains the already extracted text. Preview values are never generated HTML or arbitrary filesystem paths.
 
 
 ### Document Deletion

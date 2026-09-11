@@ -36,6 +36,12 @@
       && reason.name === 'AbortError';
   }
 
+  function preventDroppedFileNavigation(event: DragEvent) {
+    if (event.dataTransfer?.types.includes('Files')) {
+      event.preventDefault();
+    }
+  }
+
   onMount(() => {
     const handleError = (event: ErrorEvent) => {
       event.preventDefault();
@@ -50,12 +56,17 @@
 
     window.addEventListener('error', handleError);
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
+    window.addEventListener('dragover', preventDroppedFileNavigation);
+    window.addEventListener('drop', preventDroppedFileNavigation);
+
 
     void settingsState.load().then(() => appState.init());
 
     return () => {
       window.removeEventListener('error', handleError);
       window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener('dragover', preventDroppedFileNavigation);
+      window.removeEventListener('drop', preventDroppedFileNavigation);
     };
   });
 </script>
