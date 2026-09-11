@@ -4,9 +4,11 @@ vars:
   FRONTEND_DIR: frontend
   TAURI_DIR: src-tauri
   RELEASE_BIN: target/release/mrk-ragtag-app
+  INTEL_ORT_VERSION: '1.28.0'
   INTEL_ORT_ROOT:
-    sh: 'printf "%s" "${RAGTAG_INTEL_ORT_ROOT:-$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0}"'
+    sh: 'printf "%s" "${RAGTAG_INTEL_ORT_ROOT:-$HOME/.cache/mrk-ragtag/onnxruntime-{{.INTEL_ORT_VERSION}}}"'
   INTEL_ORT_LIB: '{{.INTEL_ORT_ROOT}}/build/MacOS/Release'
+  INTEL_TARGET_DIR: target/intel
 
 env:
   RUST_BACKTRACE: 1
@@ -49,6 +51,10 @@ tasks:
         msg: Intel development tasks require an x86_64 macOS host.
       - sh: test -f '{{.INTEL_ORT_LIB}}/libonnxruntime.dylib'
         msg: External ONNX Runtime is missing. Follow README.md's Intel macOS development setup or set RAGTAG_INTEL_ORT_ROOT.
+      - sh: test "$(cat '{{.INTEL_ORT_ROOT}}/VERSION_NUMBER')" = '{{.INTEL_ORT_VERSION}}'
+        msg: External ONNX Runtime must be version {{.INTEL_ORT_VERSION}}.
+      - sh: test -f '{{.INTEL_ORT_LIB}}/libonnxruntime.{{.INTEL_ORT_VERSION}}.dylib'
+        msg: External ONNX Runtime {{.INTEL_ORT_VERSION}} library is missing.
     cmds:
       - |
           case "$(file '{{.INTEL_ORT_LIB}}/libonnxruntime.dylib')" in
@@ -66,6 +72,7 @@ tasks:
           export ORT_PREFER_DYNAMIC_LINK=1
           export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
+          export CARGO_TARGET_DIR='{{.INTEL_TARGET_DIR}}'
           cargo tauri dev
 
   build-intel:
@@ -78,6 +85,7 @@ tasks:
           export ORT_PREFER_DYNAMIC_LINK=1
           export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
+          export CARGO_TARGET_DIR='{{.INTEL_TARGET_DIR}}'
           cargo build
 
 

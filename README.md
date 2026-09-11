@@ -122,7 +122,16 @@ task dev-intel
 task build-intel
 ```
 
-The tasks own the external-runtime validation and every Intel-only environment variable. The default path is `$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0`; set `RAGTAG_INTEL_ORT_ROOT` to use another external location. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
+The tasks pin ONNX Runtime **1.28.0** by checking the checkout’s `VERSION_NUMBER` and the versioned `libonnxruntime.1.28.0.dylib`, then set every Intel-only environment variable. The default path is `$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0`; set `RAGTAG_INTEL_ORT_ROOT` to another checkout of that same version. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
+
+Intel-only artifacts stay outside normal application/release outputs:
+
+```text
+~/.cache/mrk-ragtag/onnxruntime-1.28.0/           ONNX Runtime source and x86_64 dylib
+src-tauri/target/intel/                            Intel Cargo build artifacts and debug binary
+```
+
+The Rust dependency versions are locked by `src-tauri/Cargo.lock` (`fastembed 6.0.2`, `ort`/`ort-sys 2.0.0-rc.13`); Cargo’s global registry cache is shared but version-addressed. Application-local models and documents are not Intel-specific and stay in their normal app-data directory. To remove the Intel test setup, delete those two paths.
 
 The local LLM runs on CPU in Intel development builds; Metal remains enabled only for Apple Silicon. This is development-only and does not add Intel release support.
 
