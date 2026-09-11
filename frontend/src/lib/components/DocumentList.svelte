@@ -11,15 +11,18 @@
   let error: string | null = $state(null);
   let deleting: string | null = $state(null);
   let confirmDeleteTarget: { id: string; filename: string } | null = $state(null);
-  let pollTimeout: ReturnType<typeof setTimeout>;
+  let pollTimeout: ReturnType<typeof setTimeout> | undefined;
+  let requestTimeout: ReturnType<typeof setTimeout> | undefined;
   let unlistenFns: Array<() => void> = [];
   let fetchPromise: Promise<void> | null = null;
+  let isMounted = false;
 
   export async function refresh() {
     await fetchDocuments();
   }
 
   async function fetchDocuments(silent = false) {
+    if (!isMounted) return;
     if (fetchPromise) return fetchPromise;
 
     if (!silent) {
@@ -31,12 +34,19 @@
       try {
         const TIMEOUT_MS = 10_000;
         const listPromise = api.listDocuments();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Request timed out')), TIMEOUT_MS)
-        );
-        documents = await Promise.race([listPromise, timeoutPromise]);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          requestTimeout = setTimeout(() => reject(new Error('Request timed out')), TIMEOUT_MS);
+        });
+        const listedDocuments = await Promise.race([listPromise, timeoutPromise]);
+
+        if (!isMounted) return;
+
+        documents = listedDocuments;
+        documentProgressState.reconcile(documents);
         schedulePolling();
       } catch {
+        if (!isMounted) return;
+
         if (!silent) {
           error = 'Document library is unavailable.';
           errorDialog.report({
@@ -50,9 +60,14 @@
             }
           });
         }
-        clearTimeout(pollTimeout);
+
+        schedulePolling();
       } finally {
-        if (!silent) isLoading = false;
+        if (requestTimeout) {
+          clearTimeout(requestTimeout);
+          requestTimeout = undefined;
+        }
+        if (isMounted && !silent) isLoading = false;
         fetchPromise = null;
       }
     })();
@@ -61,7 +76,12 @@
   }
 
   function schedulePolling() {
-    clearTimeout(pollTimeout);
+    if (!isMounted) return;
+
+    if (pollTimeout) {
+      clearTimeout(pollTimeout);
+      pollTimeout = undefined;
+    }
 
     const hasTransientDocs = documents.some(doc =>
       ['queued', 'embedding', 'deleting'].includes(doc.status)
@@ -69,7 +89,8 @@
 
     if (hasTransientDocs) {
       pollTimeout = setTimeout(() => {
-        fetchDocuments(true);
+        pollTimeout = undefined;
+        void fetchDocuments(true);
       }, 3000);
     }
   }
@@ -103,26 +124,39 @@
     }
   }
 
-  onMount(async () => {
-    await fetchDocuments();
+  async function listenForDocumentEvents() {
+    const listeners: Array<() => void> = [];
+    const registrations = [
+      () => api.listen<{ document_id: string }>('document_indexed', (event) => {
+        documentProgressState.finalize(event.payload.document_id);
+        void fetchDocuments(true);
+      }),
+      () => api.listen<{ document_id: string }>('document_failed', (event) => {
+        documentProgressState.finalize(event.payload.document_id);
+        void fetchDocuments(true);
+      }),
+      () => api.listen<{ document_id: string }>('document_deleted', (event) => {
+        documentProgressState.finalize(event.payload.document_id);
+        void fetchDocuments(true);
+      }),
+    ];
 
     try {
-      const [unlistenIndexed, unlistenFailed, unlistenDeleted] = await Promise.all([
-        api.listen<{ document_id: string }>('document_indexed', (event) => {
-          documentProgressState.remove(event.payload.document_id);
-          void fetchDocuments(true);
-        }),
-        api.listen<{ document_id: string }>('document_failed', (event) => {
-          documentProgressState.remove(event.payload.document_id);
-          void fetchDocuments(true);
-        }),
-        api.listen<{ document_id: string }>('document_deleted', (event) => {
-          documentProgressState.remove(event.payload.document_id);
-          void fetchDocuments(true);
-        }),
-      ]);
-      unlistenFns = [unlistenIndexed, unlistenFailed, unlistenDeleted];
+      for (const register of registrations) {
+        const unlisten = await register();
+        if (!isMounted) {
+          unlisten();
+          for (const registeredUnlisten of listeners) registeredUnlisten();
+          return;
+        }
+        listeners.push(unlisten);
+      }
+
+      unlistenFns = listeners;
     } catch {
+      for (const unlisten of listeners) unlisten();
+      if (!isMounted) return;
+
       errorDialog.report({
         dedupeKey: 'document-event-listener',
         title: 'Document updates unavailable',
@@ -131,10 +165,20 @@
       });
       console.error('Failed to register document event listeners');
     }
+  }
+
+  onMount(() => {
+    isMounted = true;
+    void (async () => {
+      await fetchDocuments();
+      await listenForDocumentEvents();
+    })();
   });
 
   onDestroy(() => {
-    clearTimeout(pollTimeout);
+    isMounted = false;
+    if (pollTimeout) clearTimeout(pollTimeout);
+    if (requestTimeout) clearTimeout(requestTimeout);
     for (const fn of unlistenFns) fn();
   });
 </script>

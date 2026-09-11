@@ -94,6 +94,22 @@ fn storage_extension(filename: &str, file_type: &str) -> String {
         .unwrap_or_else(|| file_type.to_string())
 }
 
+fn is_managed_document_source_filename(filename: &str) -> bool {
+    let Some((id, extension)) = filename.split_once('.') else {
+        return false;
+    };
+    let is_canonical_v7_uuid = uuid::Uuid::parse_str(id)
+        .is_ok_and(|uuid| uuid.get_version_num() == 7 && uuid.to_string() == id);
+
+    is_canonical_v7_uuid
+        && (1..=16).contains(&extension.len())
+        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn inference_mode_is_unchanged(current_mode: Option<&str>, requested_mode: &str) -> bool {
+    current_mode.unwrap_or("local") == requested_mode
+}
+
 fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     let crlf_boundary = buffer
         .windows(4)
@@ -1888,6 +1904,63 @@ async fn reconcile_pending_deletions(
     }
 }
 
+async fn reconcile_orphan_document_sources(
+    repo: &DocumentRepository,
+    app_local_data: &std::path::Path,
+) -> Result<usize, AppError> {
+    let registered_filenames: HashSet<String> = repo
+        .list_all()
+        .await?
+        .into_iter()
+        .filter_map(|document| {
+            document
+                .storage_path
+                .strip_prefix("documents/")
+                .filter(|filename| is_managed_document_source_filename(filename))
+                .map(str::to_owned)
+        })
+        .collect();
+    let docs_dir = app_local_data.join("documents");
+    let mut entries = match tokio::fs::read_dir(&docs_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(AppError::Io(error.to_string())),
+    };
+    let mut removed = 0;
+
+    while let Some(entry) = entries.next_entry().await? {
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        if !is_managed_document_source_filename(filename) || registered_filenames.contains(filename)
+        {
+            continue;
+        }
+
+        match entry.file_type().await {
+            Ok(file_type) if file_type.is_file() => {}
+            Ok(_) => continue,
+            Err(error) => {
+                warn!("startup source reconciliation — could not inspect {filename}: {error}");
+                continue;
+            }
+        }
+
+        match tokio::fs::remove_file(entry.path()).await {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                warn!(
+                    "startup source reconciliation — could not remove orphan {filename}: {error}"
+                );
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
 #[tauri::command]
 async fn delete_document(
     app: tauri::AppHandle,
@@ -2023,6 +2096,12 @@ async fn set_setting(
     }
 
     let repo = AppSettingsRepository::new(state.db_pool.clone());
+    if key == "inference_mode"
+        && inference_mode_is_unchanged(repo.get(&key).await?.as_deref(), &value)
+    {
+        return Ok(());
+    }
+
     let requeued_ids = if matches!(key.as_str(), "chunk_size" | "chunk_overlap") {
         {
             let _document_operation = state.document_operations.write().await;
@@ -2336,6 +2415,19 @@ pub fn run() {
                 &app_local_data,
             ));
 
+            match tauri::async_runtime::block_on(reconcile_orphan_document_sources(
+                &deletion_repo,
+                &app_local_data,
+            )) {
+                Ok(0) => {}
+                Ok(removed) => {
+                    info!("startup source reconciliation — removed {removed} orphaned source files");
+                }
+                Err(error) => {
+                    error!("startup source reconciliation — failed: {error}");
+                }
+            }
+
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
             let llm_initialization = Arc::new(tokio::sync::Mutex::new(
                 state::LlmInitializationState::default(),
@@ -2527,11 +2619,12 @@ mod tests {
     use super::{
         DEFAULT_EXTERNAL_MODEL, ExternalInferenceConfig, ExternalModelsResponse, IngestionJob,
         enqueue_requeued_documents, external_model_ids, external_model_is_available,
-        fetch_external_models, finish_llm_initialization, invalidate_llm_initialization,
-        llm_initialization_is_current, normalize_external_base_url, registry_read_retry_delay,
-        remove_non_fastembed_models, require_retrieved_citations, sse_event_boundary,
-        sse_event_data, storage_extension, validate_document_preview_document, validate_setting,
-        validate_upload,
+        fetch_external_models, finish_llm_initialization, inference_mode_is_unchanged,
+        invalidate_llm_initialization, is_managed_document_source_filename,
+        llm_initialization_is_current, normalize_external_base_url,
+        reconcile_orphan_document_sources, registry_read_retry_delay, remove_non_fastembed_models,
+        require_retrieved_citations, sse_event_boundary, sse_event_data, storage_extension,
+        validate_document_preview_document, validate_setting, validate_upload,
     };
     use domain::{AppError, Document, DocumentStatus};
     use std::{sync::Arc, time::Duration};
@@ -2681,6 +2774,26 @@ mod tests {
         assert_eq!(storage_extension("manual.DOCX", "docx"), "docx");
     }
 
+    #[test]
+    fn recognizes_only_managed_document_source_filenames() {
+        let managed = format!("{}.docx", uuid::Uuid::now_v7());
+        assert!(is_managed_document_source_filename(&managed));
+        assert!(!is_managed_document_source_filename(
+            "550e8400-e29b-41d4-a716-446655440000.txt"
+        ));
+        assert!(!is_managed_document_source_filename(
+            "018f8db8-ef20-7d50-b7ad-f4567d0b5f85.archive.tar"
+        ));
+        assert!(!is_managed_document_source_filename("notes.txt"));
+    }
+
+    #[test]
+    fn recognizes_active_inference_mode_as_unchanged() {
+        assert!(inference_mode_is_unchanged(Some("local"), "local"));
+        assert!(inference_mode_is_unchanged(Some("external"), "external"));
+        assert!(inference_mode_is_unchanged(None, "local"));
+        assert!(!inference_mode_is_unchanged(Some("local"), "external"));
+    }
     fn indexed_text_document(filename: &str) -> Document {
         Document {
             id: "document-1".into(),
@@ -2700,6 +2813,50 @@ mod tests {
             error_message: None,
             retry_count: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn removes_only_unregistered_managed_document_sources() {
+        let app_local_data = std::env::temp_dir().join(format!(
+            "ragtag-source-reconciliation-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let docs_dir = app_local_data.join("documents");
+        tokio::fs::create_dir_all(&docs_dir).await.unwrap();
+        let pool = persistence::init_pool(&app_local_data).await.unwrap();
+        let repo = persistence::DocumentRepository::new(pool.clone());
+        let registered_filename = format!("{}.txt", uuid::Uuid::now_v7());
+        let orphan_filename = format!("{}.txt", uuid::Uuid::now_v7());
+        let managed_directory_name = format!("{}.txt", uuid::Uuid::now_v7());
+        let mut registered = indexed_text_document("registered.txt");
+        registered.storage_path = format!("documents/{registered_filename}");
+        repo.insert(&registered).await.unwrap();
+        tokio::fs::write(docs_dir.join(&registered_filename), b"registered")
+            .await
+            .unwrap();
+        tokio::fs::write(docs_dir.join(&orphan_filename), b"orphan")
+            .await
+            .unwrap();
+        tokio::fs::write(docs_dir.join("user-note.txt"), b"not managed")
+            .await
+            .unwrap();
+        tokio::fs::create_dir(docs_dir.join(&managed_directory_name))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reconcile_orphan_document_sources(&repo, &app_local_data)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(docs_dir.join(registered_filename).exists());
+        assert!(!docs_dir.join(orphan_filename).exists());
+        assert!(docs_dir.join("user-note.txt").exists());
+        assert!(docs_dir.join(managed_directory_name).is_dir());
+
+        pool.close().await;
+        std::fs::remove_dir_all(app_local_data).unwrap();
     }
 
     #[test]

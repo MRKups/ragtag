@@ -158,6 +158,7 @@
   }
 
   async function setDefaultInference(mode: InferenceConfig) {
+    if (mode === settingsState.inference_mode) return;
     await updateSetting('inference_mode', mode);
   }
 
@@ -627,7 +628,7 @@
           <div class="section-icon"><Database size={18} /></div>
           <div>
             <h3 id="pipeline-heading">RAG pipeline</h3>
-            <p>Fine-tune retrieval behavior for newly processed documents.</p>
+            <p>Fine-tune retrieval behavior for your documents.</p>
           </div>
         </div>
 
@@ -658,7 +659,7 @@
             />
           </div>
         </div>
-        <p class="help-text pipeline-note">Each estimated token is about 4 characters; overlap is capped at half of the chunk size. Changes only apply to documents uploaded after the change.</p>
+        <p class="help-text pipeline-note">Each estimated token is about 4 characters; overlap is capped at half of the chunk size. Changing either setting reindexes existing indexed documents.</p>
       </section>
 
       <section class="setting-group" aria-labelledby="storage-heading">

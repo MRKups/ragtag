@@ -9,7 +9,8 @@ pub struct ExtractedPages {
 }
 
 pub const TEXT_PREVIEW_MAX_BYTES: usize = 1024 * 1024;
-
+const DOCX_XML_MAX_BYTES: usize = 16 * 1024 * 1024;
+const MARKDOWN_MAX_NESTING: usize = 32;
 pub fn extract_pages(
     source_path: &Path,
     file_type: &str,
@@ -150,10 +151,8 @@ fn extract_docx_pages(
     let mut document_xml = archive
         .by_name("word/document.xml")
         .map_err(|_| AppError::Io("DOCX archive does not contain document text".into()))?;
-    let mut xml = Vec::new();
-    document_xml
-        .read_to_end(&mut xml)
-        .map_err(|e| AppError::Io(format!("DOCX extraction failed: {e}")))?;
+    let declared_xml_size = document_xml.size();
+    let xml = bounded_docx_xml(&mut document_xml, declared_xml_size)?;
 
     let page = nonpaginated_page(docx_body_text(&xml, false)?, "DOCX document")?;
     on_page_extracted(1, 1);
@@ -249,7 +248,6 @@ type MarkdownEvents<'a> = std::iter::Peekable<std::vec::IntoIter<MarkdownEvent<'
 #[derive(Clone, Copy)]
 enum BlockEnd {
     BlockQuote,
-    Item,
 }
 
 #[derive(Clone, Copy)]
@@ -257,6 +255,7 @@ enum InlineEnd {
     Paragraph,
     Heading,
     TableCell,
+    Item,
     Emphasis,
     Strong,
     Strikethrough,
@@ -271,10 +270,14 @@ fn markdown_blocks(markdown: &str) -> Vec<MarkdownBlock> {
         .collect::<Vec<_>>()
         .into_iter()
         .peekable();
-    parse_blocks(&mut events, None)
+    parse_blocks(&mut events, None, 0)
 }
 
-fn parse_blocks(events: &mut MarkdownEvents<'_>, end: Option<BlockEnd>) -> Vec<MarkdownBlock> {
+fn parse_blocks(
+    events: &mut MarkdownEvents<'_>,
+    end: Option<BlockEnd>,
+    nesting: usize,
+) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
 
     while let Some(event) = events.next() {
@@ -286,21 +289,29 @@ fn parse_blocks(events: &mut MarkdownEvents<'_>, end: Option<BlockEnd>) -> Vec<M
 
         match event {
             MarkdownEvent::Start(Tag::Paragraph) => blocks.push(MarkdownBlock::Paragraph {
-                content: parse_inlines(events, InlineEnd::Paragraph),
+                content: parse_inlines(events, InlineEnd::Paragraph, 0),
             }),
             MarkdownEvent::Start(Tag::Heading { level, .. }) => {
                 blocks.push(MarkdownBlock::Heading {
                     level: level as u8,
-                    content: parse_inlines(events, InlineEnd::Heading),
+                    content: parse_inlines(events, InlineEnd::Heading, 0),
                 });
             }
             MarkdownEvent::Start(Tag::BlockQuote(_)) => {
-                blocks.push(MarkdownBlock::BlockQuote {
-                    blocks: parse_blocks(events, Some(BlockEnd::BlockQuote)),
-                });
+                if nesting < MARKDOWN_MAX_NESTING {
+                    blocks.push(MarkdownBlock::BlockQuote {
+                        blocks: parse_blocks(events, Some(BlockEnd::BlockQuote), nesting + 1),
+                    });
+                } else {
+                    push_flattened_block(events, &mut blocks);
+                }
             }
             MarkdownEvent::Start(Tag::List(start)) => {
-                blocks.push(parse_list(events, start));
+                if nesting < MARKDOWN_MAX_NESTING {
+                    blocks.push(parse_list(events, start, nesting + 1));
+                } else {
+                    push_flattened_block(events, &mut blocks);
+                }
             }
             MarkdownEvent::Start(Tag::CodeBlock(kind)) => {
                 blocks.push(parse_code_block(events, kind));
@@ -318,24 +329,136 @@ fn parse_blocks(events: &mut MarkdownEvents<'_>, end: Option<BlockEnd>) -> Vec<M
 fn matches_block_end(tag_end: &TagEnd, expected: Option<BlockEnd>) -> bool {
     matches!(
         (tag_end, expected),
-        (TagEnd::BlockQuote(_), Some(BlockEnd::BlockQuote)) | (TagEnd::Item, Some(BlockEnd::Item))
+        (TagEnd::BlockQuote(_), Some(BlockEnd::BlockQuote))
     )
 }
 
-fn parse_list(events: &mut MarkdownEvents<'_>, start: Option<u64>) -> MarkdownBlock {
+fn parse_list(
+    events: &mut MarkdownEvents<'_>,
+    start: Option<u64>,
+    nesting: usize,
+) -> MarkdownBlock {
     let mut items = Vec::new();
 
     while let Some(event) = events.next() {
         match event {
-            MarkdownEvent::Start(Tag::Item) => {
-                items.push(parse_blocks(events, Some(BlockEnd::Item)));
-            }
+            MarkdownEvent::Start(Tag::Item) => items.push(parse_list_item(events, nesting)),
             MarkdownEvent::End(TagEnd::List(_)) => break,
             _ => {}
         }
     }
 
     MarkdownBlock::List { start, items }
+}
+
+fn parse_list_item(events: &mut MarkdownEvents<'_>, nesting: usize) -> Vec<MarkdownBlock> {
+    let mut blocks = Vec::new();
+    let mut inline_events = Vec::new();
+
+    while let Some(event) = events.next() {
+        match event {
+            MarkdownEvent::End(TagEnd::Item) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                break;
+            }
+            MarkdownEvent::Start(Tag::Paragraph) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                blocks.push(MarkdownBlock::Paragraph {
+                    content: parse_inlines(events, InlineEnd::Paragraph, 0),
+                });
+            }
+            MarkdownEvent::Start(Tag::Heading { level, .. }) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                blocks.push(MarkdownBlock::Heading {
+                    level: level as u8,
+                    content: parse_inlines(events, InlineEnd::Heading, 0),
+                });
+            }
+            MarkdownEvent::Start(Tag::BlockQuote(_)) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                if nesting < MARKDOWN_MAX_NESTING {
+                    blocks.push(MarkdownBlock::BlockQuote {
+                        blocks: parse_blocks(events, Some(BlockEnd::BlockQuote), nesting + 1),
+                    });
+                } else {
+                    push_flattened_block(events, &mut blocks);
+                }
+            }
+            MarkdownEvent::Start(Tag::List(start)) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                if nesting < MARKDOWN_MAX_NESTING {
+                    blocks.push(parse_list(events, start, nesting + 1));
+                } else {
+                    push_flattened_block(events, &mut blocks);
+                }
+            }
+            MarkdownEvent::Start(Tag::CodeBlock(kind)) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                blocks.push(parse_code_block(events, kind));
+            }
+            MarkdownEvent::Start(Tag::Table(_)) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                blocks.push(parse_table(events));
+            }
+            MarkdownEvent::Start(Tag::HtmlBlock) => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                skip_until(events, TagEnd::HtmlBlock);
+            }
+            MarkdownEvent::Rule => {
+                push_tight_list_text(&mut blocks, &mut inline_events);
+                blocks.push(MarkdownBlock::ThematicBreak);
+            }
+            event => inline_events.push(event),
+        }
+    }
+
+    blocks
+}
+
+fn push_tight_list_text(
+    blocks: &mut Vec<MarkdownBlock>,
+    inline_events: &mut Vec<MarkdownEvent<'_>>,
+) {
+    if inline_events.is_empty() {
+        return;
+    }
+
+    let mut events = std::mem::take(inline_events);
+    events.push(MarkdownEvent::End(TagEnd::Item));
+    let mut events = events.into_iter().peekable();
+    let content = parse_inlines(&mut events, InlineEnd::Item, 0);
+    if !content.is_empty() {
+        blocks.push(MarkdownBlock::Paragraph { content });
+    }
+}
+
+fn push_flattened_block(events: &mut MarkdownEvents<'_>, blocks: &mut Vec<MarkdownBlock>) {
+    let content = flatten_block(events);
+    if !content.is_empty() {
+        blocks.push(MarkdownBlock::Paragraph { content });
+    }
+}
+
+fn flatten_block(events: &mut MarkdownEvents<'_>) -> Vec<MarkdownInline> {
+    let mut content = Vec::new();
+    let mut nesting = 1;
+
+    while let Some(event) = events.next() {
+        match event {
+            MarkdownEvent::Start(Tag::BlockQuote(_)) | MarkdownEvent::Start(Tag::List(_)) => {
+                nesting += 1;
+            }
+            MarkdownEvent::End(TagEnd::BlockQuote(_)) | MarkdownEvent::End(TagEnd::List(_)) => {
+                nesting -= 1;
+                if nesting == 0 {
+                    break;
+                }
+            }
+            event => push_plain_inline(&mut content, event),
+        }
+    }
+
+    content
 }
 
 fn parse_code_block(events: &mut MarkdownEvents<'_>, kind: CodeBlockKind<'_>) -> MarkdownBlock {
@@ -386,7 +509,7 @@ fn parse_table_header(events: &mut MarkdownEvents<'_>) -> Vec<Vec<MarkdownInline
     while let Some(event) = events.next() {
         match event {
             MarkdownEvent::Start(Tag::TableCell) => {
-                cells.push(parse_inlines(events, InlineEnd::TableCell));
+                cells.push(parse_inlines(events, InlineEnd::TableCell, 0));
             }
             MarkdownEvent::End(TagEnd::TableHead) => break,
             _ => {}
@@ -402,7 +525,7 @@ fn parse_table_row(events: &mut MarkdownEvents<'_>) -> Vec<Vec<MarkdownInline>> 
     while let Some(event) = events.next() {
         match event {
             MarkdownEvent::Start(Tag::TableCell) => {
-                cells.push(parse_inlines(events, InlineEnd::TableCell));
+                cells.push(parse_inlines(events, InlineEnd::TableCell, 0));
             }
             MarkdownEvent::End(TagEnd::TableRow) => break,
             _ => {}
@@ -412,7 +535,11 @@ fn parse_table_row(events: &mut MarkdownEvents<'_>) -> Vec<Vec<MarkdownInline>> 
     cells
 }
 
-fn parse_inlines(events: &mut MarkdownEvents<'_>, end: InlineEnd) -> Vec<MarkdownInline> {
+fn parse_inlines(
+    events: &mut MarkdownEvents<'_>,
+    end: InlineEnd,
+    nesting: usize,
+) -> Vec<MarkdownInline> {
     let mut content = Vec::new();
 
     while let Some(event) = events.next() {
@@ -447,30 +574,58 @@ fn parse_inlines(events: &mut MarkdownEvents<'_>, end: InlineEnd) -> Vec<Markdow
                     content: value.into_string(),
                 });
             }
-            MarkdownEvent::Start(Tag::Emphasis) => content.push(MarkdownInline::Emphasis {
-                content: parse_inlines(events, InlineEnd::Emphasis),
-            }),
-            MarkdownEvent::Start(Tag::Strong) => content.push(MarkdownInline::Strong {
-                content: parse_inlines(events, InlineEnd::Strong),
-            }),
+            MarkdownEvent::Start(Tag::Emphasis) => {
+                if nesting < MARKDOWN_MAX_NESTING {
+                    content.push(MarkdownInline::Emphasis {
+                        content: parse_inlines(events, InlineEnd::Emphasis, nesting + 1),
+                    });
+                } else {
+                    content.extend(flatten_inlines(events, InlineEnd::Emphasis));
+                }
+            }
+            MarkdownEvent::Start(Tag::Strong) => {
+                if nesting < MARKDOWN_MAX_NESTING {
+                    content.push(MarkdownInline::Strong {
+                        content: parse_inlines(events, InlineEnd::Strong, nesting + 1),
+                    });
+                } else {
+                    content.extend(flatten_inlines(events, InlineEnd::Strong));
+                }
+            }
             MarkdownEvent::Start(Tag::Strikethrough) => {
-                content.push(MarkdownInline::Strikethrough {
-                    content: parse_inlines(events, InlineEnd::Strikethrough),
-                });
+                if nesting < MARKDOWN_MAX_NESTING {
+                    content.push(MarkdownInline::Strikethrough {
+                        content: parse_inlines(events, InlineEnd::Strikethrough, nesting + 1),
+                    });
+                } else {
+                    content.extend(flatten_inlines(events, InlineEnd::Strikethrough));
+                }
             }
             MarkdownEvent::Start(Tag::Link { dest_url, .. }) => {
-                let link_content = parse_inlines(events, InlineEnd::Link);
-                if let Some(href) = safe_link_href(&dest_url) {
-                    content.push(MarkdownInline::Link {
-                        href,
-                        content: link_content,
-                    });
+                let link_content = if nesting < MARKDOWN_MAX_NESTING {
+                    parse_inlines(events, InlineEnd::Link, nesting + 1)
+                } else {
+                    flatten_inlines(events, InlineEnd::Link)
+                };
+                if nesting < MARKDOWN_MAX_NESTING {
+                    if let Some(href) = safe_link_href(&dest_url) {
+                        content.push(MarkdownInline::Link {
+                            href,
+                            content: link_content,
+                        });
+                    } else {
+                        content.extend(link_content);
+                    }
                 } else {
                     content.extend(link_content);
                 }
             }
             MarkdownEvent::Start(Tag::Image { .. }) => {
-                content.extend(parse_inlines(events, InlineEnd::Image));
+                if nesting < MARKDOWN_MAX_NESTING {
+                    content.extend(parse_inlines(events, InlineEnd::Image, nesting + 1));
+                } else {
+                    content.extend(flatten_inlines(events, InlineEnd::Image));
+                }
             }
             _ => {}
         }
@@ -479,12 +634,72 @@ fn parse_inlines(events: &mut MarkdownEvents<'_>, end: InlineEnd) -> Vec<Markdow
     content
 }
 
+fn flatten_inlines(events: &mut MarkdownEvents<'_>, expected: InlineEnd) -> Vec<MarkdownInline> {
+    let mut content = Vec::new();
+    let mut nesting = 1;
+
+    while let Some(event) = events.next() {
+        match &event {
+            MarkdownEvent::Start(tag) if starts_inline_end(tag, expected) => nesting += 1,
+            MarkdownEvent::End(tag_end) if matches_inline_end(tag_end, expected) => {
+                nesting -= 1;
+                if nesting == 0 {
+                    break;
+                }
+            }
+            _ => push_plain_inline(&mut content, event),
+        }
+    }
+
+    content
+}
+
+fn starts_inline_end(tag: &Tag<'_>, expected: InlineEnd) -> bool {
+    matches!(
+        (tag, expected),
+        (Tag::Emphasis, InlineEnd::Emphasis)
+            | (Tag::Strong, InlineEnd::Strong)
+            | (Tag::Strikethrough, InlineEnd::Strikethrough)
+            | (Tag::Link { .. }, InlineEnd::Link)
+            | (Tag::Image { .. }, InlineEnd::Image)
+    )
+}
+
+fn push_plain_inline(content: &mut Vec<MarkdownInline>, event: MarkdownEvent<'_>) {
+    match event {
+        MarkdownEvent::Text(text) => content.push(MarkdownInline::Text {
+            content: text.into_string(),
+        }),
+        MarkdownEvent::Code(text) => content.push(MarkdownInline::Code {
+            content: text.into_string(),
+        }),
+        MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => content.push(MarkdownInline::Break),
+        MarkdownEvent::TaskListMarker(checked) => content.push(MarkdownInline::Text {
+            content: if checked {
+                "☑ ".into()
+            } else {
+                "☐ ".into()
+            },
+        }),
+        MarkdownEvent::FootnoteReference(label) => content.push(MarkdownInline::Text {
+            content: format!("[{label}]"),
+        }),
+        MarkdownEvent::InlineMath(value) | MarkdownEvent::DisplayMath(value) => {
+            content.push(MarkdownInline::Code {
+                content: value.into_string(),
+            });
+        }
+        _ => {}
+    }
+}
+
 fn matches_inline_end(tag_end: &TagEnd, expected: InlineEnd) -> bool {
     matches!(
         (tag_end, expected),
         (TagEnd::Paragraph, InlineEnd::Paragraph)
             | (TagEnd::Heading(_), InlineEnd::Heading)
             | (TagEnd::TableCell, InlineEnd::TableCell)
+            | (TagEnd::Item, InlineEnd::Item)
             | (TagEnd::Emphasis, InlineEnd::Emphasis)
             | (TagEnd::Strong, InlineEnd::Strong)
             | (TagEnd::Strikethrough, InlineEnd::Strikethrough)
@@ -509,6 +724,31 @@ fn skip_until(events: &mut MarkdownEvents<'_>, expected: TagEnd) {
         }
     }
 }
+
+fn bounded_docx_xml(reader: &mut impl Read, declared_size: u64) -> Result<Vec<u8>, AppError> {
+    if declared_size > DOCX_XML_MAX_BYTES as u64 {
+        return Err(docx_xml_limit_error());
+    }
+
+    let mut xml = Vec::with_capacity(declared_size as usize);
+    reader
+        .take((DOCX_XML_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut xml)
+        .map_err(|e| AppError::Io(format!("DOCX extraction failed: {e}")))?;
+
+    if xml.len() > DOCX_XML_MAX_BYTES {
+        return Err(docx_xml_limit_error());
+    }
+
+    Ok(xml)
+}
+
+fn docx_xml_limit_error() -> AppError {
+    AppError::InvalidInput(format!(
+        "DOCX document XML exceeds the {DOCX_XML_MAX_BYTES}-byte extraction limit"
+    ))
+}
+
 fn pages_from_page_texts(
     page_texts: Vec<String>,
     expected_page_count: usize,
@@ -548,11 +788,16 @@ fn nonpaginated_page(text: String, format: &str) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        TEXT_PREVIEW_MAX_BYTES, document_preview, docx_body_text, extract_pages, nonpaginated_page,
-        pages_from_page_texts,
+        DOCX_XML_MAX_BYTES, InlineEnd, MARKDOWN_MAX_NESTING, TEXT_PREVIEW_MAX_BYTES,
+        bounded_docx_xml, document_preview, docx_body_text, extract_pages, markdown_blocks,
+        nonpaginated_page, pages_from_page_texts, parse_inlines,
     };
     use domain::{DocumentPreview, MarkdownBlock, MarkdownInline};
-    use std::{fs::File, io::Write};
+    use pulldown_cmark::{Event as MarkdownEvent, Tag, TagEnd};
+    use std::{
+        fs::File,
+        io::{Cursor, Write},
+    };
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     #[test]
@@ -603,6 +848,20 @@ mod tests {
             "First paragraph\nSecond "
         );
         assert!(docx_body_text(mid_entity, false).is_err());
+    }
+
+    #[test]
+    fn rejects_docx_xml_beyond_declared_or_actual_extraction_limit() {
+        let declared_error = bounded_docx_xml(
+            &mut Cursor::new(Vec::<u8>::new()),
+            DOCX_XML_MAX_BYTES as u64 + 1,
+        )
+        .expect_err("an oversized declared XML entry must be rejected before allocation");
+        assert!(matches!(declared_error, domain::AppError::InvalidInput(_)));
+
+        let actual_error = bounded_docx_xml(&mut Cursor::new(vec![0; DOCX_XML_MAX_BYTES + 1]), 0)
+            .expect_err("an XML entry that expands past its declared size must be rejected");
+        assert!(matches!(actual_error, domain::AppError::InvalidInput(_)));
     }
 
     #[test]
@@ -713,6 +972,129 @@ mod tests {
                 truncated: true,
             }
         );
+    }
+
+    #[test]
+    fn bounds_deeply_nested_markdown_preview_conversion() {
+        let markdown = format!("{}deep", "> ".repeat(MARKDOWN_MAX_NESTING + 1));
+        let blocks = markdown_blocks(&markdown);
+        assert!(
+            max_block_nesting(&blocks) <= MARKDOWN_MAX_NESTING,
+            "block nesting must be capped"
+        );
+        assert!(block_text(&blocks).contains("deep"));
+
+        let mut events = Vec::new();
+        for _ in 0..=MARKDOWN_MAX_NESTING {
+            events.push(MarkdownEvent::Start(Tag::Emphasis));
+        }
+        events.push(MarkdownEvent::Text("deep".into()));
+        for _ in 0..=MARKDOWN_MAX_NESTING {
+            events.push(MarkdownEvent::End(TagEnd::Emphasis));
+        }
+        events.push(MarkdownEvent::End(TagEnd::Paragraph));
+        let mut events = events.into_iter().peekable();
+        let inlines = parse_inlines(&mut events, InlineEnd::Paragraph, 0);
+
+        assert!(
+            max_inline_nesting(&inlines) <= MARKDOWN_MAX_NESTING,
+            "inline nesting must be capped"
+        );
+        assert!(inline_text(&inlines).contains("deep"));
+    }
+
+    #[test]
+    fn preserves_direct_text_in_tight_list_items() {
+        let blocks = markdown_blocks("- first item\n- second **item**\n");
+        let [MarkdownBlock::List { items, .. }] = blocks.as_slice() else {
+            panic!("a Markdown list must produce a typed list block");
+        };
+
+        assert!(matches!(
+            items[0].as_slice(),
+            [MarkdownBlock::Paragraph { content }]
+                if content == &vec![MarkdownInline::Text { content: "first item".into() }]
+        ));
+        assert!(matches!(
+            items[1].as_slice(),
+            [MarkdownBlock::Paragraph { content }]
+                if matches!(
+                    content.as_slice(),
+                    [
+                        MarkdownInline::Text { content: prefix },
+                        MarkdownInline::Strong { content: strong_content }
+                    ] if prefix == "second "
+                        && strong_content == &vec![MarkdownInline::Text { content: "item".into() }]
+                )
+        ));
+    }
+
+    fn max_block_nesting(blocks: &[MarkdownBlock]) -> usize {
+        blocks
+            .iter()
+            .map(|block| match block {
+                MarkdownBlock::BlockQuote { blocks } => 1 + max_block_nesting(blocks),
+                MarkdownBlock::List { items, .. } => items
+                    .iter()
+                    .map(|item| 1 + max_block_nesting(item))
+                    .max()
+                    .unwrap_or(1),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn block_text(blocks: &[MarkdownBlock]) -> String {
+        blocks
+            .iter()
+            .map(|block| match block {
+                MarkdownBlock::Heading { content, .. } | MarkdownBlock::Paragraph { content } => {
+                    inline_text(content)
+                }
+                MarkdownBlock::BlockQuote { blocks } => block_text(blocks),
+                MarkdownBlock::List { items, .. } => {
+                    items.iter().map(|item| block_text(item)).collect()
+                }
+                MarkdownBlock::CodeBlock { content, .. } => content.clone(),
+                MarkdownBlock::Table { header, rows } => header
+                    .iter()
+                    .chain(rows.iter().flatten())
+                    .map(|cell| inline_text(cell))
+                    .collect(),
+                MarkdownBlock::ThematicBreak => String::new(),
+            })
+            .collect()
+    }
+
+    fn max_inline_nesting(inlines: &[MarkdownInline]) -> usize {
+        inlines
+            .iter()
+            .map(|inline| match inline {
+                MarkdownInline::Emphasis { content }
+                | MarkdownInline::Strong { content }
+                | MarkdownInline::Strikethrough { content }
+                | MarkdownInline::Link { content, .. } => 1 + max_inline_nesting(content),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn inline_text(inlines: &[MarkdownInline]) -> String {
+        inlines
+            .iter()
+            .map(|inline| match inline {
+                MarkdownInline::Text { content } | MarkdownInline::Code { content } => {
+                    content.clone()
+                }
+                MarkdownInline::Emphasis { content }
+                | MarkdownInline::Strong { content }
+                | MarkdownInline::Strikethrough { content }
+                | MarkdownInline::Link { content, .. } => inline_text(content),
+                MarkdownInline::Break => "\n".into(),
+            })
+            .collect()
     }
 
     #[test]

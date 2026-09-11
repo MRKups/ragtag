@@ -52,7 +52,10 @@ CREATE TABLE documents (
 CREATE INDEX idx_documents_status ON documents(status);
 CREATE UNIQUE INDEX idx_documents_file_hash ON documents(file_hash);
 CREATE INDEX idx_documents_created ON documents(created_at DESC);
+
 ```
+
+The unique file-hash index also resolves an insert race as typed `DuplicateDocument`; only that constraint is classified as a duplicate, while unrelated database constraints remain database errors.
 
 ## LanceDB (Embedded Vector DB)
 
@@ -92,6 +95,8 @@ Example keys:
 - `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
 
 Changing `generation_model`, `tokenizer_model`, or `gguf_filename` while `inference_mode` is `"local"` immediately withdraws the loaded local model, emits `llm_unready`, and starts one generation-tagged initialization from the persisted settings. Rapid edits coalesce behind the active initialization, so an obsolete initializer cannot publish progress, readiness, errors, or a model and only the newest persisted configuration is subsequently initialized. While `"external"` is selected, those local settings are stored without downloading or building a local model; switching back to `"local"` uses the stored values.
+
+Writing an already-selected `inference_mode` is a no-op and does not restart readiness. The Settings UI retains the last persisted value for every bound setting and restores it if its update fails.
 
 - `chunk_size`: Token count per embedding-safe chunk (default `"512"`, maximum `"2048"`).
 - `chunk_overlap`: Token overlap between chunks on the same page (default `"80"`).

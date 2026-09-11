@@ -10,6 +10,18 @@ fn sql_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
 }
 
+fn insert_document_err(error: sqlx::Error) -> AppError {
+    if error.as_database_error().is_some_and(|database_error| {
+        database_error
+            .message()
+            .contains("UNIQUE constraint failed: documents.file_hash")
+    }) {
+        AppError::DuplicateDocument("This file was uploaded concurrently".into())
+    } else {
+        sql_err(error)
+    }
+}
+
 pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError> {
     std::fs::create_dir_all(app_local_data_dir)?;
 
@@ -94,7 +106,7 @@ impl DocumentRepository {
         .bind(doc.retry_count)
         .execute(&self.pool)
         .await
-        .map_err(sql_err)?;
+        .map_err(insert_document_err)?;
 
         Ok(())
     }
@@ -543,7 +555,7 @@ impl AppSettingsRepository {
 #[cfg(test)]
 mod tests {
     use super::{AppSettingsRepository, DocumentRepository, init_pool};
-    use domain::{Document, DocumentStatus, models::IndexProvenance};
+    use domain::{AppError, Document, DocumentStatus, models::IndexProvenance};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DATABASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -621,6 +633,36 @@ mod tests {
         assert_eq!(requeued.embedding_model, None);
         assert_eq!(requeued.indexing_provenance, Some(stale));
         assert_eq!(requeued.retry_count, 0);
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn maps_file_hash_uniqueness_conflicts_to_duplicate_document() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let mut first = indexed_document("first", provenance.clone());
+        first.file_hash = Some(vec![42; 64]);
+        let mut concurrent = indexed_document("concurrent", provenance.clone());
+        concurrent.file_hash = first.file_hash.clone();
+
+        documents.insert(&first).await.unwrap();
+        assert!(matches!(
+            documents.insert(&concurrent).await,
+            Err(AppError::DuplicateDocument(_))
+        ));
+        let mut id_collision = indexed_document("first", provenance);
+        id_collision.file_hash = Some(vec![43; 64]);
+        assert!(matches!(
+            documents.insert(&id_collision).await,
+            Err(AppError::Database(_))
+        ));
 
         pool.close().await;
         std::fs::remove_dir_all(path).unwrap();

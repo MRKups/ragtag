@@ -26,31 +26,36 @@
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
-    isDragging = true;
+    if (!isUploading) isDragging = true;
   }
 
   function handleDragLeave() {
     isDragging = false;
   }
 
-  async function handleDrop(e: DragEvent) {
+  function handleDrop(e: DragEvent) {
     e.preventDefault();
     isDragging = false;
+    if (isUploading) return;
+
     const droppedFiles = e.dataTransfer?.files;
     if (droppedFiles && droppedFiles.length > 0) {
       addFiles(Array.from(droppedFiles));
     }
   }
 
-  async function handleFileSelect(e: Event) {
+  function handleFileSelect(e: Event) {
     const target = e.target as HTMLInputElement;
-    if (target.files && target.files.length > 0) {
-      addFiles(Array.from(target.files));
-    }
+    const selectedFiles = target.files ? Array.from(target.files) : [];
     target.value = '';
+
+    if (isUploading || selectedFiles.length === 0) return;
+    addFiles(selectedFiles);
   }
 
   function addFiles(newFiles: File[]) {
+    if (isUploading) return;
+
     const maxFileSize = 50 * 1024 * 1024;
     const oversizedFiles = newFiles.filter((file) => file.size > maxFileSize);
     if (oversizedFiles.length > 0) {
@@ -79,42 +84,48 @@
     files = [...files, ...newFileStatuses];
   }
 
-  function removeFile(index: number) {
-    files = files.filter((_, i) => i !== index);
+  function removeFile(id: number) {
+    if (isUploading) return;
+    files = files.filter((file) => file.id !== id);
   }
 
   function isUploadCandidate(file: FileStatus) {
     return file.status === 'pending' || file.status === 'error';
   }
 
+  function updateUploadStatus(
+    id: number,
+    status: Extract<FileStatus['status'], 'success' | 'error' | 'rejected'>,
+    errorMsg: string
+  ) {
+    files = files.map((file) => file.id === id ? { ...file, status, errorMsg } : file);
+  }
+
   async function uploadAll() {
-    if (!files.some(isUploadCandidate)) return;
+    const uploadTargets = files
+      .filter(isUploadCandidate)
+      .map(({ id, file }) => ({ id, file }));
+    if (uploadTargets.length === 0) return;
 
     isUploading = true;
-    
-    files = files.map(f => 
-      isUploadCandidate(f) ? { ...f, status: 'uploading' } : f
+
+    files = files.map(file =>
+      isUploadCandidate(file) ? { ...file, status: 'uploading' } : file
     );
 
     let successCount = 0;
 
-    for (let i = 0; i < files.length; i++) {
-      if (files[i].status !== 'uploading') continue;
-      
+    for (const target of uploadTargets) {
       try {
-        await api.uploadDocument(files[i].file, (progress) => documentProgressState.record(progress));
-        files[i] = { ...files[i], status: 'success', errorMsg: 'Queued' };
+        await api.uploadDocument(target.file, (progress) => documentProgressState.record(progress));
+        updateUploadStatus(target.id, 'success', 'Queued');
         successCount++;
       } catch (error) {
         const message = errorMessage(error);
         const rejected = message.startsWith('Invalid input:') || message.startsWith('A document with this content already exists:');
-        files[i] = {
-          ...files[i],
-          status: rejected ? 'rejected' : 'error',
-          errorMsg: rejected ? 'Upload rejected' : 'Upload did not start'
-        };
+        updateUploadStatus(target.id, rejected ? 'rejected' : 'error', rejected ? 'Upload rejected' : 'Upload did not start');
         errorDialog.report({
-          dedupeKey: rejected ? 'document-upload-rejected' : `document-upload-${files[i].file.name}`,
+          dedupeKey: rejected ? 'document-upload-rejected' : `document-upload-${target.file.name}`,
           title: rejected ? 'File cannot be uploaded' : 'Document upload failed',
           message: rejected
             ? 'Ragtag could not accept this file as a PDF, DOCX, or UTF-8 text document.'
@@ -173,7 +184,7 @@
   <!-- File List -->
   {#if files.length > 0}
     <div class="file-list">
-      {#each files as file, i (file.id)}
+      {#each files as file (file.id)}
         <div class="file-item">
           
           <div class="file-info">
@@ -202,7 +213,8 @@
               <button 
                 type="button"
                 class="remove-btn"
-                onclick={() => removeFile(i)}
+                onclick={() => removeFile(file.id)}
+                disabled={isUploading}
               >
                 <X size={20} />
               </button>

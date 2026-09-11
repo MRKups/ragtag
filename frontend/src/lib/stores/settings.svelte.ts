@@ -23,20 +23,61 @@ export class SettingsState {
   isLoading = $state(true);
   requestedInferenceConfiguration = $state<InferenceConfiguration | null>(null);
 
+  private persistedSettings: Record<string, string> = {
+    inference_mode: this.inference_mode,
+    external_base_url: this.external_base_url,
+    external_model: this.external_model,
+    generation_model: this.generation_model,
+    tokenizer_model: this.tokenizer_model,
+    gguf_filename: this.gguf_filename,
+    use_query_enhancement: String(this.use_query_enhancement),
+    chunk_size: String(this.chunk_size),
+    chunk_overlap: String(this.chunk_overlap)
+  };
+
+  private applySettingValue(key: string, value: string) {
+    if (key === 'use_query_enhancement') this.use_query_enhancement = value === 'true';
+    if (key === 'inference_mode') this.inference_mode = value;
+    if (key === 'external_base_url') this.external_base_url = value;
+    if (key === 'external_model') this.external_model = value;
+    if (key === 'generation_model') this.generation_model = value;
+    if (key === 'tokenizer_model') this.tokenizer_model = value;
+    if (key === 'gguf_filename') this.gguf_filename = value;
+    if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);
+    if (key === 'chunk_overlap') this.chunk_overlap = parseInt(value, 10);
+  }
+
+  private currentSettingValue(key: string): string | undefined {
+    if (key === 'use_query_enhancement') return String(this.use_query_enhancement);
+    if (key === 'inference_mode') return this.inference_mode;
+    if (key === 'external_base_url') return this.external_base_url;
+    if (key === 'external_model') return this.external_model;
+    if (key === 'generation_model') return this.generation_model;
+    if (key === 'tokenizer_model') return this.tokenizer_model;
+    if (key === 'gguf_filename') return this.gguf_filename;
+    if (key === 'chunk_size') return String(this.chunk_size);
+    if (key === 'chunk_overlap') return String(this.chunk_overlap);
+  }
+
+  private persistSettingValue(key: string, value: string) {
+    this.persistedSettings[key] = value;
+    this.applySettingValue(key, value);
+  }
+
 
   async load() {
     this.isLoading = true;
     try {
       const settings = await api.getSettings();
-      if (settings.inference_mode) this.inference_mode = settings.inference_mode;
-      if (settings.external_base_url) this.external_base_url = settings.external_base_url;
-      if (settings.external_model) this.external_model = settings.external_model;
-      if (settings.generation_model) this.generation_model = settings.generation_model;
-      if (settings.tokenizer_model) this.tokenizer_model = settings.tokenizer_model;
-      if (settings.gguf_filename) this.gguf_filename = settings.gguf_filename;
-      if (settings.use_query_enhancement) this.use_query_enhancement = settings.use_query_enhancement === 'true';
-      if (settings.chunk_size) this.chunk_size = parseInt(settings.chunk_size, 10);
-      if (settings.chunk_overlap) this.chunk_overlap = parseInt(settings.chunk_overlap, 10);
+      if (settings.inference_mode != null) this.persistSettingValue('inference_mode', settings.inference_mode);
+      if (settings.external_base_url != null) this.persistSettingValue('external_base_url', settings.external_base_url);
+      if (settings.external_model != null) this.persistSettingValue('external_model', settings.external_model);
+      if (settings.generation_model != null) this.persistSettingValue('generation_model', settings.generation_model);
+      if (settings.tokenizer_model != null) this.persistSettingValue('tokenizer_model', settings.tokenizer_model);
+      if (settings.gguf_filename != null) this.persistSettingValue('gguf_filename', settings.gguf_filename);
+      if (settings.use_query_enhancement != null) this.persistSettingValue('use_query_enhancement', settings.use_query_enhancement);
+      if (settings.chunk_size != null) this.persistSettingValue('chunk_size', settings.chunk_size);
+      if (settings.chunk_overlap != null) this.persistSettingValue('chunk_overlap', settings.chunk_overlap);
     } catch {
       errorDialog.report({
         dedupeKey: 'settings-load',
@@ -53,16 +94,7 @@ export class SettingsState {
   async update(key: string, value: string): Promise<boolean> {
     try {
       await api.setSetting(key, value);
-      // Update local state based on key
-      if (key === 'use_query_enhancement') this.use_query_enhancement = value === 'true';
-      if (key === 'inference_mode') this.inference_mode = value;
-      if (key === 'external_base_url') this.external_base_url = value;
-      if (key === 'external_model') this.external_model = value;
-      if (key === 'generation_model') this.generation_model = value;
-      if (key === 'tokenizer_model') this.tokenizer_model = value;
-      if (key === 'gguf_filename') this.gguf_filename = value;
-      if (key === 'chunk_size') this.chunk_size = parseInt(value, 10);
-      if (key === 'chunk_overlap') this.chunk_overlap = parseInt(value, 10);
+      this.persistSettingValue(key, value);
       return true;
     } catch {
       errorDialog.report({
@@ -71,7 +103,10 @@ export class SettingsState {
         message: 'Ragtag could not save this setting. Your previous setting is still in effect.',
         guidance: 'Check the value and try again.'
       });
-      console.error(`Failed to update setting ${key}`);
+      if (this.currentSettingValue(key)?.trim() === value) {
+        const persistedValue = this.persistedSettings[key];
+        if (persistedValue !== undefined) this.applySettingValue(key, persistedValue);
+      }
       return false;
     }
   }
