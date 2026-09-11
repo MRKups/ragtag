@@ -5,8 +5,7 @@ This document outlines the current layout of the application.
 ## Root Directory
 
 - `package.json`: NPM workspace / scripts for driving both Svelte and Tauri builds.
-- `Taskfile.yml`: Root development-task entry point for normal Apple Silicon work and release tasks; it contains no Intel runtime configuration.
-- `Taskfile.intel.yml`: Isolated Intel development-only tasks, including external ONNX Runtime validation and dynamic-link environment setup. Delete this file to remove the Intel development entry point.
+- `Taskfile.yml`: Root development-task entry point. Its `dev-intel` and `build-intel` tasks are the sole Intel development/test tooling; they validate and dynamically link the externally maintained ONNX Runtime and are not release tasks.
 - `opencode.jsonc`: Agent tooling configuration.
 - `docs/`: Architecture, specification documentation, and implementation tracker.
 - `frontend/`: Plain Svelte 5 SPA (no SvelteKit) built with Vite.

@@ -109,4 +109,4 @@ PDF and DOCX need format-specific extraction. PDF retains its physical page boun
 
 **Decision:** Release and bundle only Apple Silicon builds. Intel macOS exists solely as an isolated development/test path.
 
-**Rationale:** The product does not ship an Intel target, bundled ONNX Runtime dylib, Intel entitlements, or Intel release task. `Taskfile.intel.yml` owns the removable external-runtime setup used on an Intel developer host; the root taskfile and release paths remain Apple-Silicon-only.
+**Rationale:** The product does not ship an Intel target, bundled ONNX Runtime dylib, Intel entitlements, or Intel release task. The root taskfile's dedicated Intel development/test tasks own the removable external-runtime setup; no application business logic is Intel-specific, and the release paths remain Apple-Silicon-only.
