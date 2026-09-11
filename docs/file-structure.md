@@ -22,7 +22,7 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
 - `tsconfig.json`: Standalone config (no `.svelte-kit/` extend), with `$lib/*` path mapping.
 - `src/app.d.ts`: TypeScript declarations file (minimal — no SvelteKit `App` namespace).
 - `src/main.ts`: Entry point — mounts `App.svelte` into `#app`.
-- `src/App.svelte`: Root app shell with a compact, draggable macOS-overlay titlebar, header nav, `AppInitializer` boot gate, hash-based page routing via `{#key}` blocks, and CSS View Transitions.
+- `src/App.svelte`: Root app shell with a compact, draggable macOS-overlay titlebar, header nav, `AppInitializer` boot gate, and hash-based page routing via `{#key}` blocks. Navigation updates immediately rather than using a browser view transition, so rapid tab selection remains responsive.
 - `src/pages/`:
   - `QueryPage.svelte`: Query interface with streaming chat (left) and a citation-source panel (right). It renders PDFs through PDF.js and Rust-owned typed previews for UTF-8 sources and DOCX: generic text is verbatim, while Markdown is rendered from safe block/inline data without HTML injection. Its keyed route lifecycle never cancels or resets the singleton query state, so active and completed answers survive hash-route navigation; a terminal answer clears only the composer.
   - `DocumentsPage.svelte`: Document management — upload (left) and list (right).
