@@ -41,7 +41,7 @@ flowchart LR
 
 ## Environment note — Intel macOS pipeline tests
 
-This host has the Taskfile-compatible external ONNX Runtime at `~/.cache/mrk-ragtag/onnxruntime-1.28.0/build/MacOS/Release`. An executable `cargo test -p rag_pipeline && cargo test -p mrk-ragtag-app` rebuild under its dynamic-link environment did not finish within 600 seconds. The completed `ORT_SKIP_DOWNLOAD=1 cargo check --tests` commands type-check both suites without linking; run the executable suites from a warm build or supported Apple Silicon runner for runtime coverage.
+This host uses the Taskfile-compatible external ONNX Runtime at `~/.cache/mrk-ragtag/onnxruntime-1.28.0/build/MacOS/Release`, with dynamic linking and an rpath. Cold native dependency builds exceeded the 600-second command limit several times; resumed builds completed and executed both Rust test suites.
 
 ## Validation
 
@@ -50,6 +50,6 @@ This host has the Taskfile-compatible external ONNX Runtime at `~/.cache/mrk-rag
 - `npm --prefix frontend run check` — passed: 0 errors, 0 warnings.
 - `npm --prefix frontend run build` — passed; Vite reported its existing >500 kB chunk-size advisory.
 - `cargo test -p persistence` — passed: 8 tests.
-- `ORT_SKIP_DOWNLOAD=1 cargo check -p rag_pipeline --tests` — passed.
-- `ORT_SKIP_DOWNLOAD=1 cargo check -p mrk-ragtag-app --tests` — passed.
+- `cargo test -p rag_pipeline` — passed: 19 tests under the Intel ONNX Runtime environment.
+- `cargo test -p mrk-ragtag-app` — passed: 20 tests under the Intel ONNX Runtime environment.
 - `cargo fmt --check` — passed.
