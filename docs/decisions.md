@@ -109,4 +109,4 @@ PDF and DOCX need format-specific extraction. PDF retains its physical page boun
 
 **Decision:** Release and bundle only Apple Silicon builds. Intel macOS exists solely as an isolated development/test path.
 
-**Rationale:** The product does not ship an Intel target, bundled ONNX Runtime dylib, Intel entitlements, or Intel release task. The root taskfile's dedicated Intel development/test tasks own the removable external-runtime setup; no application business logic is Intel-specific, and the release paths remain Apple-Silicon-only.
+**Rationale:** The product does not ship an Intel target, bundled ONNX Runtime dylib, Intel entitlements, or Intel release task. The root Taskfile owns a removable external runtime at `~/.cache/mrk-ragtag/onnxruntime-1.28.0`; it rejects a runtime unless its `VERSION_NUMBER`, versioned dylib, and architecture match the pinned x86_64 ONNX Runtime 1.28.0 contract. This source/build directory stays outside the checkout, while Cargo uses its normal ignored host build output. No application business logic is Intel-specific, and the release paths remain Apple-Silicon-only.

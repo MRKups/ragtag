@@ -99,20 +99,20 @@ Frontend Svelte, TypeScript, and CSS changes update through Vite hot-module relo
 
 ### Intel macOS development only
 
-Ragtag releases support Apple Silicon only. An Intel Mac may still compile and run the development build by linking the current FastEmbed/ORT stack against an **external**, x86_64 ONNX Runtime 1.28.0 shared library. Do not add this dylib, its build output, environment variables, entitlements, or an Intel target to the repository or release bundle.
+Ragtag releases support Apple Silicon only. An Intel Mac may still compile and run the development build by linking the current FastEmbed/ORT stack against an **external**, x86_64 ONNX Runtime 1.28.0 shared library. Do not add the dylib or its build output to the repository or release bundle.
 
-The current ONNX Runtime release does not provide a prebuilt Intel macOS archive. Build the matching runtime outside the checkout once:
+The current ONNX Runtime release does not provide a prebuilt Intel macOS archive. The only manually procured dependency is the matching runtime source, built outside the checkout once:
 
 ```sh
-ORT_ROOT="$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0"
-git clone --depth 1 --branch v1.28.0 https://github.com/microsoft/onnxruntime.git "$ORT_ROOT"
+ORT_VERSION=1.28.0
+ORT_ROOT="$HOME/.cache/mrk-ragtag/onnxruntime-$ORT_VERSION"
+git clone --depth 1 --branch "v$ORT_VERSION" https://github.com/microsoft/onnxruntime.git "$ORT_ROOT"
 cd "$ORT_ROOT"
 ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
   --cmake_extra_defines CMAKE_DISABLE_FIND_PACKAGE_Protobuf=TRUE
-
 ```
 
-This CMake definition deliberately builds ONNX Runtime's pinned Protobuf source instead of mixing its bundled protoc 21.12 with Homebrew's newer Protobuf headers. It is required when `brew install protobuf` is present for LanceDB.
+This CMake definition deliberately builds ONNX Runtime's pinned Protobuf source instead of mixing its bundled protoc 21.12 with Homebrew's newer Protobuf headers. It is required when `brew install protobuf` is present for LanceDB. The build output must include `build/MacOS/Release/libonnxruntime.1.28.0.dylib`.
 
 Use the dedicated Intel tasks after the one-time runtime build:
 
