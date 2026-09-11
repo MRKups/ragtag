@@ -104,3 +104,9 @@ PDF and DOCX need format-specific extraction. PDF retains its physical page boun
 **Decision:** Use Tauri's native macOS overlay titlebar with hidden title text and retained traffic-light controls.
 
 **Rationale:** Overlay removes the visually separate native title strip while keeping native close, minimize, zoom, and window-drag behavior. A compact WebView header supplies the visual bar and reserves only the space required by traffic lights, avoiding a frameless custom-control implementation.
+
+## 13. macOS Platform Support
+
+**Decision:** Release and bundle only Apple Silicon builds. Intel macOS exists solely as an isolated development/test path.
+
+**Rationale:** The product does not ship an Intel target, bundled ONNX Runtime dylib, Intel entitlements, or Intel release task. `Taskfile.intel.yml` owns the removable external-runtime setup used on an Intel developer host; the root taskfile and release paths remain Apple-Silicon-only.

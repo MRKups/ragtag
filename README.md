@@ -114,15 +114,15 @@ cd "$ORT_ROOT"
 
 This CMake definition deliberately builds ONNX Runtime's pinned Protobuf source instead of mixing its bundled protoc 21.12 with Homebrew's newer Protobuf headers. It is required when `brew install protobuf` is present for LanceDB.
 
-Use the Intel tasks after the one-time runtime build:
+Use the isolated Intel taskfile after the one-time runtime build:
 
 ```sh
-task dev-intel
+task -t Taskfile.intel.yml dev
 # Or compile the native debug application without launching it:
-task build-intel
+task -t Taskfile.intel.yml build
 ```
 
-The tasks validate the external x86_64 dylib, set `ORT_LIB_LOCATION`, dynamic-linking, and runtime rpath environment variables, then launch or compile the application. The default path is `$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0`; set `RAGTAG_INTEL_ORT_ROOT` to use another external location. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
+`Taskfile.intel.yml` owns the external-runtime validation and every Intel-only environment variable; the root `Taskfile.yml` and release tasks contain no Intel configuration. The default path is `$HOME/.cache/mrk-ragtag/onnxruntime-1.28.0`; set `RAGTAG_INTEL_ORT_ROOT` to use another external location. If Cargo previously built `ort-sys` without these variables, run `cargo clean --manifest-path src-tauri/Cargo.toml -p ort-sys` once before retrying.
 
 The local LLM runs on CPU in Intel development builds; Metal remains enabled only for Apple Silicon. This is development-only and does not add Intel release support.
 
