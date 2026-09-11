@@ -8,7 +8,6 @@ vars:
   INTEL_ORT_ROOT:
     sh: 'printf "%s" "${RAGTAG_INTEL_ORT_ROOT:-$HOME/.cache/mrk-ragtag/onnxruntime-{{.INTEL_ORT_VERSION}}}"'
   INTEL_ORT_LIB: '{{.INTEL_ORT_ROOT}}/build/MacOS/Release'
-  INTEL_TARGET_DIR: target/intel
 
 env:
   RUST_BACKTRACE: 1
@@ -72,7 +71,6 @@ tasks:
           export ORT_PREFER_DYNAMIC_LINK=1
           export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          export CARGO_TARGET_DIR='{{.INTEL_TARGET_DIR}}'
           cargo tauri dev
 
   build-intel:
@@ -85,7 +83,6 @@ tasks:
           export ORT_PREFER_DYNAMIC_LINK=1
           export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          export CARGO_TARGET_DIR='{{.INTEL_TARGET_DIR}}'
           cargo build
 
 

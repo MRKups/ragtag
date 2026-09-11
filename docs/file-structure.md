@@ -5,7 +5,7 @@ This document outlines the current layout of the application.
 ## Root Directory
 
 - `package.json`: NPM workspace / scripts for driving both Svelte and Tauri builds.
-- `Taskfile.yml`: Root development-task entry point. Its `dev-intel` and `build-intel` tasks are the sole Intel development/test tooling; they validate a fixed external ONNX Runtime 1.28.0 and dynamically link it. Intel Cargo outputs are isolated under `src-tauri/target/intel/`; neither task is a release path.
+- `Taskfile.yml`: Root development-task entry point. Its `dev-intel` and `build-intel` tasks are the sole Intel development/test tooling; they validate a fixed external ONNX Runtime 1.28.0 and dynamically link it. They use Cargo’s standard ignored host build output and are not release tasks.
 - `opencode.jsonc`: Agent tooling configuration.
 - `docs/`: Architecture, specification documentation, and implementation tracker.
 - `frontend/`: Plain Svelte 5 SPA (no SvelteKit) built with Vite.
