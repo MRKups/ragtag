@@ -41,15 +41,15 @@ flowchart LR
 
 ## Environment note — Intel macOS pipeline tests
 
-`cargo test -p rag_pipeline` cannot link on this Intel macOS host because `ort-sys@2.0.0-rc.13` ships no `x86_64-apple-darwin` binary. This is a test-host constraint, not a supported-product defect. `ORT_SKIP_DOWNLOAD=1 cargo check -p rag_pipeline --tests` verifies type checking without linking; executable pipeline tests require the supported Apple Silicon runner or the Taskfile Intel runtime with a compatible local ONNX Runtime.
+This host has the Taskfile-compatible external ONNX Runtime at `~/.cache/mrk-ragtag/onnxruntime-1.28.0/build/MacOS/Release`. An executable `cargo test -p rag_pipeline && cargo test -p mrk-ragtag-app` rebuild under its dynamic-link environment did not finish within 600 seconds. The completed `ORT_SKIP_DOWNLOAD=1 cargo check --tests` commands type-check both suites without linking; run the executable suites from a warm build or supported Apple Silicon runner for runtime coverage.
 
 ## Validation
 
-- `npm --prefix frontend run test:state` — passed, including the terminal-progress stale-callback regression.
+- `npm --prefix frontend run test:state` — passed, including terminal-progress and rejected-settings rollback regressions.
 - `npm --prefix frontend run test:errors` — passed.
 - `npm --prefix frontend run check` — passed: 0 errors, 0 warnings.
+- `npm --prefix frontend run build` — passed; Vite reported its existing >500 kB chunk-size advisory.
 - `cargo test -p persistence` — passed: 8 tests.
 - `ORT_SKIP_DOWNLOAD=1 cargo check -p rag_pipeline --tests` — passed.
 - `ORT_SKIP_DOWNLOAD=1 cargo check -p mrk-ragtag-app --tests` — passed.
 - `cargo fmt --check` — passed.
-- Executable `rag_pipeline` and app tests remain unavailable on this Intel host because they require linking an unavailable ONNX Runtime binary.

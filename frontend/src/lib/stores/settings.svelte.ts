@@ -1,5 +1,5 @@
-import { api } from '../api';
-import { errorDialog } from './error-dialog.svelte';
+import { api } from '../api.ts';
+import { errorDialog } from './error-dialog.svelte.ts';
 
 export const DEFAULT_LOCAL_INFERENCE = {
   generation_model: 'unsloth/Qwen3-1.7B-GGUF',

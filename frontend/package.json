@@ -12,7 +12,7 @@
 		"preview": "vite preview",
 		"check": "svelte-check --tsconfig ./tsconfig.json",
 		"test:errors": "node --experimental-strip-types src/lib/error.test.ts && node --experimental-strip-types src/lib/stores/error-dialog.test.ts",
-		"test:state": "node --experimental-strip-types src/lib/stores/query.test.ts && node --experimental-strip-types src/lib/stores/document-progress.test.ts",
+		"test:state": "node --experimental-strip-types src/lib/stores/query.test.ts && node --experimental-strip-types src/lib/stores/document-progress.test.ts && node --experimental-strip-types src/lib/stores/settings.test.ts",
 		"check:watch": "svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {
