@@ -1,5 +1,6 @@
 import { api } from '../api.ts';
 import { errorDialog } from './error-dialog.svelte.ts';
+import type { AppErrorPayload } from '../types.ts';
 
 export const DEFAULT_LOCAL_INFERENCE = {
   generation_model: 'unsloth/Qwen3-1.7B-GGUF',
@@ -8,6 +9,19 @@ export const DEFAULT_LOCAL_INFERENCE = {
 } as const;
 
 export type InferenceConfiguration = 'local' | 'external';
+
+function isQueueFull(error: unknown): error is AppErrorPayload {
+  if (
+    typeof error !== 'object'
+    || error === null
+    || !('kind' in error)
+    || !('message' in error)
+  ) {
+    return false;
+  }
+
+  return error.kind === 'QueueFull' && typeof error.message === 'string';
+}
 
 export class SettingsState {
   inference_mode = $state('local');
@@ -22,6 +36,8 @@ export class SettingsState {
 
   isLoading = $state(true);
   requestedInferenceConfiguration = $state<InferenceConfiguration | null>(null);
+  private pendingInferenceModeUpdate: Promise<boolean> | null = null;
+
 
   private persistedSettings: Record<string, string> = {
     inference_mode: this.inference_mode,
@@ -64,6 +80,13 @@ export class SettingsState {
     this.applySettingValue(key, value);
   }
 
+  restorePersistedValue(key: string) {
+    const persistedValue = this.persistedSettings[key];
+    if (persistedValue === undefined) return;
+
+    this.applySettingValue(key, persistedValue);
+  }
+
 
   async load() {
     this.isLoading = true;
@@ -92,11 +115,24 @@ export class SettingsState {
   }
 
   async update(key: string, value: string): Promise<boolean> {
+    if ((key === 'chunk_size' || key === 'chunk_overlap') && !value.trim()) {
+      this.restorePersistedValue(key);
+      return false;
+    }
+
     try {
       await api.setSetting(key, value);
       this.persistSettingValue(key, value);
       return true;
-    } catch {
+    } catch (error) {
+      if ((key === 'chunk_size' || key === 'chunk_overlap') && isQueueFull(error)) {
+        this.persistedSettings[key] = value;
+        if (this.currentSettingValue(key)?.trim() === value) {
+          this.applySettingValue(key, value);
+        }
+        return true;
+      }
+
       errorDialog.report({
         dedupeKey: `settings-save-${key}`,
         title: 'Setting not saved',
@@ -104,11 +140,29 @@ export class SettingsState {
         guidance: 'Check the value and try again.'
       });
       if (this.currentSettingValue(key)?.trim() === value) {
-        const persistedValue = this.persistedSettings[key];
-        if (persistedValue !== undefined) this.applySettingValue(key, persistedValue);
+        this.restorePersistedValue(key);
       }
       return false;
     }
+  }
+
+  updateInferenceMode(mode: InferenceConfiguration): Promise<boolean> {
+    const previous = this.pendingInferenceModeUpdate;
+    if (!previous && mode === this.inference_mode) return Promise.resolve(true);
+
+    const pending = (async () => {
+      if (previous) await previous;
+      return this.update('inference_mode', mode);
+    })();
+
+    this.pendingInferenceModeUpdate = pending;
+    void pending.finally(() => {
+      if (this.pendingInferenceModeUpdate === pending) {
+        this.pendingInferenceModeUpdate = null;
+      }
+    });
+
+    return pending;
   }
 
   openInferenceConfiguration(mode: InferenceConfiguration) {

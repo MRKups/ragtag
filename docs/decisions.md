@@ -8,7 +8,7 @@ This document explains the core design and technology choices for the applicatio
 
 **Rationale:**
 - **Zero Hosting Costs:** As a local application, there are no cloud servers, databases, or storage buckets to pay for.
-- **Privacy & Security:** All user data and documents are stored exclusively on the user's local machine, ensuring absolute privacy.
+- **Privacy & Security:** Documents, indexes, models, and default inference remain on the user's local machine. A user who explicitly selects external inference sends that provider the query and retrieval-selected excerpts; its privacy terms then apply.
 - **Simplicity:** The application is a single executable, requiring no complex setup like DNS, SSL, or ingress tunnels.
 
 ## 2. Frontend-Backend Communication (IPC)

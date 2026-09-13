@@ -9,13 +9,11 @@
   let {
     url = '',
     page = 1,
-    contextPages = 3,
-    citedPages = [] as number[]
+    contextPages = 3
   } = $props<{
     url?: string;
     page?: number;
     contextPages?: number;
-    citedPages?: number[];
   }>();
 
   let pdfDoc: PDFDocumentProxy | null = $state(null);
@@ -187,7 +185,7 @@
       {:else if pdfDoc}
         <div class="pages-list">
           {#each pagesToRender as p (p)}
-            {@const isCited = citedPages.length > 0 ? citedPages.includes(p) : p === page}
+            {@const isCited = p === page}
             <PdfPage
               {pdfDoc}
               pageNumber={p}

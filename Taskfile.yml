@@ -85,10 +85,28 @@ tasks:
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
           cargo build
 
+  test-native:
+    desc: Run the Rust workspace tests on a supported release host
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - cargo test --workspace
+
+  test-intel:
+    desc: Run the Intel macOS Rust workspace tests with external ONNX Runtime
+    deps: [intel-runtime]
+    dir: '{{.TAURI_DIR}}'
+    cmds:
+      - |
+          export ORT_LIB_LOCATION='{{.INTEL_ORT_LIB}}'
+          export ORT_PREFER_DYNAMIC_LINK=1
+          export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
+          cargo test --workspace
+
 
   build:
     desc: Build release binary
-    deps: [check, build-frontend]
+    deps: [check]
     dir: '{{.TAURI_DIR}}'
     cmds:
       - cargo tauri build --no-bundle
@@ -97,7 +115,7 @@ tasks:
 
   bundle:
     desc: Build distributable macOS .app bundle
-    deps: [check, build-frontend]
+    deps: [check]
     dir: '{{.TAURI_DIR}}'
     cmds:
       - cargo tauri build

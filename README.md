@@ -77,7 +77,7 @@ Ragtag requires no local `.env` file or cloud account for its default mode. It s
 
 The first local launch downloads the model artifacts needed for offline use: approximately 800 MB for EmbeddingGemma-300M embeddings and approximately 2 GB for the default Qwen3-1.7B GGUF generator. Downloads resume after interruption and report progress in the app boot overlay.
 
-The **Settings** page can select external inference instead. It stores the endpoint URL as a local setting and stores the API key in the operating system keychain, never in SQLite or frontend storage. External inference skips the local generation-model download, but first verifies the configured/default model through the endpoint’s OpenAI-compatible `/models` route before enabling queries. Document ingestion and retrieval remain local.
+The **Settings** page can select external inference instead. It stores the endpoint URL as a local setting and stores the API key in the operating system keychain, never in SQLite or frontend storage. External inference sends the query and retrieval-selected document excerpts to the user-selected provider; use it only with a provider and data-handling policy you trust. It skips the local generation-model download, but first verifies the configured/default model through the endpoint’s OpenAI-compatible `/models` route before enabling queries. Document ingestion and retrieval remain local.
 
 ## Documents and citations
 
@@ -152,21 +152,13 @@ task check
 
 Run this after changing Svelte, TypeScript, or Vite configuration. It runs `svelte-check` against `frontend/`.
 
-### Rust workspace checks
-
-The Taskfile does not define a Rust test task. For a Rust-only compilation or test pass, run the narrowest applicable Cargo command from the workspace manifest, for example:
+### Automated suites
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml -p domain
-cargo test --manifest-path src-tauri/Cargo.toml -p persistence
-cargo test --manifest-path src-tauri/Cargo.toml -p rag_pipeline
+npm test
 ```
 
-Use a full workspace test command only when changes span multiple crates or application composition:
-
-```sh
-cargo test --manifest-path src-tauri/Cargo.toml --workspace
-```
+The root test command runs the maintained frontend error/state suites and the Rust workspace tests. On Intel macOS it selects `task test-intel`, which validates and dynamically links the documented external ONNX Runtime; on supported release hosts it selects `task test-native`. For a narrow Rust-only pass, run the applicable Cargo command from the workspace manifest.
 
 ## Builds
 
@@ -184,7 +176,7 @@ Use this to validate the Vite production build or regenerate `frontend/dist/` wi
 task build
 ```
 
-This runs the frontend checks and production build, then creates the optimized unbundled binary:
+This runs the frontend type check, then lets Tauri run its configured `beforeBuildCommand` exactly once to create the production Vite output and optimized unbundled binary:
 
 ```text
 src-tauri/target/release/mrk-ragtag-app
@@ -196,7 +188,7 @@ src-tauri/target/release/mrk-ragtag-app
 task bundle
 ```
 
-This runs the frontend checks and production build, then produces the distributable macOS application bundle:
+This follows the same single frontend-build path and produces:
 
 ```text
 src-tauri/target/release/bundle/macos/Ragtag.app

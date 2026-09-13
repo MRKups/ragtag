@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
   import { Cpu, Database, HardDrive, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
@@ -29,7 +29,13 @@
   let externalConnectionStatus = $state('');
   let isTestingExternalProvider = $state(false);
   let isSavingExternalProvider = $state(false);
+  let externalProviderDraftRevision = 0;
+  let externalProviderTestId = 0;
   const pendingSettingUpdates = new Map<string, Promise<boolean>>();
+  let configModal = $state<HTMLDivElement>();
+  let resetModal = $state<HTMLDivElement>();
+  let inferenceFocusOrigin: HTMLElement | null = null;
+  let resetFocusOrigin: HTMLElement | null = null;
 
   // Storage management
   let storageInfo = $state<{
@@ -64,10 +70,55 @@
     }
   });
 
+  function invalidateExternalProviderTest() {
+    externalProviderDraftRevision += 1;
+    externalProviderTestId += 1;
+    isTestingExternalProvider = false;
+  }
+
   function resetExternalModelDiscovery() {
+    invalidateExternalProviderTest();
     externalModelDraft = '';
     availableExternalModels = [];
     externalConnectionStatus = '';
+  }
+
+  const modalFocusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  async function focusModalControl(modal: HTMLDivElement | undefined) {
+    await tick();
+    const firstControl = modal?.querySelector<HTMLElement>(modalFocusableSelector);
+    (firstControl ?? modal)?.focus();
+  }
+
+  async function restoreModalFocus(focusOrigin: HTMLElement | null) {
+    await tick();
+    if (focusOrigin?.isConnected) focusOrigin.focus();
+  }
+
+  function trapModalFocus(event: KeyboardEvent, modal: HTMLDivElement | undefined) {
+    if (event.key !== 'Tab' || !modal) return;
+
+    const focusableElements = Array.from(
+      modal.querySelectorAll<HTMLElement>(modalFocusableSelector)
+    );
+    const firstControl = focusableElements[0];
+    const lastControl = focusableElements.at(-1);
+
+    if (!firstControl || !lastControl) {
+      event.preventDefault();
+      modal.focus();
+      return;
+    }
+
+    const activeElement = document.activeElement;
+    if (event.shiftKey && (activeElement === firstControl || activeElement === modal)) {
+      event.preventDefault();
+      lastControl.focus();
+    } else if (!event.shiftKey && activeElement === lastControl) {
+      event.preventDefault();
+      firstControl.focus();
+    }
   }
 
   function loadExternalEndpointDraft(value: string) {
@@ -119,13 +170,65 @@
   }
 
   function openInferenceConfiguration(mode: InferenceConfig) {
+    inferenceFocusOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     configuringInference = mode;
+
     if (mode === 'external') {
+      invalidateExternalProviderTest();
       loadExternalEndpointDraft(settingsState.external_base_url);
       externalModelDraft = settingsState.external_model;
       availableExternalModels = [];
       externalConnectionStatus = '';
     }
+
+    void focusModalControl(configModal);
+  }
+
+  function closeInferenceConfiguration() {
+    const mode = configuringInference;
+    if (!mode) return;
+
+    configuringInference = null;
+    if (mode === 'external') invalidateExternalProviderTest();
+
+    const focusOrigin = inferenceFocusOrigin;
+    inferenceFocusOrigin = null;
+    void restoreModalFocus(focusOrigin);
+  }
+
+  function handleInferenceModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeInferenceConfiguration();
+      return;
+    }
+
+    trapModalFocus(event, configModal);
+  }
+
+  function openResetConfirmation() {
+    resetFocusOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    showResetConfirm = true;
+    void focusModalControl(resetModal);
+  }
+
+  function closeResetConfirmation() {
+    if (!showResetConfirm) return;
+
+    showResetConfirm = false;
+    const focusOrigin = resetFocusOrigin;
+    resetFocusOrigin = null;
+    void restoreModalFocus(focusOrigin);
+  }
+
+  function handleResetModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeResetConfirmation();
+      return;
+    }
+
+    trapModalFocus(event, resetModal);
   }
 
   function updateSetting(key: string, value: string): Promise<boolean> {
@@ -139,6 +242,16 @@
       if (pendingSettingUpdates.get(key) === pending) pendingSettingUpdates.delete(key);
     });
     return pending;
+  }
+
+  function saveChunkSetting(key: 'chunk_size' | 'chunk_overlap') {
+    const value = settingsState[key];
+    if (!Number.isFinite(value)) {
+      settingsState.restorePersistedValue(key);
+      return;
+    }
+
+    void updateSetting(key, String(value));
   }
 
   async function restoreLocalDefaults() {
@@ -158,8 +271,7 @@
   }
 
   async function setDefaultInference(mode: InferenceConfig) {
-    if (mode === settingsState.inference_mode) return;
-    await updateSetting('inference_mode', mode);
+    await settingsState.updateInferenceMode(mode);
   }
 
   function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfig) {
@@ -185,6 +297,7 @@
       apiKeyExists = true;
       apiKeySaved = true;
       apiKeyValue = '';
+      resetExternalModelDiscovery();
       setTimeout(() => (apiKeySaved = false), 2000);
     } catch {
       errorDialog.report({
@@ -202,6 +315,7 @@
       await api.deleteApiKey();
       apiKeyExists = false;
       apiKeyValue = '';
+      resetExternalModelDiscovery();
     } catch {
       errorDialog.report({
         dedupeKey: 'api-key-delete',
@@ -217,16 +331,32 @@
     const baseUrl = buildExternalBaseUrl();
     if (!baseUrl) return;
 
+    const requestRevision = externalProviderDraftRevision;
+    const testId = ++externalProviderTestId;
     isTestingExternalProvider = true;
     externalConnectionStatus = '';
     try {
       const connection = await api.testExternalProvider(baseUrl, apiKeyValue.trim() || null);
+      if (
+        requestRevision !== externalProviderDraftRevision
+        || testId !== externalProviderTestId
+      ) {
+        return;
+      }
+
       availableExternalModels = connection.models;
       if (!availableExternalModels.includes(externalModelDraft)) {
         externalModelDraft = '';
       }
       externalConnectionStatus = `Connected. ${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available.`;
     } catch {
+      if (
+        requestRevision !== externalProviderDraftRevision
+        || testId !== externalProviderTestId
+      ) {
+        return;
+      }
+
       externalConnectionStatus = 'Connection test failed. Review the error dialog and try again.';
       errorDialog.report({
         dedupeKey: 'external-provider-test',
@@ -235,7 +365,7 @@
         guidance: 'Verify the base URL, start the provider, and save an API key if it requires authentication.'
       });
     } finally {
-      isTestingExternalProvider = false;
+      if (testId === externalProviderTestId) isTestingExternalProvider = false;
     }
   }
 
@@ -423,14 +553,21 @@
 
         {#if configuringInference}
           <div class="config-modal-overlay">
-            <button type="button" class="config-modal-backdrop" aria-label="Close inference configuration" onclick={() => (configuringInference = null)}></button>
+            <button
+              type="button"
+              class="config-modal-backdrop"
+              aria-label="Close inference configuration"
+              tabindex="-1"
+              onclick={closeInferenceConfiguration}
+            ></button>
             <div
+              bind:this={configModal}
               class="config-modal"
               role="dialog"
               aria-modal="true"
               aria-labelledby="config-modal-title"
               tabindex="-1"
-              onkeydown={(event) => event.key === 'Escape' && (configuringInference = null)}
+              onkeydown={handleInferenceModalKeydown}
             >
               {#if configuringInference === 'local'}
                 <p class="panel-eyebrow">Local inference</p>
@@ -580,6 +717,7 @@
                           autocomplete="off"
                           aria-label="External API key"
                           bind:value={apiKeyValue}
+                          oninput={resetExternalModelDiscovery}
                           onkeydown={(event) => event.key === 'Enter' && saveApiKey()}
                         />
                         <button type="button" class="btn btn-small" onclick={saveApiKey}>Save key</button>
@@ -616,7 +754,7 @@
                     {isSavingExternalProvider ? 'Saving provider…' : 'Save provider'}
                   </button>
                 {/if}
-                <button type="button" class="btn btn-secondary" onclick={() => (configuringInference = null)}>Done</button>
+                <button type="button" class="btn btn-secondary" onclick={closeInferenceConfiguration}>Done</button>
               </div>
             </div>
           </div>
@@ -646,7 +784,7 @@
               id="chunk_size"
               type="number"
               bind:value={settingsState.chunk_size}
-              onblur={() => updateSetting('chunk_size', settingsState.chunk_size.toString())}
+              onblur={() => saveChunkSetting('chunk_size')}
             />
           </div>
           <div class="setting-field">
@@ -655,7 +793,7 @@
               id="chunk_overlap"
               type="number"
               bind:value={settingsState.chunk_overlap}
-              onblur={() => updateSetting('chunk_overlap', settingsState.chunk_overlap.toString())}
+              onblur={() => saveChunkSetting('chunk_overlap')}
             />
           </div>
         </div>
@@ -711,22 +849,29 @@
             <h4 id="reset-heading">Reset application data</h4>
             <p>Permanently remove documents, vectors, and the database from this device.</p>
           </div>
-          <button type="button" class="btn btn-danger" onclick={() => (showResetConfirm = true)}>
+          <button type="button" class="btn btn-danger" onclick={openResetConfirmation}>
             Reset all data
           </button>
         </aside>
 
         {#if showResetConfirm}
           <div class="reset-modal-overlay">
-            <button type="button" class="reset-modal-backdrop" aria-label="Close reset confirmation" onclick={() => (showResetConfirm = false)}></button>
+            <button
+              type="button"
+              class="reset-modal-backdrop"
+              aria-label="Close reset confirmation"
+              tabindex="-1"
+              onclick={closeResetConfirmation}
+            ></button>
             <div
+              bind:this={resetModal}
               class="reset-modal"
               role="dialog"
               aria-modal="true"
               aria-labelledby="reset-modal-title"
               aria-describedby="reset-modal-description"
               tabindex="-1"
-              onkeydown={(e) => e.key === 'Escape' && (showResetConfirm = false)}
+              onkeydown={handleResetModalKeydown}
             >
               <p class="modal-eyebrow">Destructive action</p>
               <h4 id="reset-modal-title">Reset all data?</h4>
@@ -736,7 +881,7 @@
                 <span>Also delete app-managed local model downloads</span>
               </label>
               <div class="reset-modal-actions">
-                <button type="button" class="btn btn-secondary" onclick={() => (showResetConfirm = false)}>Cancel</button>
+                <button type="button" class="btn btn-secondary" onclick={closeResetConfirmation}>Cancel</button>
                 <button type="button" class="btn btn-danger" onclick={doReset}>Reset &amp; restart</button>
               </div>
             </div>

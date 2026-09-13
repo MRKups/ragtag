@@ -16,7 +16,6 @@
     id: number;
     file: File;
     status: 'pending' | 'uploading' | 'success' | 'error' | 'rejected';
-    progress: number;
     errorMsg?: string;
   }
 
@@ -73,12 +72,11 @@
           id: nextFileId++,
           file,
           status: 'rejected' as const,
-          progress: 0,
           errorMsg: 'File exceeds the 50 MB limit'
         };
       }
 
-      return { id: nextFileId++, file, status: 'pending' as const, progress: 0 };
+      return { id: nextFileId++, file, status: 'pending' as const };
     });
 
     files = [...files, ...newFileStatuses];

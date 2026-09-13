@@ -9,21 +9,19 @@
     documentId = null as string | null,
     filename = null as string | null,
     storagePath = null as string | null,
-    page = 1,
-    citedPages = [] as number[]
+    page = 1
   } = $props<{
     documentId?: string | null;
     filename?: string | null;
     storagePath?: string | null;
     page?: number;
-    citedPages?: number[];
   }>();
 
   let isPdf = $derived(filename?.toLowerCase().endsWith('.pdf') ?? false);
   let sourceUrl = $derived.by(() => {
     if (isPdf && storagePath) {
       // Tauri v2 asset protocol: convertFileSrc builds the correct URL.
-      // The assetProtocol in tauri.conf.json scopes to $APPLOCALDATA.
+      // The asset protocol scope admits only managed $APPLOCALDATA/documents sources.
       return api.assetUrl(storagePath);
     }
     return null;
@@ -65,7 +63,7 @@
       <p>Select a citation to view the source document.</p>
     </div>
   {:else if sourceUrl && isPdf}
-    <PdfViewer url={sourceUrl} {page} {citedPages} />
+    <PdfViewer url={sourceUrl} {page} />
   {:else if !isPdf && !documentId}
     <div class="doc-placeholder">
       <div class="icon-circle">

@@ -36,8 +36,8 @@ Advisor-only guidance. Review implementing work against `AGENTS.md` and the focu
 - **LanceDB requires write serialization and index lifecycle care.** Use idempotent `merge_insert`; build or rebuild FTS only after rows exist; handle the documented vector-only fallback without silently losing search diagnostics.
 - **Local PDF display is capability-scoped.** Construct asset URLs through Tauri's asset protocol and retain the bundled PDF.js path for WebView consistency.
 - **SQLite is persistent product state, not a disposable cache.** Document registry, statuses, and settings must migrate safely. LanceDB is rebuildable derived search data, but reset/delete flows must preserve their documented ordering and explicit confirmation semantics.
-- **Generation cancellation is a known tracked gap.** Do not claim cancellation support merely because the frontend ignores late stream events; the backend generation must actually be interrupted.
-- **Some settings are tracked as incomplete behavior.** Do not expose a new setting or treat an existing setting as effective unless the backend path reads and enforces it.
+- **Generation cancellation is request-scoped.** `cancel_query` must interrupt external readiness and provider streams or local stream reads; it cannot stop already-running blocking embedding work. Do not substitute frontend-only late-event suppression for backend cancellation.
+- **Settings must reflect enforced behavior.** Do not expose a new setting or treat an existing setting as effective unless the backend path reads and enforces it.
 
 ## Process Drift
 
