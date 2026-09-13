@@ -116,7 +116,7 @@ impl DocumentRepository {
             "UPDATE documents
              SET status = 'embedding',
                  processing_started_at = CURRENT_TIMESTAMP,
-                 embedding_attempts = embedding_attempts + 1,
+                 embedding_attempts = COALESCE(embedding_attempts, 0) + 1,
                  error_message = NULL
              WHERE id = ?",
         )
@@ -143,6 +143,7 @@ impl DocumentRepository {
              SET status = 'indexed',
                  chunk_count = ?,
                  embedding_model = ?,
+                 embedding_attempts = 0,
                  indexed_at = CURRENT_TIMESTAMP,
                  indexed_extraction_version = ?,
                  indexed_chunk_size = ?,
@@ -291,21 +292,50 @@ impl DocumentRepository {
         Ok(())
     }
 
-    pub async fn reset_embedding_to_queued(&self) -> Result<Vec<String>, AppError> {
-        let docs = sqlx::query!("SELECT id FROM documents WHERE status = 'embedding'")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(sql_err)?;
-
-        let ids: Vec<String> = docs.into_iter().filter_map(|d| d.id).collect();
+    pub async fn reset_interrupted_embeddings(
+        &self,
+        max_attempts: i32,
+    ) -> Result<Vec<String>, AppError> {
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+        let ids = sqlx::query_scalar(
+            "SELECT id
+             FROM documents
+             WHERE status = 'embedding' AND COALESCE(embedding_attempts, 0) < ?",
+        )
+        .bind(max_attempts)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
 
         if !ids.is_empty() {
-            sqlx::query!("UPDATE documents SET status = 'queued' WHERE status = 'embedding'")
-                .execute(&self.pool)
-                .await
-                .map_err(sql_err)?;
+            sqlx::query(
+                "UPDATE documents
+                 SET status = 'queued',
+                     processing_started_at = NULL,
+                     error_message = NULL
+                 WHERE status = 'embedding' AND COALESCE(embedding_attempts, 0) < ?",
+            )
+            .bind(max_attempts)
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_err)?;
         }
 
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'failed',
+                 processing_started_at = NULL,
+                 retry_count = MAX(COALESCE(retry_count, 0), ?),
+                 error_message = 'Document processing reached the automatic recovery limit. Remove it and upload again to retry.'
+             WHERE status = 'embedding' AND COALESCE(embedding_attempts, 0) >= ?",
+        )
+        .bind(max_attempts)
+        .bind(max_attempts)
+        .execute(&mut *transaction)
+        .await
+        .map_err(sql_err)?;
+
+        transaction.commit().await.map_err(sql_err)?;
         Ok(ids)
     }
 
@@ -363,6 +393,7 @@ async fn requeue_stale_indexed_documents(
              SET status = 'queued',
                  chunk_count = NULL,
                  embedding_model = NULL,
+                 embedding_attempts = 0,
                  processing_started_at = NULL,
                  indexed_at = NULL,
                  error_message = NULL,
@@ -613,6 +644,7 @@ mod tests {
             .unwrap();
         let mut stale_document = indexed_document("stale", stale.clone());
         stale_document.retry_count = 2;
+        stale_document.embedding_attempts = 3;
         documents.insert(&stale_document).await.unwrap();
 
         assert_eq!(
@@ -633,6 +665,162 @@ mod tests {
         assert_eq!(requeued.embedding_model, None);
         assert_eq!(requeued.indexing_provenance, Some(stale));
         assert_eq!(requeued.retry_count, 0);
+        assert_eq!(requeued.embedding_attempts, 0);
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn caps_recovery_of_interrupted_embedding_attempts() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+
+        let mut retryable = indexed_document("retryable", provenance.clone());
+        retryable.status = DocumentStatus::Embedding;
+        retryable.embedding_attempts = 2;
+        retryable.processing_started_at = Some("2026-01-01T00:00:00Z".to_string());
+        documents.insert(&retryable).await.unwrap();
+
+        let mut exhausted = indexed_document("exhausted", provenance.clone());
+        exhausted.status = DocumentStatus::Embedding;
+        exhausted.embedding_attempts = 3;
+        exhausted.processing_started_at = Some("2026-01-01T00:00:00Z".to_string());
+        documents.insert(&exhausted).await.unwrap();
+
+        let mut ordinary_failure = indexed_document("ordinary-failure", provenance);
+        ordinary_failure.status = DocumentStatus::Failed;
+        ordinary_failure.retry_count = 2;
+        documents.insert(&ordinary_failure).await.unwrap();
+
+        assert_eq!(
+            documents.reset_interrupted_embeddings(3).await.unwrap(),
+            vec!["retryable"]
+        );
+
+        let retryable = documents.get_by_id("retryable").await.unwrap().unwrap();
+        assert_eq!(retryable.status, DocumentStatus::Queued);
+        assert_eq!(retryable.embedding_attempts, 2);
+        assert_eq!(retryable.processing_started_at, None);
+
+        let exhausted = documents.get_by_id("exhausted").await.unwrap().unwrap();
+        assert_eq!(exhausted.status, DocumentStatus::Failed);
+        assert_eq!(exhausted.embedding_attempts, 3);
+        assert_eq!(exhausted.retry_count, 3);
+        assert_eq!(exhausted.processing_started_at, None);
+        assert_eq!(
+            exhausted.error_message.as_deref(),
+            Some(
+                "Document processing reached the automatic recovery limit. Remove it and upload again to retry."
+            )
+        );
+
+        assert_eq!(
+            documents.reset_failed_to_queued(3).await.unwrap(),
+            vec!["ordinary-failure"]
+        );
+        assert_eq!(
+            documents
+                .get_by_id("ordinary-failure")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Queued
+        );
+        assert_eq!(
+            documents
+                .get_by_id("exhausted")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Failed
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn starts_embedding_from_a_legacy_null_attempt_count() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let document = indexed_document("legacy-null-attempts", provenance);
+        documents.insert(&document).await.unwrap();
+        sqlx::query("UPDATE documents SET embedding_attempts = NULL WHERE id = ?")
+            .bind(&document.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        documents.mark_embedding(&document.id).await.unwrap();
+
+        let document = documents.get_by_id(&document.id).await.unwrap().unwrap();
+        assert_eq!(document.status, DocumentStatus::Embedding);
+        assert_eq!(document.embedding_attempts, 1);
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn requeues_an_interruption_after_a_successful_indexing_run() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let prior = IndexProvenance {
+            extraction_version: "token-aware-v1".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let desired = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            ..prior.clone()
+        };
+        let mut document = indexed_document("previous-success", prior.clone());
+        document.embedding_attempts = 3;
+        documents.insert(&document).await.unwrap();
+
+        documents
+            .mark_indexed(&document.id, 1, "EmbeddingGemma-300M", &prior)
+            .await
+            .unwrap();
+        assert_eq!(
+            documents
+                .get_by_id(&document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding_attempts,
+            0
+        );
+
+        assert_eq!(
+            documents
+                .requeue_indexed_with_stale_provenance(&desired)
+                .await
+                .unwrap(),
+            vec![document.id.clone()]
+        );
+        documents.mark_embedding(&document.id).await.unwrap();
+
+        assert_eq!(
+            documents.reset_interrupted_embeddings(3).await.unwrap(),
+            vec![document.id.clone()]
+        );
+        let document = documents.get_by_id(&document.id).await.unwrap().unwrap();
+        assert_eq!(document.status, DocumentStatus::Queued);
+        assert_eq!(document.embedding_attempts, 1);
 
         pool.close().await;
         std::fs::remove_dir_all(path).unwrap();

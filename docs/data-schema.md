@@ -4,7 +4,7 @@ The data layer uses a local SQLite file for relational data and LanceDB (an embe
 
 ## SQLite (`app.db`)
 
-Stored in the OS Application Data directory (e.g., `~/.config/rag-demo/app.db`).
+Stored in the operating system application-local data directory as `$APPLOCALDATA/app.db`.
 
 ### `documents` Table
 
@@ -27,12 +27,12 @@ CREATE TABLE documents (
     -- 'embedding': Background task is actively processing
     -- 'indexed'  : Replacement vectors were stored successfully and are eligible for citations
     -- 'deleting' : Durable deletion is in progress; excluded from retrieval and retried at startup
-    -- 'failed'   : Processing error; retryable failures are requeued during startup recovery
+    -- 'failed'   : Processing error or exhausted automatic recovery; only retryable failures are requeued during startup recovery
     
     -- Indexing metadata
     chunk_count INTEGER,
     embedding_model TEXT,
-    embedding_attempts INTEGER DEFAULT 0,
+    embedding_attempts INTEGER DEFAULT 0,       -- Starts in the current unsuccessful processing run; reset after successful indexing or intentional indexed-document requeue
 
     -- Successful-index provenance (set only after vector replacement succeeds)
     indexed_extraction_version TEXT,
@@ -73,7 +73,7 @@ LanceDB manages tables using a strongly typed schema. Each row represents a sing
 | `chunk_index` | `Int32` | Position within the document. |
 | `content` | `String` | Raw chunk text reused for citations and RAG prompt synthesis. The ingest embedding input prepends `"passage: "` without persisting that instruction prefix. |
 
-LanceDB does not contain document status, extraction version, or chunking configuration. SQLite records the nullable successful-index provenance for each document after replacement vectors are stored, so it remains the registry authority for whether an indexed document matches the desired extraction and chunk settings. First table creation is serialized before concurrent search or ingest access. The application deletes a document's old rows before upserting replacements and only then marks its SQLite row `indexed` with that provenance. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores. Query code checks SQLite status after LanceDB returns candidates, rather than applying a status filter in the vector query; non-indexed candidates can therefore occupy retrieval slots. Hybrid RRF relevance is used for rank ordering but is not a calibrated citation-confidence value.
+LanceDB does not contain document status, extraction version, or chunking configuration. SQLite records the nullable successful-index provenance for each document after replacement vectors are stored, so it remains the registry authority for whether an indexed document matches the desired extraction and chunk settings. Startup compares SQLite indexed chunk counts to the existing Lance table and returns missing or partial documents to `queued`; read/compaction paths never create an absent table. First table creation is serialized before concurrent ingestion. The application supplies the SQLite-indexed document-ID filter to LanceDB before hybrid/vector candidate limiting, then rehydrates and rechecks document status before citation use. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores.
 
 ## Application Settings
 

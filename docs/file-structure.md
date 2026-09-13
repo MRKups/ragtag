@@ -4,9 +4,8 @@ This document outlines the current layout of the application.
 
 ## Root Directory
 
-- `package.json`: NPM workspace / scripts for driving both Svelte and Tauri builds.
-- `Taskfile.yml`: Root development-task entry point. Its `dev-intel` and `build-intel` tasks are the sole Intel development/test tooling; they validate a fixed external ONNX Runtime 1.28.0 and dynamically link it. They use Cargo’s standard ignored host build output and are not release tasks.
-- `opencode.jsonc`: Agent tooling configuration.
+- `package.json`: Private root manifest with convenience scripts; `npm test` runs the maintained frontend suites and selects the native test task for the current macOS architecture.
+- `Taskfile.yml`: Root development-task entry point. `dev-intel`, `build-intel`, and `test-intel` validate a fixed external ONNX Runtime 1.28.0 and dynamically link it for Intel development; `test-native` serves supported release hosts. Tauri owns the production frontend build through `beforeBuildCommand`, so `build` and `bundle` do not prebuild Vite.
 - `docs/`: Architecture, specification documentation, and implementation tracker.
 - `frontend/`: Plain Svelte 5 SPA (no SvelteKit) built with Vite.
 - `src-tauri/`: The Tauri Rust application shell.
@@ -28,13 +27,12 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
   - `DocumentsPage.svelte`: Document management — upload (left) and list (right).
   - `SettingsPage.svelte`: Application configuration.
 - `src/lib/`:
-  - `index.ts`: Barrel re-export entry for the `$lib` path alias.
-  - `api.ts`: Typed wrappers around Tauri `invoke` commands; the typed document-upload envelope owns its request-scoped `Channel<IngestionProgress>`, while remote-provider test/save calls expose model discovery and atomic configuration persistence.
+  - `api.ts`: Typed wrappers around Tauri `invoke` commands; the typed document-upload envelope owns its request-scoped `Channel<IngestionProgress>`, while query invocation carries `query`, `requestId`, and `Channel<TokenEvent>`.
   - `types.ts`: TypeScript interfaces mirroring Rust models, lifecycle events, provider-connection results, and the typed ingestion progress union.
   - `error.ts` and `error.test.ts`: Safe extraction of messages from typed IPC errors for task-specific UI recovery, with regression coverage for serialized `AppError` payloads.
   - `pdf-init.ts`: Initializes PDF.js's matching legacy main library and module worker, avoiding a missing JavaScriptCore API in the generic build.
   - `router.svelte.ts`: Hash-based micro-router using Svelte 5 `$state` runes. Routes: `query`, `documents`, `settings`.
-  - `assets/`: Static assets bundled by Vite (e.g., `favicon.svg`).
+  - `assets/`: Static frontend assets bundled by Vite, including the Ragtag favicon.
   - `stores/`: Svelte 5 `$state` stores:
     - `app-state.svelte.ts` — exports `AppState` and the `appState` singleton; tracks staged embedder/model readiness and model-load status.
     - `error-dialog.svelte.ts` and `error-dialog.test.ts` — export and exercise the route-independent queued `ErrorDialogState`; operations report safe notices with optional recovery actions, same-source deduplication, and lifecycle clearing.
@@ -42,13 +40,12 @@ The frontend is a plain Svelte 5 application compiled by Vite, running inside a 
     - `settings.svelte.ts` — exports `SettingsState`, the `settingsState` singleton, and the shared local-inference defaults; retains persisted values so rejected bound-setting writes restore the screen, and carries requested local/remote configuration dialogs across route navigation.
     - `document-progress.svelte.ts` — exports the route-independent `DocumentProgressState` singleton that immutably stores the latest request-scoped progress per document ID and permanently finalizes terminal document IDs to reject delayed progress callbacks.
   - `components/`: Reusable UI components — `AppInitializer`, `AppSelect`, `ErrorDialog`, `CitationList`, `ConfidenceBadge`, `DocumentList`, `DocumentUpload`, `DocumentViewer`, `MarkdownPreview`, `PdfPage`, `PdfViewer`, `QueryInput`, `QueryResult`, `SettingsTab`, `Toggle`. `MarkdownPreview` maps the typed Rust preview model to semantic Svelte elements without an HTML sink. `PdfViewer` serializes PDF.js document teardown before a replacement load, while `PdfPage` rasterizes the selected page and nearby context to DPR-aware canvases with a PDF.js text-selection layer. `AppSelect` provides the accessible, app-styled listbox control used for remote-provider protocol and discovered-model selection. `ErrorDialog` is the single accessible in-app recovery surface; `SettingsTab` presents local and remote inference cards as an accessible radio group, while either card opens an independent configuration modal.
-- `static/`: Static frontend assets.
 
 ## `src-tauri/` (Tauri App Shell)
 
 The Tauri adapter layer connecting the OS, the UI, and the Rust backend.
 
-- `tauri.conf.json`: Core configuration, build instructions, asset-protocol scope, and the macOS overlay titlebar/traffic-light placement.
+- `tauri.conf.json`: Core configuration, build instructions, a restrictive CSP, `$APPLOCALDATA/documents/**` asset-protocol scope, production `.app` bundle settings/icons, and the macOS overlay titlebar/traffic-light placement.
 - `capabilities/`: JSON files defining exact capabilities mapped to specific window labels.
   - `default.json`: Grants the main window baseline permissions plus declarative titlebar dragging.
 - `Cargo.toml`: Defines the Rust workspace, including the root Tauri v2 app and library crates in `crates/`. The root composes Tauri’s asset protocol, SQLx, Tokio, FastEmbed, ONNX Runtime, keyring, and inference dependencies; it does not register a general filesystem plugin.
@@ -59,8 +56,8 @@ The Tauri adapter layer connecting the OS, the UI, and the Rust backend.
 The binary crate — entry point and thin command wrappers.
 
 - `main.rs`: Barebones entry point calling `mrk_ragtag_app::run()`.
-- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; reconciles only unregistered canonical managed source files at startup; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; treats the already-selected inference mode as a no-op; generation-tags local-model initialization and coalesces rapid local-model configuration changes so stale downloads, builds, progress, errors, and readiness cannot publish; validates indexed UTF-8 and DOCX preview requests against the document registry before reading their bounded source through the pipeline; tests draft OpenAI-compatible provider endpoints through the shared client, returns their discovered model IDs, atomically saves a chosen external endpoint/model before one revalidation, routes local/external inference through a typed streaming protocol, and preserves document-operation ordering.
-- `state.rs`: Defines `AppState` and `IngestionJob`; managed state holds the SQLite pool, document-work queue, late-initialized embedder, vector database, Arc-shared local MistralRS model, generation-tagged initialization state, and shared HTTP client.
+- `lib.rs`: Core setup and typed IPC commands. It initializes SQLite, `AppState`, and model/cache directories; detects a missing LanceDB chunks table and atomically requeues indexed registry rows for rebuild; retries transient startup-recovery reads; rejects uploads before embedder readiness; uses real-directory and regular-file containment for managed documents; initializes FastEmbed in `spawn_blocking`; serializes first Lance table creation; requires usable retrieved citations before inference; rejects duplicate request IDs; uses cancellation for readiness and provider streams; validates indexed UTF-8 and DOCX preview requests against the document registry before reading their bounded source through the pipeline; generation-tags local-model initialization and coalesces rapid local-model configuration changes so stale downloads, builds, progress, errors, and readiness cannot publish; tests draft OpenAI-compatible provider endpoints through the shared client.
+- `state.rs`: Defines `AppState` and `IngestionJob`; managed state holds the SQLite pool, document-work queue, late-initialized embedder, vector database, Arc-shared local MistralRS model, generation-tagged initialization state, active-request cancellation map, and shared HTTP client.
 - `model_download.rs`: `hf-hub` 1.0 model-download logic with resume support and a 3-attempt retry loop. Emits byte-level `model_download_progress` lifecycle events through a caller-supplied generation-safe progress handler.
 
 ### `src-tauri/crates/` (Business Logic Workspace)
@@ -74,7 +71,7 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 - `Cargo.toml`: Minimal deps — `serde` and `thiserror`.
 - `src/lib.rs`: Re-exports all public types.
 - `src/models.rs`: `Document` struct (fields: id, filename, file_type, file_size_bytes, file_hash, storage_path, status, chunk_count, embedding_model, embedding_attempts, timestamps, successful-index provenance, error tracking), `IndexProvenance` (extraction version, chunk size, chunk overlap), and `DocumentStatus` enum (`Queued | Embedding | Indexed | Deleting | Failed`).
-- `src/error.rs`: `AppError` enum with variants `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`. Includes manual `Serialize` impl for Tauri IPC (structured `{ kind, message }`). `From<std::io::Error>` impl for `?` convenience.
+- `src/error.rs`: `AppError` enum with typed `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`, `Inference`, `DuplicateDocument`, and `InvalidInput` variants. Its manual `Serialize` implementation exposes structured `{ kind, message }` IPC errors.
 - `src/events.rs`: `TokenEvent` enum (`Token | Warning | Done | Error`), `IngestionProgress` (`Extraction | Chunking | Embedding | Stored | Error`), and `Citation` — all derive `Serialize` + `Deserialize` for Tauri channels. `Citation::is_hybrid` prevents RRF rank from being presented as calibrated confidence.
 
 #### `crates/persistence/` — Data Layer
@@ -82,7 +79,7 @@ Contains zero-infrastructure data types: models, errors, and IPC events. No `sql
 Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `arrow-*`, `tokio`.
 
 - `Cargo.toml`: Dependencies for SQLite (`sqlx 0.9`), LanceDB (`0.37.1`), and the matching Arrow `58.4` API family.
-- `src/lib.rs`: Re-exports `DocumentRepository`, `VectorDb`, and `init_pool`. Contains a private `fn sql_err(e: sqlx::Error) -> AppError` helper to work around orphan rule restrictions on `From` impls.
+- `src/lib.rs`: Re-exports `DocumentRepository`, `AppSettingsRepository`, `VectorDb`, and `init_pool`.
 - `src/sqlite.rs`:
   - `init_pool()`: Creates the app data directory, opens a SQLite connection with `SqliteConnectOptions`, runs migrations, returns a `SqlitePool` (max 5 connections).
   - `DocumentRepository`: CRUD operations — `insert`, status transitions, lookups, deletion, and recovery queries. An insert collision on `documents.file_hash` is typed as `DuplicateDocument`; other constraints remain database errors. Successful indexing stores typed `IndexProvenance` only after the vector upsert; stale-provenance requeue atomically changes only indexed rows with absent/mismatched provenance while preserving their prior values. `mark_deleting` persists a non-indexable deletion state; startup lists and completes those rows before normal document work. Date/time columns use `CAST(... as TEXT)` since SQLite has no native datetime type.
@@ -92,9 +89,9 @@ Database and vector store operations. Depends on `domain`, `sqlx`, `lancedb`, `a
   - `init()`: Connects to a LanceDB directory on disk.
   - `schema()`: Arrow schema with `FixedSizeList(Float32, 768)` vectors, plus `document_id`, `page`, `chunk_index`, `content` columns.
   - `get_or_create_table()`: Serializes table discovery/creation only while `chunks` does not exist; subsequent calls open it concurrently. FTS index creation is deferred to the first write.
-  - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, creates FTS after rows exist, and defers 8-bit IVF-PQ until the table reaches 256 vectors.
-  - `hybrid_search()`: Receives the SQLite snapshot of eligible indexed document IDs, applies its escaped filter before the FTS+dense hybrid/vector-only candidate limit, then returns deduplicated results capped at the requested limit. Falls back to vector-only if FTS is missing or errors, and does not expose RRF rank as calibrated confidence.
-  - `delete_chunks()`: Deletes all chunk rows for a given `document_id` using a string filter expression. Used by durable document deletion.
+  - `upsert_chunks()`: Acquires a static `Semaphore(1)` write lock (prevents LanceDB commit conflicts), runs `merge_insert` on composite key `[document_id, page, chunk_index]` for idempotent upserts, creates FTS after rows exist, and defers 8-bit IVF-PQ until the table reaches 256 vectors. `compact()` uses the same write lock.
+  - `hybrid_search()`: Opens an existing chunks table only, receives the SQLite snapshot of eligible indexed document IDs, applies its escaped filter before the FTS+dense hybrid/vector-only candidate limit, then returns deduplicated results capped at the requested limit. A missing table yields no results for startup reconciliation rather than silently creating an empty store; FTS failures fall back to vector-only and RRF rank is not exposed as calibrated confidence.
+  - `delete_chunks()`: Deletes all chunk rows for a given escaped `document_id` filter. Used by durable document deletion.
 - `migrations/`:
   - `20240101000000_initial.sql`: Creates `documents` table (id, file metadata, processing status, embedding metadata, timestamps, error tracking) with indexes on `status`, `file_hash` (unique), and `created_at`. Creates `app_settings` key-value table.
   - `20260901000000_document_index_provenance.sql`: Adds nullable `indexed_extraction_version`, `indexed_chunk_size`, and `indexed_chunk_overlap` columns for successful-index provenance.

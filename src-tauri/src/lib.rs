@@ -30,8 +30,19 @@ const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const RETRIEVAL_CANDIDATE_LIMIT: usize = 100;
 const RETRIEVAL_RESULT_LIMIT: usize = 10;
-const EXTERNAL_READINESS_TIMEOUT: Duration = Duration::from_secs(10);
+const EXTERNAL_REQUEST_START_TIMEOUT: Duration = Duration::from_secs(15);
+const EXTERNAL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_EXTERNAL_QUERY_BYTES: usize = 32 * 1024;
+const MAX_EXTERNAL_REQUEST_ID_BYTES: usize = 64;
+const MAX_EXTERNAL_MODELS_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_EXTERNAL_MODELS: usize = 512;
+const MAX_EXTERNAL_MODEL_ID_BYTES: usize = 256;
+const MAX_SSE_EVENT_BYTES: usize = 64 * 1024;
+const MAX_SSE_TOKEN_BYTES: usize = 16 * 1024;
+const MAX_SSE_OUTPUT_BYTES: usize = 1024 * 1024;
 const DEFAULT_EXTERNAL_BASE_URL: &str = "http://localhost:11434/v1";
+const MAX_AUTOMATIC_RECOVERY_ATTEMPTS: i32 = 3;
+const MAX_SSE_INCOMPLETE_EVENT_BYTES: usize = MAX_SSE_EVENT_BYTES;
 
 fn validate_upload(filename: &str, bytes: &[u8]) -> Result<&'static str, AppError> {
     let name = std::path::Path::new(filename);
@@ -71,6 +82,12 @@ fn validate_upload(filename: &str, bytes: &[u8]) -> Result<&'static str, AppErro
             Ok("docx")
         }
         _ => {
+            if bytes.len() > rag_pipeline::extractor::EXTRACTED_TEXT_MAX_BYTES {
+                return Err(AppError::InvalidInput(format!(
+                    "Text document exceeds the {} MiB indexing limit",
+                    rag_pipeline::extractor::EXTRACTED_TEXT_MAX_BYTES / (1024 * 1024)
+                )));
+            }
             if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
                 return Err(AppError::InvalidInput(
                     "Ragtag accepts UTF-8 text files, PDF documents, and DOCX documents".into(),
@@ -98,12 +115,49 @@ fn is_managed_document_source_filename(filename: &str) -> bool {
     let Some((id, extension)) = filename.split_once('.') else {
         return false;
     };
+
     let is_canonical_v7_uuid = uuid::Uuid::parse_str(id)
         .is_ok_and(|uuid| uuid.get_version_num() == 7 && uuid.to_string() == id);
 
     is_canonical_v7_uuid
         && (1..=16).contains(&extension.len())
         && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn is_managed_document_temporary_filename(filename: &str) -> bool {
+    let Some(filename) = filename
+        .strip_prefix('.')
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((source_filename, temporary_id)) = filename.rsplit_once('.') else {
+        return false;
+    };
+    is_managed_document_source_filename(source_filename)
+        && uuid::Uuid::parse_str(temporary_id)
+            .is_ok_and(|uuid| uuid.get_version_num() == 7 && uuid.to_string() == temporary_id)
+}
+
+fn validate_query_request_id(request_id: &str) -> Result<(), AppError> {
+    if request_id.len() > MAX_EXTERNAL_REQUEST_ID_BYTES
+        || uuid::Uuid::parse_str(request_id).is_err()
+    {
+        return Err(AppError::InvalidInput(
+            "Query request ID must be a UUID no longer than 64 bytes".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_query_request(query: &str, request_id: &str) -> Result<(), AppError> {
+    if query.len() > MAX_EXTERNAL_QUERY_BYTES {
+        return Err(AppError::InvalidInput(
+            "Query exceeds the 32 KiB limit".into(),
+        ));
+    }
+    validate_query_request_id(request_id)
 }
 
 fn inference_mode_is_unchanged(current_mode: Option<&str>, requested_mode: &str) -> bool {
@@ -127,12 +181,75 @@ fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-fn sse_event_data(event: &str) -> Option<&str> {
-    event.lines().find_map(|line| {
+fn sse_incomplete_buffer_exceeds_limit(buffer: &[u8]) -> bool {
+    buffer.len() > MAX_SSE_INCOMPLETE_EVENT_BYTES
+}
+
+fn sse_complete_event_exceeds_limit(event_bytes: usize) -> bool {
+    event_bytes > MAX_SSE_EVENT_BYTES
+}
+
+fn sse_token_exceeds_limit(token: &str) -> bool {
+    token.len() > MAX_SSE_TOKEN_BYTES
+}
+
+fn sse_output_exceeds_limit(total_output_bytes: usize, token: &str) -> bool {
+    total_output_bytes.saturating_add(token.len()) > MAX_SSE_OUTPUT_BYTES
+}
+
+fn sse_event_data(event: &str) -> Result<Option<String>, AppError> {
+    let mut data_lines = Vec::new();
+    let mut saw_data = false;
+
+    for line in event.lines() {
         let line = line.strip_suffix('\r').unwrap_or(line);
-        line.strip_prefix("data:")
-            .map(|data| data.strip_prefix(' ').unwrap_or(data))
-    })
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+
+        let (field, value) = line.split_once(':').unwrap_or((line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "data" => {
+                saw_data = true;
+                data_lines.push(value);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(saw_data.then(|| data_lines.join("\n")))
+}
+
+fn external_sse_token(data: &str) -> Result<Option<String>, AppError> {
+    let payload: serde_json::Value = serde_json::from_str(data).map_err(|_| {
+        AppError::Inference("External inference sent malformed SSE JSON payload.".into())
+    })?;
+    let choices = payload
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            AppError::Inference("External inference sent an SSE payload without choices.".into())
+        })?;
+    let Some(choice) = choices.first().and_then(serde_json::Value::as_object) else {
+        return Ok(None);
+    };
+    let delta = choice
+        .get("delta")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            AppError::Inference(
+                "External inference sent an SSE payload with an invalid delta.".into(),
+            )
+        })?;
+
+    match delta.get("content") {
+        Some(serde_json::Value::String(token)) => Ok((!token.is_empty()).then(|| token.clone())),
+        Some(serde_json::Value::Null) | None => Ok(None),
+        Some(_) => Err(AppError::Inference(
+            "External inference sent an SSE payload with a non-text token.".into(),
+        )),
+    }
 }
 
 const INFERENCE_EVENT_BUFFER_CAPACITY: usize = 32;
@@ -185,6 +302,110 @@ struct ExternalModel {
     id: String,
 }
 
+fn parse_external_models_response(bytes: &[u8]) -> Result<ExternalModelsResponse, AppError> {
+    let models = serde_json::from_slice::<ExternalModelsResponse>(bytes).map_err(|error| {
+        AppError::Inference(format!(
+            "External inference readiness check received an invalid /models response: {error}"
+        ))
+    })?;
+    if models.data.len() > MAX_EXTERNAL_MODELS {
+        return Err(AppError::Inference(format!(
+            "External inference /models response exceeds the {MAX_EXTERNAL_MODELS} model limit"
+        )));
+    }
+    if models
+        .data
+        .iter()
+        .any(|model| model.id.len() > MAX_EXTERNAL_MODEL_ID_BYTES)
+    {
+        return Err(AppError::Inference(format!(
+            "External inference /models response contains a model ID longer than {MAX_EXTERNAL_MODEL_ID_BYTES} bytes"
+        )));
+    }
+
+    Ok(models)
+}
+
+fn external_models_response_too_large(response: &reqwest::Response) -> bool {
+    response
+        .content_length()
+        .is_some_and(|length| length > MAX_EXTERNAL_MODELS_RESPONSE_BYTES as u64)
+}
+
+async fn read_external_models_response(
+    response: reqwest::Response,
+) -> Result<ExternalModelsResponse, AppError> {
+    use futures_util::StreamExt;
+
+    if external_models_response_too_large(&response) {
+        return Err(AppError::Inference(format!(
+            "External inference /models response exceeds the {} byte limit",
+            MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+        )));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next())
+        .await
+        .map_err(|_| AppError::Inference("External inference /models response timed out".into()))?
+    {
+        let chunk = chunk.map_err(|error| {
+            AppError::Inference(format!(
+                "External inference readiness check received an invalid /models response: {error}"
+            ))
+        })?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_EXTERNAL_MODELS_RESPONSE_BYTES {
+            return Err(AppError::Inference(format!(
+                "External inference /models response exceeds the {} byte limit",
+                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    parse_external_models_response(&bytes)
+}
+
+async fn read_external_models_response_cancellable(
+    response: reqwest::Response,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Option<ExternalModelsResponse>, AppError> {
+    use futures_util::StreamExt;
+
+    if external_models_response_too_large(&response) {
+        return Err(AppError::Inference(format!(
+            "External inference /models response exceeds the {} byte limit",
+            MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+        )));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            _ = cancellation.changed() => return Ok(None),
+            result = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next()) => result,
+        }
+        .map_err(|_| AppError::Inference("External inference /models response timed out".into()))?;
+        let Some(chunk) = chunk else {
+            return parse_external_models_response(&bytes).map(Some);
+        };
+        let chunk = chunk.map_err(|error| {
+            AppError::Inference(format!(
+                "External inference readiness check received an invalid /models response: {error}"
+            ))
+        })?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_EXTERNAL_MODELS_RESPONSE_BYTES {
+            return Err(AppError::Inference(format!(
+                "External inference /models response exceeds the {} byte limit",
+                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+}
+
 #[derive(serde::Serialize)]
 struct ExternalProviderConnection {
     models: Vec<String>,
@@ -222,11 +443,15 @@ fn apply_external_auth(
 
 async fn read_external_api_key() -> Result<Option<String>, AppError> {
     tokio::task::spawn_blocking(|| {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
-            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
+            AppError::Internal(format!("System keychain is unavailable: {error}"))
+        })?;
         match entry.get_password() {
             Ok(api_key) if !api_key.is_empty() => Ok(Some(api_key)),
-            Ok(_) | Err(_) => Ok(None),
+            Ok(_) | Err(keyring::v1::Error::NoEntry) => Ok(None),
+            Err(error) => Err(AppError::Internal(format!(
+                "System keychain is unavailable: {error}"
+            ))),
         }
     })
     .await
@@ -280,17 +505,15 @@ async fn fetch_external_models(
     config: &ExternalInferenceConfig,
 ) -> Result<ExternalModelsResponse, AppError> {
     let models_url = config.models_url()?;
-    let response = apply_external_auth(
-        client.get(models_url).timeout(EXTERNAL_READINESS_TIMEOUT),
-        config.api_key.as_deref(),
-    )
-    .send()
-    .await
-    .map_err(|error| {
-        AppError::Inference(format!(
-            "External inference readiness check failed: {error}"
-        ))
-    })?;
+    let request = apply_external_auth(client.get(models_url), config.api_key.as_deref());
+    let response = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send())
+        .await
+        .map_err(|_| AppError::Inference("External inference readiness check timed out".into()))?
+        .map_err(|error| {
+            AppError::Inference(format!(
+                "External inference readiness check failed: {error}"
+            ))
+        })?;
 
     if !response.status().is_success() {
         return Err(AppError::Inference(format!(
@@ -299,14 +522,7 @@ async fn fetch_external_models(
         )));
     }
 
-    response
-        .json::<ExternalModelsResponse>()
-        .await
-        .map_err(|error| {
-            AppError::Inference(format!(
-                "External inference readiness check received an invalid /models response: {error}"
-            ))
-        })
+    read_external_models_response(response).await
 }
 
 async fn probe_external_inference_readiness(
@@ -322,6 +538,45 @@ async fn probe_external_inference_readiness(
     }
 
     Ok(())
+}
+
+async fn probe_external_inference_readiness_cancellable(
+    client: &reqwest::Client,
+    config: &ExternalInferenceConfig,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<bool, AppError> {
+    let models_url = config.models_url()?;
+    let request = apply_external_auth(client.get(models_url), config.api_key.as_deref());
+    let response = tokio::select! {
+        _ = cancellation.changed() => return Ok(false),
+        result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
+    }
+    .map_err(|_| AppError::Inference("External inference readiness check timed out".into()))?
+    .map_err(|error| {
+        AppError::Inference(format!(
+            "External inference readiness check failed: {error}"
+        ))
+    })?;
+
+    if !response.status().is_success() {
+        return Err(AppError::Inference(format!(
+            "External inference readiness check failed: endpoint returned HTTP {}",
+            response.status()
+        )));
+    }
+
+    let Some(models) = read_external_models_response_cancellable(response, cancellation).await?
+    else {
+        return Ok(false);
+    };
+    if !external_model_is_available(&models, &config.model) {
+        return Err(AppError::Inference(format!(
+            "External inference model '{}' is not available from the configured endpoint",
+            config.model
+        )));
+    }
+
+    Ok(true)
 }
 
 enum InferenceEvent {
@@ -410,19 +665,34 @@ async fn stream_external_inference(
 
     let response = tokio::select! {
         _ = cancellation.changed() => return Ok(()),
-        result = request.send() => result,
+        result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
+    .map_err(|_| AppError::Inference("BYO request timed out before the response started.".into()))?
     .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
     .error_for_status()
     .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
 
     let mut stream = response.bytes_stream();
+    let mut total_output_bytes = 0;
     let mut buffer = Vec::new();
 
     loop {
         let chunk = tokio::select! {
             _ = cancellation.changed() => return Ok(()),
-            chunk = stream.next() => chunk,
+            result = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next()) => match result {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    send_inference_event(
+                        cancellation,
+                        events,
+                        InferenceEvent::StreamError(
+                            "External inference stream timed out while waiting for data.".into(),
+                        ),
+                    )
+                    .await;
+                    return Ok(());
+                }
+            },
         };
         let Some(chunk) = chunk else {
             send_inference_event(
@@ -450,6 +720,18 @@ async fn stream_external_inference(
         buffer.extend_from_slice(&chunk);
 
         while let Some((event_end, delimiter_len)) = sse_event_boundary(&buffer) {
+            if sse_complete_event_exceeds_limit(event_end + delimiter_len) {
+                send_inference_event(
+                    cancellation,
+                    events,
+                    InferenceEvent::StreamError(
+                        "External inference sent an oversized complete SSE event.".into(),
+                    ),
+                )
+                .await;
+                return Ok(());
+            }
+
             let event = match std::str::from_utf8(&buffer[..event_end]) {
                 Ok(event) => event,
                 Err(_) => {
@@ -464,7 +746,18 @@ async fn stream_external_inference(
                     return Ok(());
                 }
             };
-            let data = sse_event_data(event).map(str::to_owned);
+            let data = match sse_event_data(event) {
+                Ok(data) => data,
+                Err(error) => {
+                    send_inference_event(
+                        cancellation,
+                        events,
+                        InferenceEvent::StreamError(error.to_string()),
+                    )
+                    .await;
+                    return Ok(());
+                }
+            };
             buffer.drain(..event_end + delimiter_len);
 
             match data.as_deref() {
@@ -472,24 +765,62 @@ async fn stream_external_inference(
                     send_inference_event(cancellation, events, InferenceEvent::Done).await;
                     return Ok(());
                 }
-                Some(data) => {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                        if let Some(token) = parsed["choices"][0]["delta"]["content"].as_str() {
-                            if !token.is_empty()
-                                && !send_inference_event(
-                                    cancellation,
-                                    events,
-                                    InferenceEvent::Token(token.to_string()),
-                                )
-                                .await
-                            {
-                                return Ok(());
-                            }
+                Some(data) => match external_sse_token(data) {
+                    Ok(Some(token)) => {
+                        if sse_token_exceeds_limit(&token) {
+                            send_inference_event(
+                                cancellation,
+                                events,
+                                InferenceEvent::StreamError(
+                                    "External inference sent an oversized SSE token.".into(),
+                                ),
+                            )
+                            .await;
+                            return Ok(());
+                        }
+                        if sse_output_exceeds_limit(total_output_bytes, &token) {
+                            send_inference_event(
+                                cancellation,
+                                events,
+                                InferenceEvent::StreamError(
+                                    "External inference exceeded the total output limit.".into(),
+                                ),
+                            )
+                            .await;
+                            return Ok(());
+                        }
+                        total_output_bytes += token.len();
+                        if !send_inference_event(cancellation, events, InferenceEvent::Token(token))
+                            .await
+                        {
+                            return Ok(());
                         }
                     }
-                }
+                    Ok(None) => {}
+                    Err(error) => {
+                        send_inference_event(
+                            cancellation,
+                            events,
+                            InferenceEvent::StreamError(error.to_string()),
+                        )
+                        .await;
+                        return Ok(());
+                    }
+                },
                 None => {}
             }
+        }
+
+        if sse_incomplete_buffer_exceeds_limit(&buffer) {
+            send_inference_event(
+                cancellation,
+                events,
+                InferenceEvent::StreamError(
+                    "External inference sent an oversized incomplete SSE event.".into(),
+                ),
+            )
+            .await;
+            return Ok(());
         }
     }
 }
@@ -685,11 +1016,7 @@ fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
         "external_base_url" => normalize_external_base_url(value).map(|_| ()),
         "external_model" if !value.trim().is_empty() => Ok(()),
 
-        "generation_model"
-            if value.split('/').count() == 2 && !value.contains(char::is_whitespace) =>
-        {
-            Ok(())
-        }
+        "generation_model" if is_valid_hugging_face_model_id(value) => Ok(()),
         "tokenizer_model" if is_valid_hugging_face_model_id(value) => Ok(()),
         "gguf_filename"
             if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") =>
@@ -783,6 +1110,29 @@ impl Drop for ActiveQuery {
             queries.remove(&self.request_id);
         }
     }
+}
+
+fn register_active_query(
+    queries: &Arc<std::sync::Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+    request_id: &str,
+) -> Result<tokio::sync::watch::Receiver<bool>, AppError> {
+    if request_id.is_empty() {
+        return Err(AppError::InvalidInput(
+            "Query request ID must not be empty.".into(),
+        ));
+    }
+
+    let (sender, receiver) = tokio::sync::watch::channel(false);
+    let mut queries = queries
+        .lock()
+        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?;
+    if queries.contains_key(request_id) {
+        return Err(AppError::InvalidInput(
+            "A query with this request ID is already active.".into(),
+        ));
+    }
+    queries.insert(request_id.to_owned(), sender);
+    Ok(receiver)
 }
 
 fn invalidate_llm_initialization(initialization: &mut state::LlmInitializationState) {
@@ -919,22 +1269,30 @@ async fn finish_local_model_initialization(
     false
 }
 
-async fn restart_external_readiness_probe(
+async fn invalidate_llm_readiness(
     app: &tauri::AppHandle,
     state: &AppState,
     clear_local_model: bool,
-) -> Result<(), AppError> {
-    {
-        let mut initialization = state.llm_initialization.lock().await;
-        invalidate_llm_initialization(&mut initialization);
-        initialization.in_progress = false;
+) -> bool {
+    let mut initialization = state.llm_initialization.lock().await;
+    invalidate_llm_initialization(&mut initialization);
+    let should_start = !initialization.in_progress;
+    if should_start {
         initialization.in_progress_generation = None;
-        initialization.restart_requested = false;
-        if clear_local_model {
-            *state.local_llm.write().await = None;
-        }
-        let _ = app.emit("llm_unready", ());
+    } else {
+        initialization.restart_requested = true;
     }
+    if clear_local_model {
+        *state.local_llm.write().await = None;
+    }
+    let _ = app.emit("llm_unready", ());
+    should_start
+}
+
+async fn request_llm_initialization_from_persisted_state(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), AppError> {
     let models_dir = app
         .path()
         .app_local_data_dir()
@@ -944,6 +1302,22 @@ async fn restart_external_readiness_probe(
     Ok(())
 }
 
+async fn invalidate_external_readiness_before_change(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<bool, AppError> {
+    let settings = AppSettingsRepository::new(state.db_pool.clone());
+    let mode = settings
+        .get("inference_mode")
+        .await?
+        .unwrap_or_else(|| "local".to_string());
+    if mode == "external" {
+        return Ok(invalidate_llm_readiness(app, state, false).await);
+    }
+
+    Ok(false)
+}
+
 async fn set_local_model_setting_and_restart_if_active(
     app: &tauri::AppHandle,
     state: &AppState,
@@ -951,77 +1325,21 @@ async fn set_local_model_setting_and_restart_if_active(
     value: &str,
 ) -> Result<(), AppError> {
     let settings = AppSettingsRepository::new(state.db_pool.clone());
-    let should_start = {
-        let mut initialization = state.llm_initialization.lock().await;
-        let changed = settings.get(key).await?.as_deref() != Some(value);
-        settings.set(key, value).await?;
-        let local_mode_active = settings.get("inference_mode").await?.as_deref() == Some("local");
-        if !changed || !local_mode_active {
-            false
-        } else {
-            invalidate_llm_initialization(&mut initialization);
-            let should_start = !initialization.in_progress;
-            if !should_start {
-                initialization.restart_requested = true;
-            }
-            *state.local_llm.write().await = None;
-            let _ = app.emit("llm_unready", ());
-            should_start
-        }
-    };
-
-    if should_start {
-        let models_dir = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| AppError::Io(e.to_string()))?
-            .join("models");
-        request_llm_initialization(app, state, models_dir).await;
-    }
-    Ok(())
-}
-
-async fn restart_local_model_initialization_if_active(
-    app: &tauri::AppHandle,
-    state: &AppState,
-) -> Result<(), AppError> {
-    let settings = AppSettingsRepository::new(state.db_pool.clone());
-    if settings.get("inference_mode").await?.as_deref() != Some("local") {
+    if settings.get(key).await?.as_deref() == Some(value) {
         return Ok(());
     }
 
-    let should_start = {
-        let mut initialization = state.llm_initialization.lock().await;
-        invalidate_llm_initialization(&mut initialization);
-        let should_start = !initialization.in_progress;
-        if !should_start {
-            initialization.restart_requested = true;
-        }
-        *state.local_llm.write().await = None;
-        let _ = app.emit("llm_unready", ());
-        should_start
-    };
-
+    let local_mode_active = settings
+        .get("inference_mode")
+        .await?
+        .unwrap_or_else(|| "local".to_string())
+        == "local";
+    let should_start = local_mode_active && invalidate_llm_readiness(app, state, true).await;
+    let write_result = settings.set(key, value).await;
     if should_start {
-        let models_dir = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| AppError::Io(e.to_string()))?
-            .join("models");
-        request_llm_initialization(app, state, models_dir).await;
+        request_llm_initialization_from_persisted_state(app, state).await?;
     }
-    Ok(())
-}
-
-async fn revalidate_external_readiness_if_active(
-    app: &tauri::AppHandle,
-    state: &AppState,
-) -> Result<(), AppError> {
-    let settings = AppSettingsRepository::new(state.db_pool.clone());
-    if settings.get("inference_mode").await?.as_deref() == Some("external") {
-        restart_external_readiness_probe(app, state, false).await?;
-    }
-    Ok(())
+    write_result
 }
 
 async fn request_llm_initialization(
@@ -1081,11 +1399,39 @@ async fn request_llm_initialization_with_resources(
 
     tauri::async_runtime::spawn(async move {
         let app_settings = AppSettingsRepository::new(pool.clone());
-        let mode = app_settings
-            .get("inference_mode")
-            .await
-            .unwrap_or_default()
-            .unwrap_or_else(|| "local".to_string());
+        let mode = match app_settings.get("inference_mode").await {
+            Ok(mode) => mode.unwrap_or_else(|| "local".to_string()),
+            Err(error) => {
+                let message = format!("Failed to read inference mode: {error}");
+                error!("{message}");
+                let restart = finish_llm_initialization_with_progress(
+                    &app,
+                    &initialization,
+                    generation,
+                    model_download::ModelDownloadProgress {
+                        model_id: String::new(),
+                        current_file: String::new(),
+                        file_downloaded: 0,
+                        file_total: 0,
+                        files_completed: 0,
+                        total_files: 0,
+                        stage: model_download::DownloadStage::Error { message },
+                    },
+                )
+                .await;
+                if restart {
+                    schedule_llm_initialization_with_resources(
+                        app.clone(),
+                        llm_state.clone(),
+                        initialization.clone(),
+                        pool.clone(),
+                        http_client.clone(),
+                        models_dir.clone(),
+                    );
+                }
+                return;
+            }
+        };
 
         if mode != "local" {
             let readiness = async {
@@ -1109,11 +1455,13 @@ async fn request_llm_initialization_with_resources(
         }
 
         let local_config = async {
-            let model_id = app_settings
-                .get("generation_model")
-                .await?
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "unsloth/Qwen3-1.7B-GGUF".to_string());
+            let model_id = match app_settings.get("generation_model").await? {
+                Some(value) if !value.is_empty() => {
+                    validate_setting("generation_model", &value)?;
+                    value
+                }
+                _ => "unsloth/Qwen3-1.7B-GGUF".to_string(),
+            };
             let tokenizer_model = app_settings
                 .get("tokenizer_model")
                 .await?
@@ -1304,11 +1652,39 @@ async fn request_llm_initialization_with_resources(
 
         match builder.build().await {
             Ok(model) => {
-                let current_mode = app_settings
-                    .get("inference_mode")
-                    .await
-                    .unwrap_or_default()
-                    .unwrap_or_else(|| "local".to_string());
+                let current_mode = match app_settings.get("inference_mode").await {
+                    Ok(mode) => mode.unwrap_or_else(|| "local".to_string()),
+                    Err(error) => {
+                        let message = format!("Failed to read inference mode: {error}");
+                        error!("{message}");
+                        let restart = finish_llm_initialization_with_progress(
+                            &app,
+                            &initialization,
+                            generation,
+                            model_download::ModelDownloadProgress {
+                                model_id: String::new(),
+                                current_file: String::new(),
+                                file_downloaded: 0,
+                                file_total: 0,
+                                files_completed: 0,
+                                total_files: 0,
+                                stage: model_download::DownloadStage::Error { message },
+                            },
+                        )
+                        .await;
+                        if restart {
+                            schedule_llm_initialization_with_resources(
+                                app.clone(),
+                                llm_state.clone(),
+                                initialization.clone(),
+                                pool.clone(),
+                                http_client.clone(),
+                                models_dir.clone(),
+                            );
+                        }
+                        return;
+                    }
+                };
                 if current_mode != "local" {
                     let restart = finish_llm_initialization(&initialization, generation).await;
                     if restart {
@@ -1376,6 +1752,171 @@ async fn request_llm_initialization_with_resources(
     });
 }
 
+async fn requeue_indexed_documents_after_vector_loss(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<String>, AppError> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let ids = sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    if !ids.is_empty() {
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'queued',
+                 chunk_count = NULL,
+                 embedding_model = NULL,
+                 embedding_attempts = 0,
+                 processing_started_at = NULL,
+                 indexed_at = NULL,
+                 error_message = NULL,
+                 retry_count = 0
+             WHERE status = 'indexed'",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    Ok(ids)
+}
+
+fn indexed_chunk_count_mismatch(recorded_count: Option<i64>, indexed_count: Option<usize>) -> bool {
+    match recorded_count.and_then(|count| usize::try_from(count).ok()) {
+        Some(recorded_count) => indexed_count != Some(recorded_count),
+        None => true,
+    }
+}
+
+async fn requeue_indexed_documents_with_chunk_count_mismatches(
+    pool: &sqlx::SqlitePool,
+    indexed_chunk_counts: &HashMap<String, usize>,
+) -> Result<Vec<String>, AppError> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    let indexed_documents = sqlx::query_as::<_, (String, Option<i64>)>(
+        "SELECT id, chunk_count FROM documents WHERE status = 'indexed'",
+    )
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|error| AppError::Database(error.to_string()))?;
+    let ids = indexed_documents
+        .into_iter()
+        .filter_map(|(id, chunk_count)| {
+            indexed_chunk_count_mismatch(chunk_count, indexed_chunk_counts.get(&id).copied())
+                .then_some(id)
+        })
+        .collect::<Vec<_>>();
+
+    for id in &ids {
+        sqlx::query(
+            "UPDATE documents
+             SET status = 'queued',
+                 chunk_count = NULL,
+                 embedding_model = NULL,
+                 embedding_attempts = 0,
+                 processing_started_at = NULL,
+                 indexed_at = NULL,
+                 error_message = NULL,
+                 retry_count = 0
+             WHERE id = ? AND status = 'indexed'",
+        )
+        .bind(id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| AppError::Database(error.to_string()))?;
+
+    Ok(ids)
+}
+
+async fn recover_startup_documents(
+    pool: &sqlx::SqlitePool,
+    vector_db: &VectorDb,
+    document_operations: &tokio::sync::RwLock<()>,
+) -> Result<HashSet<String>, AppError> {
+    let repo = DocumentRepository::new(pool.clone());
+    let _document_operation = document_operations.write().await;
+    let mut recovered_ids = HashSet::new();
+
+    if !vector_db.chunks_table_exists().await? {
+        recovered_ids.extend(requeue_indexed_documents_after_vector_loss(pool).await?);
+    } else {
+        let indexed_chunk_counts = vector_db.indexed_chunk_counts().await?;
+        recovered_ids.extend(
+            requeue_indexed_documents_with_chunk_count_mismatches(pool, &indexed_chunk_counts)
+                .await?,
+        );
+    }
+
+    let settings = AppSettingsRepository::new(pool.clone());
+    let desired_provenance = desired_indexing_provenance(&settings).await?;
+    recovered_ids.extend(
+        repo.requeue_indexed_with_stale_provenance(&desired_provenance)
+            .await?,
+    );
+    recovered_ids.extend(
+        repo.reset_interrupted_embeddings(MAX_AUTOMATIC_RECOVERY_ATTEMPTS)
+            .await?,
+    );
+    recovered_ids.extend(
+        repo.reset_failed_to_queued(MAX_AUTOMATIC_RECOVERY_ATTEMPTS)
+            .await?,
+    );
+    recovered_ids.extend(repo.get_queued_ids().await?);
+    Ok(recovered_ids)
+}
+
+async fn recover_startup_documents_with_retry(
+    pool: sqlx::SqlitePool,
+    vector_db: Arc<VectorDb>,
+    document_operations: Arc<tokio::sync::RwLock<()>>,
+    queue: mpsc::Sender<IngestionJob>,
+) {
+    let mut attempt = 0_u32;
+    loop {
+        match recover_startup_documents(&pool, &vector_db, &document_operations).await {
+            Ok(recovered_ids) => {
+                let recovered_count = recovered_ids.len();
+                for id in recovered_ids {
+                    if let Err(error) = queue.send(IngestionJob::background(id)).await {
+                        error!(
+                            "startup recovery — document worker stopped before recovery completed: {error}"
+                        );
+                        return;
+                    }
+                }
+                if recovered_count > 0 {
+                    info!("startup recovery — re-queued {recovered_count} documents");
+                } else {
+                    debug!("startup recovery — no documents to resume");
+                }
+                return;
+            }
+            Err(error) => {
+                attempt = attempt.saturating_add(1);
+                let delay = registry_read_retry_delay(attempt);
+                warn!(
+                    "startup recovery — failed to read durable document work: {error}; retrying in {delay:?}"
+                );
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn begin_first_run_init(
     app: tauri::AppHandle,
@@ -1412,6 +1953,7 @@ async fn begin_first_run_init(
         let models_dir_embedder = models_dir.clone();
         let embedder_pool = state.db_pool.clone();
         let embedder_job_queue = state.job_queue.clone();
+        let recovery_vector_db = state.vector_db.clone();
         let document_operations = state.document_operations.clone();
 
         tauri::async_runtime::spawn(async move {
@@ -1425,72 +1967,14 @@ async fn begin_first_run_init(
                     *embedder_state.write().await = Some(Arc::new(std::sync::Mutex::new(emb)));
                     let _ = embedder_handle.emit("embedder_ready", ());
 
-                    // Recovery runs after the embedder is ready. Awaiting sends applies
-                    // producer backpressure instead of silently dropping recovered work.
-                    let repo = persistence::DocumentRepository::new(embedder_pool.clone());
-                    let recovered_ids = {
-                        let _document_operation = document_operations.write().await;
-                        let mut recovered_ids = HashSet::new();
-                        let settings = AppSettingsRepository::new(embedder_pool.clone());
-                        match desired_indexing_provenance(&settings).await {
-                            Ok(desired_provenance) => match repo
-                                .requeue_indexed_with_stale_provenance(&desired_provenance)
-                                .await
-                            {
-                                Ok(ids) => recovered_ids.extend(ids),
-                                Err(e) => {
-                                    error!(
-                                        "startup recovery — failed to requeue stale indexed documents: {e}"
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                error!(
-                                    "startup recovery — failed to read desired indexing provenance: {e}"
-                                );
-                            }
-                        }
-
-                        match repo.reset_embedding_to_queued().await {
-                            Ok(ids) => recovered_ids.extend(ids),
-                            Err(e) => {
-                                error!(
-                                    "startup recovery — failed to reset embedding documents: {e}"
-                                )
-                            }
-                        }
-                        match repo.reset_failed_to_queued(3).await {
-                            Ok(ids) => recovered_ids.extend(ids),
-                            Err(e) => {
-                                error!(
-                                    "startup recovery — failed to reset retryable documents: {e}"
-                                )
-                            }
-                        }
-                        match repo.get_queued_ids().await {
-                            Ok(ids) => recovered_ids.extend(ids),
-                            Err(e) => {
-                                error!("startup recovery — failed to list queued documents: {e}")
-                            }
-                        }
-                        recovered_ids
-                    };
-
-                    let recovered_count = recovered_ids.len();
-                    for id in recovered_ids {
-                        if let Err(e) = embedder_job_queue.send(IngestionJob::background(id)).await
-                        {
-                            error!(
-                                "startup recovery — document worker stopped before recovery completed: {e}"
-                            );
-                            break;
-                        }
-                    }
-                    if recovered_count > 0 {
-                        info!("startup recovery — re-queued {recovered_count} documents");
-                    } else {
-                        debug!("startup recovery — no documents to resume");
-                    }
+                    // Recovery begins only after the embedder is available. Database reads
+                    // retry with bounded backoff so durable work is never deferred to restart.
+                    tauri::async_runtime::spawn(recover_startup_documents_with_retry(
+                        embedder_pool,
+                        recovery_vector_db,
+                        document_operations,
+                        embedder_job_queue,
+                    ));
                 }
                 Ok(Err(e)) => {
                     EMBEDDER_INIT_IN_PROGRESS.store(false, Ordering::SeqCst);
@@ -1552,6 +2036,39 @@ async fn retry_local_model_initialization(
     Ok(())
 }
 
+fn write_document_source_atomically(
+    storage_path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), AppError> {
+    use std::io::Write as _;
+
+    let parent = storage_path
+        .parent()
+        .ok_or_else(|| AppError::Internal("Managed document path has no parent".into()))?;
+    let filename = storage_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| AppError::Internal("Managed document path has no file name".into()))?;
+    let temporary_path = parent.join(format!(".{filename}.{}.tmp", uuid::Uuid::now_v7()));
+
+    let result = (|| -> std::io::Result<()> {
+        let mut source = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        source.write_all(bytes)?;
+        source.sync_all()?;
+        std::fs::rename(&temporary_path, storage_path)?;
+        let _ = std::fs::File::open(parent).and_then(|directory| directory.sync_all());
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+
+    result.map_err(AppError::from)
+}
+
 #[tauri::command]
 async fn upload_document(
     app: tauri::AppHandle,
@@ -1561,25 +2078,35 @@ async fn upload_document(
 ) -> Result<String, AppError> {
     let file_type = validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
+    if state.embedder.read().await.is_none() {
+        return Err(AppError::Internal(
+            "Embedding model not yet loaded. Please wait before uploading documents.".into(),
+        ));
+    }
     let repo = DocumentRepository::new(state.db_pool.clone());
 
     let app_local_data = app
         .path()
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
-    let docs_dir = app_local_data.join("documents");
-    tokio::fs::create_dir_all(&docs_dir).await?;
-
-    let hash = tokio::task::spawn_blocking({
-        let bytes = file_bytes.clone();
-        move || {
-            let mut hasher = Sha512::new();
-            hasher.update(&bytes);
-            hasher.finalize().to_vec()
-        }
+    let docs_dir = tokio::task::spawn_blocking({
+        let app_local_data = app_local_data.clone();
+        move || managed_documents_directory(&app_local_data, true)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Hashing failed: {}", e)))?;
+    .map_err(|error| {
+        AppError::Internal(format!("Managed document directory task panicked: {error}"))
+    })??;
+
+    let file_size_bytes = i64::try_from(file_bytes.len())
+        .map_err(|_| AppError::InvalidInput("Document is too large to store".into()))?;
+    let (hash, file_bytes) = tokio::task::spawn_blocking(move || {
+        let mut hasher = Sha512::new();
+        hasher.update(&file_bytes);
+        (hasher.finalize().to_vec(), file_bytes)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Hashing failed: {e}")))?;
 
     if let Some(existing) = repo.find_by_hash(&hash).await? {
         return Err(AppError::DuplicateDocument(format!(
@@ -1593,7 +2120,12 @@ async fn upload_document(
     let storage_path = docs_dir.join(&storage_filename);
     let relative_storage_path = format!("documents/{}", storage_filename);
 
-    tokio::fs::write(&storage_path, &file_bytes).await?;
+    tokio::task::spawn_blocking({
+        let storage_path = storage_path.clone();
+        move || write_document_source_atomically(&storage_path, &file_bytes)
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("Document write task panicked: {error}")))??;
 
     let created_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -1601,7 +2133,7 @@ async fn upload_document(
         id: doc_id.clone(),
         filename,
         file_type: file_type.to_string(),
-        file_size_bytes: Some(file_bytes.len() as i64),
+        file_size_bytes: Some(file_size_bytes),
         file_hash: Some(hash),
         storage_path: relative_storage_path,
         status: DocumentStatus::Queued,
@@ -1660,13 +2192,9 @@ async fn execute_query(
     request_id: String,
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
+    validate_query_request(&query, &request_id)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
-    let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(false);
-    state
-        .active_queries
-        .lock()
-        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?
-        .insert(request_id.clone(), cancel_sender);
+    let cancel_receiver = register_active_query(&state.active_queries, &request_id)?;
     let _active_query = ActiveQuery {
         queries: state.active_queries.clone(),
         request_id: request_id.clone(),
@@ -1734,8 +2262,7 @@ async fn execute_query(
             citations.push(Citation {
                 document_id: result.document_id,
                 filename: doc.filename,
-                storage_path: app_local_data
-                    .join(&doc.storage_path)
+                storage_path: document_storage_path(&app_local_data, &doc.storage_path)?
                     .to_string_lossy()
                     .to_string(),
                 page: result.page as i32,
@@ -1759,7 +2286,16 @@ async fn execute_query(
     let provider = if mode == "external" {
         let config = external_inference_config(&settings_repo).await?;
         let http_client = state.http_client.clone();
-        probe_external_inference_readiness(&http_client, &config).await?;
+        let mut readiness_cancellation = cancel_receiver.clone();
+        if !probe_external_inference_readiness_cancellable(
+            &http_client,
+            &config,
+            &mut readiness_cancellation,
+        )
+        .await?
+        {
+            return Ok(());
+        }
         let url = config.chat_completions_url()?.to_string();
         let model = config.model;
 
@@ -1817,11 +2353,12 @@ async fn get_document_preview(
         .path()
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
-    let source_path = document_storage_path(&app_local_data, &document.storage_path)?;
+    let storage_path = document.storage_path;
     let file_type = document.file_type;
     let filename = document.filename;
 
     tokio::task::spawn_blocking(move || {
+        let source_path = document_storage_path(&app_local_data, &storage_path)?;
         rag_pipeline::extractor::document_preview(&source_path, &file_type, &filename)
     })
     .await
@@ -1843,22 +2380,212 @@ fn validate_document_preview_document(document: &Document) -> Result<(), AppErro
     Ok(())
 }
 
-fn document_storage_path(
+fn managed_documents_directory(
     app_local_data: &std::path::Path,
-    storage_path: &str,
+    create: bool,
 ) -> Result<std::path::PathBuf, AppError> {
-    let stored_path = std::path::Path::new(storage_path);
-    if stored_path.is_absolute()
-        || stored_path
+    let app_data_metadata = std::fs::symlink_metadata(app_local_data)
+        .map_err(|error| AppError::Io(format!("Could not inspect app data directory: {error}")))?;
+    if app_data_metadata.file_type().is_symlink() || !app_data_metadata.is_dir() {
+        return Err(AppError::Io(
+            "App data directory must be a real directory, not a symlink".into(),
+        ));
+    }
+
+    let documents = app_local_data.join("documents");
+    match std::fs::symlink_metadata(&documents) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(AppError::Io(
+                "Managed documents directory must be a real directory, not a symlink".into(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            match std::fs::create_dir(&documents) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(AppError::Io(format!(
+                        "Could not create documents directory: {error}"
+                    )));
+                }
+            }
+        }
+        Err(error) => {
+            return Err(AppError::Io(format!(
+                "Could not inspect managed documents directory: {error}"
+            )));
+        }
+    }
+
+    let metadata = std::fs::symlink_metadata(&documents).map_err(|error| {
+        AppError::Io(format!(
+            "Could not inspect managed documents directory: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Io(
+            "Managed documents directory must be a real directory, not a symlink".into(),
+        ));
+    }
+    std::fs::canonicalize(documents).map_err(|error| {
+        AppError::Io(format!(
+            "Could not resolve managed documents directory: {error}"
+        ))
+    })
+}
+
+fn managed_storage_filename(storage_path: &str) -> Result<&str, AppError> {
+    let Some(filename) = storage_path.strip_prefix("documents/") else {
+        return Err(AppError::Internal(
+            "Document has an unsafe storage path".into(),
+        ));
+    };
+    if filename.is_empty()
+        || filename.contains('/')
+        || std::path::Path::new(filename)
             .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        || !is_managed_document_source_filename(filename)
     {
         return Err(AppError::Internal(
             "Document has an unsafe storage path".into(),
         ));
     }
+    Ok(filename)
+}
 
-    Ok(app_local_data.join(stored_path))
+fn document_storage_candidate(
+    app_local_data: &std::path::Path,
+    storage_path: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    let documents = managed_documents_directory(app_local_data, false)?;
+    Ok(documents.join(managed_storage_filename(storage_path)?))
+}
+
+fn document_storage_candidate_for_deletion(
+    app_local_data: &std::path::Path,
+    storage_path: &str,
+) -> Result<Option<std::path::PathBuf>, AppError> {
+    let filename = managed_storage_filename(storage_path)?;
+    let app_data_metadata = std::fs::symlink_metadata(app_local_data)
+        .map_err(|error| AppError::Io(format!("Could not inspect app data directory: {error}")))?;
+    if app_data_metadata.file_type().is_symlink() || !app_data_metadata.is_dir() {
+        return Err(AppError::Io(
+            "App data directory must be a real directory, not a symlink".into(),
+        ));
+    }
+
+    let documents = app_local_data.join("documents");
+    match std::fs::symlink_metadata(&documents) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(AppError::Io(
+                "Managed documents directory must be a real directory, not a symlink".into(),
+            ))
+        }
+        Ok(_) => std::fs::canonicalize(documents)
+            .map(|documents| Some(documents.join(filename)))
+            .map_err(|error| {
+                AppError::Io(format!(
+                    "Could not resolve managed documents directory: {error}"
+                ))
+            }),
+        Err(error) => Err(AppError::Io(format!(
+            "Could not inspect managed documents directory: {error}"
+        ))),
+    }
+}
+
+fn document_storage_path(
+    app_local_data: &std::path::Path,
+    storage_path: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    let candidate = document_storage_candidate(app_local_data, storage_path)?;
+    let metadata = std::fs::symlink_metadata(&candidate).map_err(|error| {
+        AppError::Io(format!(
+            "Could not inspect managed document source: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::Io(
+            "Managed document source must be a regular file, not a symlink".into(),
+        ));
+    }
+
+    let documents = candidate
+        .parent()
+        .ok_or_else(|| AppError::Internal("Managed document path has no parent".into()))?;
+    let source = std::fs::canonicalize(&candidate).map_err(|error| {
+        AppError::Io(format!(
+            "Could not resolve managed document source: {error}"
+        ))
+    })?;
+    if !source.starts_with(documents) {
+        return Err(AppError::Io(
+            "Managed document source resolves outside the documents directory".into(),
+        ));
+    }
+    Ok(source)
+}
+
+fn verify_document_source_integrity(
+    app_local_data: &std::path::Path,
+    document: &Document,
+) -> Result<std::path::PathBuf, AppError> {
+    use std::io::Read as _;
+
+    let source = document_storage_path(app_local_data, &document.storage_path)?;
+    let expected_size = document.file_size_bytes.ok_or_else(|| {
+        AppError::Io(
+            "Managed document source has no recorded file size for integrity validation".into(),
+        )
+    })?;
+    let expected_hash = document.file_hash.as_deref().ok_or_else(|| {
+        AppError::Io("Managed document source has no recorded hash for integrity validation".into())
+    })?;
+
+    let mut file = std::fs::File::open(&source).map_err(|error| {
+        AppError::Io(format!(
+            "Could not open managed document source for integrity validation: {error}"
+        ))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        AppError::Io(format!(
+            "Could not inspect managed document source for integrity validation: {error}"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(AppError::Io(
+            "Managed document source must be a regular file for integrity validation".into(),
+        ));
+    }
+    if i64::try_from(metadata.len()).ok() != Some(expected_size) {
+        return Err(AppError::Io(
+            "Managed document source size does not match its recorded metadata".into(),
+        ));
+    }
+
+    let mut hasher = Sha512::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            AppError::Io(format!(
+                "Could not read managed document source for integrity validation: {error}"
+            ))
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if hasher.finalize().as_slice() != expected_hash {
+        return Err(AppError::Io(
+            "Managed document source hash does not match its recorded metadata".into(),
+        ));
+    }
+
+    Ok(source)
 }
 
 async fn finish_document_deletion(
@@ -1869,11 +2596,23 @@ async fn finish_document_deletion(
 ) -> Result<(), AppError> {
     vector_db.delete_chunks(&document.id).await?;
 
-    let source_path = document_storage_path(app_local_data, &document.storage_path)?;
-    match tokio::fs::remove_file(source_path).await {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(AppError::Io(error.to_string())),
+    if let Some(source_path) =
+        document_storage_candidate_for_deletion(app_local_data, &document.storage_path)?
+    {
+        match tokio::fs::symlink_metadata(&source_path).await {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                tokio::fs::remove_file(source_path)
+                    .await
+                    .map_err(|error| AppError::Io(error.to_string()))?;
+            }
+            Ok(_) => {
+                return Err(AppError::Io(
+                    "Managed document source must be a regular file, not a symlink".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::Io(error.to_string())),
+        }
     }
 
     repo.delete_by_id(&document.id).await
@@ -1920,12 +2659,23 @@ async fn reconcile_orphan_document_sources(
                 .map(str::to_owned)
         })
         .collect();
-    let docs_dir = app_local_data.join("documents");
-    let mut entries = match tokio::fs::read_dir(&docs_dir).await {
-        Ok(entries) => entries,
+    let untrusted_docs_dir = app_local_data.join("documents");
+    match tokio::fs::symlink_metadata(&untrusted_docs_dir).await {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => return Err(AppError::Io(error.to_string())),
-    };
+    }
+    let docs_dir = tokio::task::spawn_blocking({
+        let app_local_data = app_local_data.to_path_buf();
+        move || managed_documents_directory(&app_local_data, false)
+    })
+    .await
+    .map_err(|error| {
+        AppError::Internal(format!("Managed document directory task panicked: {error}"))
+    })??;
+    let mut entries = tokio::fs::read_dir(&docs_dir)
+        .await
+        .map_err(|error| AppError::Io(error.to_string()))?;
     let mut removed = 0;
 
     while let Some(entry) = entries.next_entry().await? {
@@ -1933,7 +2683,9 @@ async fn reconcile_orphan_document_sources(
         let Some(filename) = filename.to_str() else {
             continue;
         };
-        if !is_managed_document_source_filename(filename) || registered_filenames.contains(filename)
+        let is_temporary = is_managed_document_temporary_filename(filename);
+        if (!is_temporary && !is_managed_document_source_filename(filename))
+            || (!is_temporary && registered_filenames.contains(filename))
         {
             continue;
         }
@@ -1978,7 +2730,7 @@ async fn delete_document(
             .path()
             .app_local_data_dir()
             .map_err(|error| AppError::Io(error.to_string()))?;
-        document_storage_path(&app_local_data, &document.storage_path)?;
+        document_storage_candidate_for_deletion(&app_local_data, &document.storage_path)?;
         repo.mark_deleting(&id).await?;
         finish_document_deletion(&repo, &state.vector_db, &app_local_data, &document).await?;
     } else {
@@ -1999,6 +2751,7 @@ async fn cancel_query(
     state: tauri::State<'_, AppState>,
     request_id: String,
 ) -> Result<(), AppError> {
+    validate_query_request_id(&request_id)?;
     let queries = state
         .active_queries
         .lock()
@@ -2073,10 +2826,15 @@ async fn set_external_provider_config(
 ) -> Result<(), AppError> {
     let normalized_base_url = normalize_external_base_url(&base_url)?;
     validate_setting("external_model", &model)?;
+    let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
-    repo.set_external_inference_config(normalized_base_url.as_str(), model.trim())
-        .await?;
-    revalidate_external_readiness_if_active(&app, &state).await
+    let write_result = repo
+        .set_external_inference_config(normalized_base_url.as_str(), model.trim())
+        .await;
+    if should_start {
+        request_llm_initialization_from_persisted_state(&app, &state).await?;
+    }
+    write_result
 }
 
 #[tauri::command]
@@ -2091,51 +2849,52 @@ async fn set_setting(
         key.as_str(),
         "generation_model" | "tokenizer_model" | "gguf_filename"
     ) {
-        set_local_model_setting_and_restart_if_active(&app, &state, &key, &value).await?;
-        return Ok(());
+        return set_local_model_setting_and_restart_if_active(&app, &state, &key, &value).await;
     }
 
     let repo = AppSettingsRepository::new(state.db_pool.clone());
-    if key == "inference_mode"
-        && inference_mode_is_unchanged(repo.get(&key).await?.as_deref(), &value)
-    {
-        return Ok(());
+    if key == "inference_mode" {
+        if inference_mode_is_unchanged(repo.get(&key).await?.as_deref(), &value) {
+            return Ok(());
+        }
+        let should_start = invalidate_llm_readiness(&app, &state, true).await;
+        let write_result = repo.set(&key, &value).await;
+        if should_start {
+            request_llm_initialization_from_persisted_state(&app, &state).await?;
+        }
+        return write_result;
+    }
+
+    if matches!(key.as_str(), "external_base_url" | "external_model") {
+        let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
+        let write_result = repo.set(&key, &value).await;
+        if should_start {
+            request_llm_initialization_from_persisted_state(&app, &state).await?;
+        }
+        return write_result;
     }
 
     let requeued_ids = if matches!(key.as_str(), "chunk_size" | "chunk_overlap") {
-        {
-            let _document_operation = state.document_operations.write().await;
-            let mut desired_provenance = desired_indexing_provenance(&repo).await?;
-            match key.as_str() {
-                "chunk_size" => {
-                    desired_provenance.chunk_size = parse_chunk_setting("chunk_size", &value)?;
-                }
-                "chunk_overlap" => {
-                    desired_provenance.chunk_overlap =
-                        parse_chunk_setting("chunk_overlap", &value)?;
-                }
-                _ => unreachable!("chunk settings branch only accepts chunk settings"),
+        let _document_operation = state.document_operations.write().await;
+        let mut desired_provenance = desired_indexing_provenance(&repo).await?;
+        match key.as_str() {
+            "chunk_size" => {
+                desired_provenance.chunk_size = parse_chunk_setting("chunk_size", &value)?;
             }
-            validate_indexing_provenance(&desired_provenance)?;
-            repo.set_indexing_setting_and_requeue_stale_documents(&key, &value, &desired_provenance)
-                .await?
+            "chunk_overlap" => {
+                desired_provenance.chunk_overlap = parse_chunk_setting("chunk_overlap", &value)?;
+            }
+            _ => unreachable!("chunk settings branch only accepts chunk settings"),
         }
+        validate_indexing_provenance(&desired_provenance)?;
+        repo.set_indexing_setting_and_requeue_stale_documents(&key, &value, &desired_provenance)
+            .await?
     } else {
         repo.set(&key, &value).await?;
         Vec::new()
     };
 
-    enqueue_requeued_documents(state.job_queue.clone(), requeued_ids)?;
-    if key == "inference_mode" {
-        if value == "external" {
-            restart_external_readiness_probe(&app, &state, true).await?;
-        } else {
-            restart_local_model_initialization_if_active(&app, &state).await?;
-        }
-    } else if matches!(key.as_str(), "external_base_url" | "external_model") {
-        revalidate_external_readiness_if_active(&app, &state).await?;
-    }
-    Ok(())
+    enqueue_requeued_documents(state.job_queue.clone(), requeued_ids)
 }
 
 #[tauri::command]
@@ -2144,31 +2903,38 @@ async fn set_api_key(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<bool, AppError> {
+    let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let saved = tokio::task::spawn_blocking(move || {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
-            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
-        entry
-            .set_password(&key)
-            .map_err(|e| AppError::Internal(format!("keyring set: {e}")))?;
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
+            AppError::Internal(format!("System keychain is unavailable: {error}"))
+        })?;
+        entry.set_password(&key).map_err(|error| {
+            AppError::Internal(format!("System keychain is unavailable: {error}"))
+        })?;
         Ok::<bool, AppError>(true)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))??;
-    revalidate_external_readiness_if_active(&app, &state).await?;
-    Ok(saved)
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?;
+    if should_start {
+        request_llm_initialization_from_persisted_state(&app, &state).await?;
+    }
+    saved
 }
 
 #[tauri::command]
 async fn has_api_key() -> Result<bool, AppError> {
-    tokio::task::spawn_blocking(
-        || match keyring::v1::Entry::new("ragtag", "external_api_key") {
-            Ok(entry) => match entry.get_password() {
-                Ok(pwd) => Ok(!pwd.is_empty()),
-                Err(_) => Ok(false),
-            },
-            Err(_) => Ok(false),
-        },
-    )
+    tokio::task::spawn_blocking(|| {
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
+            AppError::Internal(format!("System keychain is unavailable: {error}"))
+        })?;
+        match entry.get_password() {
+            Ok(password) => Ok(!password.is_empty()),
+            Err(keyring::v1::Error::NoEntry) => Ok(false),
+            Err(error) => Err(AppError::Internal(format!(
+                "System keychain is unavailable: {error}"
+            ))),
+        }
+    })
     .await
     .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
 }
@@ -2178,18 +2944,25 @@ async fn delete_api_key(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, AppError> {
+    let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let deleted = tokio::task::spawn_blocking(|| {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
-            .map_err(|e| AppError::Internal(format!("keyring: {e}")))?;
-        entry
-            .delete_credential()
-            .map_err(|e| AppError::Internal(format!("keyring delete: {e}")))?;
-        Ok::<bool, AppError>(true)
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
+            AppError::Internal(format!("System keychain is unavailable: {error}"))
+        })?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::v1::Error::NoEntry) => Ok(false),
+            Err(error) => Err(AppError::Internal(format!(
+                "System keychain is unavailable: {error}"
+            ))),
+        }
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))??;
-    revalidate_external_readiness_if_active(&app, &state).await?;
-    Ok(deleted)
+    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?;
+    if should_start {
+        request_llm_initialization_from_persisted_state(&app, &state).await?;
+    }
+    deleted
 }
 
 #[tauri::command]
@@ -2202,34 +2975,12 @@ async fn get_storage_info(
         .app_local_data_dir()
         .map_err(|e| AppError::Io(e.to_string()))?;
 
-    let db_size = tokio::fs::metadata(app_local_data.join("app.db"))
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
-
-    let lancedb_dir = app_local_data.join(".lancedb");
-    let lancedb_size = tokio::task::spawn_blocking({
-        let d = lancedb_dir.clone();
-        move || dir_size(&d)
-    })
-    .await
-    .unwrap_or(0);
-
-    let docs_dir = app_local_data.join("documents");
-    let docs_size = tokio::task::spawn_blocking({
-        let d = docs_dir.clone();
-        move || dir_size(&d)
-    })
-    .await
-    .unwrap_or(0);
-
-    let models_dir = app_local_data.join("models");
-    let models_size = tokio::task::spawn_blocking({
-        let d = models_dir.clone();
-        move || dir_size(&d)
-    })
-    .await
-    .unwrap_or(0);
+    let (db_size, lancedb_size, docs_size, models_size) =
+        tokio::task::spawn_blocking(move || storage_sizes(&app_local_data))
+            .await
+            .map_err(|error| {
+                AppError::Internal(format!("Storage accounting task panicked: {error}"))
+            })??;
 
     Ok(serde_json::json!({
         "database_bytes": db_size,
@@ -2239,20 +2990,99 @@ async fn get_storage_info(
     }))
 }
 
-fn dir_size(path: &std::path::Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if meta.is_dir() {
-                    total += dir_size(&entry.path());
-                } else {
-                    total += meta.len();
-                }
-            }
-        }
+fn storage_sizes(app_local_data: &std::path::Path) -> Result<(u64, u64, u64, u64), AppError> {
+    let metadata = std::fs::symlink_metadata(app_local_data)
+        .map_err(|error| AppError::Io(format!("Could not inspect app data directory: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Io(
+            "App data directory must be a real directory, not a symlink".into(),
+        ));
     }
-    total
+
+    Ok((
+        managed_file_size(&app_local_data.join("app.db"))?,
+        dir_size(&app_local_data.join(".lancedb"))?,
+        dir_size(&app_local_data.join("documents"))?,
+        dir_size(&app_local_data.join("models"))?,
+    ))
+}
+
+fn managed_file_size(path: &std::path::Path) -> Result<u64, AppError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(AppError::Io(format!(
+                "Managed storage path is not a regular file: {}",
+                path.display()
+            )))
+        }
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(AppError::Io(format!(
+            "Could not inspect managed storage file {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(AppError::Io(format!(
+                "Could not inspect managed storage directory {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(AppError::Io(format!(
+            "Managed storage directory is unsafe: {}",
+            path.display()
+        )));
+    }
+
+    let mut total = 0u64;
+    let entries = std::fs::read_dir(path).map_err(|error| {
+        AppError::Io(format!(
+            "Could not read managed storage directory {}: {error}",
+            path.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            AppError::Io(format!(
+                "Could not inspect an entry in {}: {error}",
+                path.display()
+            ))
+        })?;
+        let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
+            AppError::Io(format!(
+                "Could not inspect managed storage entry {}: {error}",
+                entry.path().display()
+            ))
+        })?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        let size = if metadata.is_dir() {
+            dir_size(&entry.path())?
+        } else if metadata.is_file() {
+            metadata.len()
+        } else {
+            return Err(AppError::Io(format!(
+                "Managed storage entry is not a regular file or directory: {}",
+                entry.path().display()
+            )));
+        };
+        total = total.checked_add(size).ok_or_else(|| {
+            AppError::Io(format!(
+                "Managed storage size overflowed for {}",
+                path.display()
+            ))
+        })?;
+    }
+    Ok(total)
 }
 
 #[tauri::command]
@@ -2286,11 +3116,17 @@ fn remove_path_if_present(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 fn remove_non_fastembed_models(models_dir: &std::path::Path) -> std::io::Result<()> {
-    let entries = match std::fs::read_dir(models_dir) {
-        Ok(entries) => entries,
+    match std::fs::symlink_metadata(models_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(std::io::Error::other(
+                "Managed models directory must be a real directory, not a symlink",
+            ));
+        }
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
-    };
+    }
+    let entries = std::fs::read_dir(models_dir)?;
 
     for entry in entries {
         let entry = entry?;
@@ -2305,6 +3141,28 @@ fn complete_pending_reset(
     app_local_data: &std::path::Path,
     sentinel: &std::path::Path,
 ) -> Result<(), AppError> {
+    let app_data_metadata = match std::fs::symlink_metadata(app_local_data) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::Io(format!(
+                "Could not inspect app data directory: {error}"
+            )));
+        }
+    };
+    if app_data_metadata.file_type().is_symlink() || !app_data_metadata.is_dir() {
+        return Err(AppError::Io(
+            "App data directory must be a real directory, not a symlink".into(),
+        ));
+    }
+    if std::fs::symlink_metadata(sentinel)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(AppError::Io(
+            "Pending reset marker must not be a symlink".into(),
+        ));
+    }
     let contents = match std::fs::read_to_string(sentinel) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -2324,6 +3182,7 @@ fn complete_pending_reset(
         app_local_data.join("documents"),
         app_local_data.join(".lancedb"),
         app_local_data.join("app.db"),
+        app_local_data.join("app.db-journal"),
         app_local_data.join("app.db-wal"),
         app_local_data.join("app.db-shm"),
     ] {
@@ -2361,6 +3220,31 @@ async fn reset_all_data(
         .map_err(|e| AppError::Io(e.to_string()))?;
 
     let sentinel = app_local_data.join(".reset_pending");
+    tokio::task::spawn_blocking({
+        let app_local_data = app_local_data.clone();
+        let sentinel = sentinel.clone();
+        move || {
+            let metadata = std::fs::symlink_metadata(&app_local_data).map_err(|error| {
+                AppError::Io(format!("Could not inspect app data directory: {error}"))
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(AppError::Io(
+                    "App data directory must be a real directory, not a symlink".into(),
+                ));
+            }
+            if std::fs::symlink_metadata(&sentinel)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                return Err(AppError::Io(
+                    "Pending reset marker must not be a symlink".into(),
+                ));
+            }
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|error| AppError::Internal(format!("Reset validation task panicked: {error}")))??;
     let payload = serde_json::json!({"delete_models": delete_models});
     tokio::fs::write(&sentinel, payload.to_string()).await?;
 
@@ -2408,6 +3292,41 @@ pub fn run() {
                     e.to_string(),
                 )))?;
             let vector_db = Arc::new(vector_db);
+            let chunks_table_exists =
+                tauri::async_runtime::block_on(vector_db.chunks_table_exists()).map_err(|error| {
+                    Box::new(std::io::Error::other(error.to_string()))
+                })?;
+            if !chunks_table_exists {
+                let requeued = tauri::async_runtime::block_on(
+                    requeue_indexed_documents_after_vector_loss(&pool),
+                )
+                .map_err(|error| Box::new(std::io::Error::other(error.to_string())))?;
+                if !requeued.is_empty() {
+                    info!(
+                        "startup vector recovery — re-queued {} indexed documents after chunks table loss",
+                        requeued.len()
+                    );
+                }
+            }
+            else {
+                let indexed_chunk_counts =
+                    tauri::async_runtime::block_on(vector_db.indexed_chunk_counts()).map_err(
+                        |error| Box::new(std::io::Error::other(error.to_string())),
+                    )?;
+                let requeued = tauri::async_runtime::block_on(
+                    requeue_indexed_documents_with_chunk_count_mismatches(
+                        &pool,
+                        &indexed_chunk_counts,
+                    ),
+                )
+                .map_err(|error| Box::new(std::io::Error::other(error.to_string())))?;
+                if !requeued.is_empty() {
+                    info!(
+                        "startup vector recovery — re-queued {} indexed documents with mismatched chunk counts",
+                        requeued.len()
+                    );
+                }
+            }
             let deletion_repo = DocumentRepository::new(pool.clone());
             tauri::async_runtime::block_on(reconcile_pending_deletions(
                 &deletion_repo,
@@ -2448,6 +3367,7 @@ pub fn run() {
                 active_queries: active_queries.clone(),
                 http_client: reqwest::Client::builder()
                     .use_rustls_tls()
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()
                     .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?,
             });
@@ -2493,30 +3413,43 @@ pub fn run() {
                             registry_read_retries_worker.lock().await.remove(&doc_id);
                             let settings_repo = AppSettingsRepository::new(pool.clone());
                             match desired_indexing_provenance(&settings_repo).await {
-                                Ok(provenance) => match document_storage_path(&docs_dir, &doc.storage_path) {
-                                    Ok(source_path) => {
-                                        let app_for_stage = app_handle.clone();
-                                        let doc_id_for_stage = doc_id.clone();
-                                        rag_pipeline::process_document(
-                                            &source_path,
-                                            &doc.file_type,
-                                            &doc_id,
-                                            provenance,
-                                            embedder,
-                                            &repo,
-                                            &vector_db,
-                                            move |stage| {
-                                                let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
-                                                    "document_id": &doc_id_for_stage,
-                                                    "stage": stage,
-                                                }));
-                                            },
-                                            Arc::clone(&progress_callback),
-                                        )
-                                        .await
+                                Ok(provenance) => {
+                                    let integrity = tokio::task::spawn_blocking({
+                                        let docs_dir = docs_dir.clone();
+                                        let document = doc.clone();
+                                        move || verify_document_source_integrity(&docs_dir, &document)
+                                    })
+                                    .await
+                                    .map_err(|error| {
+                                        AppError::Internal(format!(
+                                            "Document integrity task panicked: {error}"
+                                        ))
+                                    });
+                                    match integrity {
+                                        Ok(Ok(source_path)) => {
+                                            let app_for_stage = app_handle.clone();
+                                            let doc_id_for_stage = doc_id.clone();
+                                            rag_pipeline::process_document(
+                                                &source_path,
+                                                &doc.file_type,
+                                                &doc_id,
+                                                provenance,
+                                                embedder,
+                                                &repo,
+                                                &vector_db,
+                                                move |stage| {
+                                                    let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
+                                                        "document_id": &doc_id_for_stage,
+                                                        "stage": stage,
+                                                    }));
+                                                },
+                                                Arc::clone(&progress_callback),
+                                            )
+                                            .await
+                                        }
+                                        Ok(Err(error)) | Err(error) => Err(error),
                                     }
-                                    Err(error) => Err(error),
-                                },
+                                }
                                 Err(error) => Err(error),
                             }
                         }
@@ -2618,16 +3551,24 @@ pub fn run() {
 mod tests {
     use super::{
         DEFAULT_EXTERNAL_MODEL, ExternalInferenceConfig, ExternalModelsResponse, IngestionJob,
+        MAX_AUTOMATIC_RECOVERY_ATTEMPTS, MAX_EXTERNAL_MODEL_ID_BYTES, MAX_EXTERNAL_MODELS,
+        MAX_SSE_EVENT_BYTES, MAX_SSE_INCOMPLETE_EVENT_BYTES, MAX_SSE_OUTPUT_BYTES,
+        MAX_SSE_TOKEN_BYTES, complete_pending_reset, document_storage_path,
         enqueue_requeued_documents, external_model_ids, external_model_is_available,
-        fetch_external_models, finish_llm_initialization, inference_mode_is_unchanged,
-        invalidate_llm_initialization, is_managed_document_source_filename,
-        llm_initialization_is_current, normalize_external_base_url,
-        reconcile_orphan_document_sources, registry_read_retry_delay, remove_non_fastembed_models,
-        require_retrieved_citations, sse_event_boundary, sse_event_data, storage_extension,
-        validate_document_preview_document, validate_setting, validate_upload,
+        external_sse_token, fetch_external_models, finish_llm_initialization,
+        indexed_chunk_count_mismatch, inference_mode_is_unchanged, invalidate_llm_initialization,
+        is_managed_document_source_filename, llm_initialization_is_current,
+        managed_storage_filename, normalize_external_base_url, parse_external_models_response,
+        probe_external_inference_readiness_cancellable, reconcile_orphan_document_sources,
+        recover_startup_documents, register_active_query, registry_read_retry_delay,
+        remove_non_fastembed_models, require_retrieved_citations, sse_complete_event_exceeds_limit,
+        sse_event_boundary, sse_event_data, sse_incomplete_buffer_exceeds_limit,
+        sse_output_exceeds_limit, sse_token_exceeds_limit, storage_extension,
+        validate_document_preview_document, validate_query_request, validate_setting,
+        validate_upload,
     };
     use domain::{AppError, Document, DocumentStatus};
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::HashMap, sync::Arc, time::Duration};
     use tokio::time::timeout;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -2692,6 +3633,38 @@ mod tests {
     }
 
     #[test]
+    fn bounds_external_query_request_and_models_metadata() {
+        assert!(validate_query_request("question", &uuid::Uuid::now_v7().to_string()).is_ok());
+        assert!(validate_query_request("question", "not-a-uuid").is_err());
+        assert!(
+            validate_query_request(
+                &"x".repeat(32 * 1024 + 1),
+                &uuid::Uuid::now_v7().to_string()
+            )
+            .is_err()
+        );
+
+        let oversized_id = format!(
+            r#"{{"data":[{{"id":"{}"}}]}}"#,
+            "x".repeat(MAX_EXTERNAL_MODEL_ID_BYTES + 1)
+        );
+        assert!(parse_external_models_response(oversized_id.as_bytes()).is_err());
+        let too_many_models = format!(
+            r#"{{"data":[{}]}}"#,
+            vec![r#"{"id":"m"}"#; MAX_EXTERNAL_MODELS + 1].join(",")
+        );
+        assert!(parse_external_models_response(too_many_models.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn detects_indexed_chunk_count_mismatches() {
+        assert!(!indexed_chunk_count_mismatch(Some(2), Some(2)));
+        assert!(indexed_chunk_count_mismatch(Some(2), Some(1)));
+        assert!(indexed_chunk_count_mismatch(None, Some(0)));
+        assert!(indexed_chunk_count_mismatch(Some(-1), None));
+    }
+
+    #[test]
     fn validates_tokenizer_model() {
         assert!(validate_setting("tokenizer_model", "Qwen/Qwen3-1.7B").is_ok());
         for invalid in [
@@ -2703,6 +3676,20 @@ mod tests {
             "Qwen /Qwen3-1.7B",
         ] {
             assert!(validate_setting("tokenizer_model", invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_generation_model_ids_without_both_components() {
+        assert!(validate_setting("generation_model", "unsloth/Qwen3-1.7B-GGUF").is_ok());
+        for malformed in [
+            "",
+            "unsloth",
+            "unsloth/",
+            "/Qwen3-1.7B-GGUF",
+            "org/model/extra",
+        ] {
+            assert!(validate_setting("generation_model", malformed).is_err());
         }
     }
 
@@ -2737,6 +3724,42 @@ mod tests {
             .unwrap();
         assert_eq!(external_model_ids(&models), ["model-a", "model-b"]);
         response.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_external_models_readiness_probe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            started_sender.send(()).unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        let config = ExternalInferenceConfig {
+            base_url: normalize_external_base_url(&format!("http://{address}/v1")).unwrap(),
+            model: DEFAULT_EXTERNAL_MODEL.into(),
+            api_key: None,
+        };
+        let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(false);
+        let probe = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let mut cancellation = cancel_receiver;
+            probe_external_inference_readiness_cancellable(&client, &config, &mut cancellation)
+                .await
+        });
+
+        started_receiver.await.unwrap();
+        cancel_sender.send(true).unwrap();
+        let result = timeout(Duration::from_secs(1), probe)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(!result);
+        server.await.unwrap();
     }
 
     #[test]
@@ -2794,6 +3817,16 @@ mod tests {
         assert!(inference_mode_is_unchanged(None, "local"));
         assert!(!inference_mode_is_unchanged(Some("local"), "external"));
     }
+
+    #[test]
+    fn rejects_duplicate_active_query_request_ids() {
+        let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        assert!(register_active_query(&active_queries, "request-1").is_ok());
+        assert!(matches!(
+            register_active_query(&active_queries, "request-1"),
+            Err(AppError::InvalidInput(_))
+        ));
+    }
     fn indexed_text_document(filename: &str) -> Document {
         Document {
             id: "document-1".into(),
@@ -2840,6 +3873,10 @@ mod tests {
         tokio::fs::write(docs_dir.join("user-note.txt"), b"not managed")
             .await
             .unwrap();
+        let temporary_filename = format!(".{orphan_filename}.{}.tmp", uuid::Uuid::now_v7());
+        tokio::fs::write(docs_dir.join(&temporary_filename), b"partial")
+            .await
+            .unwrap();
         tokio::fs::create_dir(docs_dir.join(&managed_directory_name))
             .await
             .unwrap();
@@ -2848,13 +3885,96 @@ mod tests {
             reconcile_orphan_document_sources(&repo, &app_local_data)
                 .await
                 .unwrap(),
-            1
+            2
         );
         assert!(docs_dir.join(registered_filename).exists());
         assert!(!docs_dir.join(orphan_filename).exists());
         assert!(docs_dir.join("user-note.txt").exists());
+        assert!(!docs_dir.join(temporary_filename).exists());
         assert!(docs_dir.join(managed_directory_name).is_dir());
 
+        pool.close().await;
+        std::fs::remove_dir_all(app_local_data).unwrap();
+    }
+
+    #[tokio::test]
+    async fn requeues_indexed_documents_when_the_chunks_table_is_missing() {
+        let app_local_data =
+            std::env::temp_dir().join(format!("ragtag-lost-vectors-{}", uuid::Uuid::now_v7()));
+        let pool = persistence::init_pool(&app_local_data).await.unwrap();
+        let repo = persistence::DocumentRepository::new(pool.clone());
+        let mut document = indexed_text_document("lost-vectors.txt");
+        document.embedding_attempts = 3;
+        repo.insert(&document).await.unwrap();
+        let vector_db = persistence::VectorDb::init(&app_local_data.join(".lancedb"))
+            .await
+            .unwrap();
+        let document_operations = tokio::sync::RwLock::new(());
+
+        let recovered = recover_startup_documents(&pool, &vector_db, &document_operations)
+            .await
+            .unwrap();
+
+        assert!(recovered.contains(&document.id));
+        assert_eq!(
+            repo.get_by_id(&document.id).await.unwrap().unwrap().status,
+            DocumentStatus::Queued
+        );
+        assert_eq!(
+            repo.get_by_id(&document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding_attempts,
+            0
+        );
+        drop(vector_db);
+        pool.close().await;
+        std::fs::remove_dir_all(app_local_data).unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_caps_interrupted_embedding_attempts() {
+        let app_local_data = std::env::temp_dir().join(format!(
+            "ragtag-interrupted-embeddings-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let pool = persistence::init_pool(&app_local_data).await.unwrap();
+        let repo = persistence::DocumentRepository::new(pool.clone());
+
+        let mut retryable = indexed_text_document("retryable.txt");
+        retryable.id = "retryable".into();
+        retryable.status = DocumentStatus::Embedding;
+        retryable.embedding_attempts = MAX_AUTOMATIC_RECOVERY_ATTEMPTS - 1;
+        repo.insert(&retryable).await.unwrap();
+
+        let mut exhausted = indexed_text_document("exhausted.txt");
+        exhausted.id = "exhausted".into();
+        exhausted.status = DocumentStatus::Embedding;
+        exhausted.embedding_attempts = MAX_AUTOMATIC_RECOVERY_ATTEMPTS;
+        repo.insert(&exhausted).await.unwrap();
+
+        let vector_db = persistence::VectorDb::init(&app_local_data.join(".lancedb"))
+            .await
+            .unwrap();
+        let document_operations = tokio::sync::RwLock::new(());
+
+        let recovered = recover_startup_documents(&pool, &vector_db, &document_operations)
+            .await
+            .unwrap();
+
+        assert!(recovered.contains(&retryable.id));
+        assert!(!recovered.contains(&exhausted.id));
+        assert_eq!(
+            repo.get_by_id(&retryable.id).await.unwrap().unwrap().status,
+            DocumentStatus::Queued
+        );
+        assert_eq!(
+            repo.get_by_id(&exhausted.id).await.unwrap().unwrap().status,
+            DocumentStatus::Failed
+        );
+
+        drop(vector_db);
         pool.close().await;
         std::fs::remove_dir_all(app_local_data).unwrap();
     }
@@ -2899,6 +4019,54 @@ mod tests {
         assert!(!other_model.exists());
         assert!(embedder_models.exists());
         std::fs::remove_dir_all(models_dir).unwrap();
+    }
+
+    #[test]
+    fn reset_removes_the_sqlite_rollback_journal() {
+        let app_local_data =
+            std::env::temp_dir().join(format!("ragtag-reset-journal-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&app_local_data).unwrap();
+        let journal = app_local_data.join("app.db-journal");
+        let sentinel = app_local_data.join(".reset_pending");
+        std::fs::write(&journal, b"journal").unwrap();
+        std::fs::write(&sentinel, r#"{"delete_models":false}"#).unwrap();
+
+        complete_pending_reset(&app_local_data, &sentinel).unwrap();
+
+        assert!(!journal.exists());
+        assert!(!sentinel.exists());
+        std::fs::remove_dir_all(app_local_data).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_managed_document_sources_and_models_directory() {
+        use std::os::unix::fs::symlink;
+
+        let app_local_data =
+            std::env::temp_dir().join(format!("ragtag-symlink-safety-{}", uuid::Uuid::now_v7()));
+        let documents = app_local_data.join("documents");
+        let outside = app_local_data.join("outside.txt");
+        std::fs::create_dir_all(&documents).unwrap();
+        std::fs::write(&outside, b"outside").unwrap();
+        let filename = format!("{}.txt", uuid::Uuid::now_v7());
+        symlink(&outside, documents.join(&filename)).unwrap();
+        assert!(document_storage_path(&app_local_data, &format!("documents/{filename}")).is_err());
+        assert!(managed_storage_filename("documents/../outside.txt").is_err());
+        let linked_app_data =
+            std::env::temp_dir().join(format!("ragtag-app-data-link-{}", uuid::Uuid::now_v7()));
+        symlink(&app_local_data, &linked_app_data).unwrap();
+        assert!(document_storage_path(&linked_app_data, &format!("documents/{filename}")).is_err());
+        std::fs::remove_file(linked_app_data).unwrap();
+
+        let external_models =
+            std::env::temp_dir().join(format!("ragtag-external-models-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&external_models).unwrap();
+        symlink(&external_models, app_local_data.join("models")).unwrap();
+        assert!(remove_non_fastembed_models(&app_local_data.join("models")).is_err());
+
+        std::fs::remove_dir_all(app_local_data).unwrap();
+        std::fs::remove_dir_all(external_models).unwrap();
     }
 
     #[test]
@@ -2987,10 +4155,52 @@ mod tests {
 
         let (event_end, _) = sse_event_boundary(&buffer).unwrap();
         let event = std::str::from_utf8(&buffer[..event_end]).unwrap();
+        let data = sse_event_data(event).unwrap();
         assert_eq!(
-            sse_event_data(event),
-            Some("{\"choices\":[{\"delta\":{\"content\":\"café\"}}]}"),
+            data.as_deref(),
+            Some("{\"choices\":[{\"delta\":{\"content\":\"café\"}}]}")
         );
+        assert_eq!(
+            external_sse_token(data.as_deref().unwrap()).unwrap(),
+            Some("café".into())
+        );
+    }
+
+    #[test]
+    fn joins_multiline_sse_data_and_accepts_metadata_chunks() {
+        let event = "event: message\nvendor-field: metadata\ndata: {\"choices\":[{\"delta\":\ndata: {\"content\":\"joined\"}}]}";
+        let data = sse_event_data(event).unwrap().unwrap();
+        assert_eq!(external_sse_token(&data).unwrap(), Some("joined".into()));
+        assert_eq!(
+            external_sse_token(r#"{"choices":[],"usage":{"total_tokens":1}}"#).unwrap(),
+            None
+        );
+        assert_eq!(
+            external_sse_token(r#"{"choices":[{"delta":{"content":null}}]}"#).unwrap(),
+            None
+        );
+        assert!(external_sse_token("{not json}").is_err());
+        assert!(external_sse_token(r#"{"unexpected":true}"#).is_err());
+    }
+
+    #[test]
+    fn caps_only_incomplete_sse_events_over_the_limit() {
+        let mut buffer = vec![0; MAX_SSE_INCOMPLETE_EVENT_BYTES];
+        assert!(!sse_incomplete_buffer_exceeds_limit(&buffer));
+        buffer.push(0);
+        assert!(sse_incomplete_buffer_exceeds_limit(&buffer));
+    }
+
+    #[test]
+    fn bounds_complete_sse_events_tokens_and_output() {
+        assert!(!sse_complete_event_exceeds_limit(MAX_SSE_EVENT_BYTES));
+        assert!(sse_complete_event_exceeds_limit(MAX_SSE_EVENT_BYTES + 1));
+        assert!(!sse_token_exceeds_limit(&"x".repeat(MAX_SSE_TOKEN_BYTES)));
+        assert!(sse_token_exceeds_limit(
+            &"x".repeat(MAX_SSE_TOKEN_BYTES + 1)
+        ));
+        assert!(!sse_output_exceeds_limit(MAX_SSE_OUTPUT_BYTES - 1, "x"));
+        assert!(sse_output_exceeds_limit(MAX_SSE_OUTPUT_BYTES, "x"));
     }
 
     #[test]

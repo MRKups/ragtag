@@ -5,7 +5,7 @@ use futures::stream::StreamExt;
 use lancedb::connection::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use log::warn;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,11 +17,19 @@ static TABLE_CREATION_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 static VECTOR_WRITE_LOCK: std::sync::LazyLock<tokio::sync::Semaphore> =
     std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(1));
 
+fn escape_sql_string_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn delete_document_filter(document_id: &str) -> String {
+    format!("document_id = '{}'", escape_sql_string_literal(document_id))
+}
+
 fn indexed_document_filter(document_ids: &[String]) -> Option<String> {
     (!document_ids.is_empty()).then(|| {
         let ids = document_ids
             .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
+            .map(|id| format!("'{}'", escape_sql_string_literal(id)))
             .collect::<Vec<_>>()
             .join(", ");
         format!("document_id IN ({ids})")
@@ -51,6 +59,15 @@ impl VectorDb {
             fts_index_built: AtomicBool::new(false),
             vector_index_built: AtomicBool::new(false),
         })
+    }
+    pub async fn chunks_table_exists(&self) -> Result<bool, AppError> {
+        let table_names = self
+            .conn
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+        Ok(table_names.iter().any(|name| name == "chunks"))
     }
 
     pub fn schema() -> Arc<ArrowSchema> {
@@ -121,7 +138,7 @@ impl VectorDb {
             .await
             .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
-        if table_names.contains(&"chunks".to_string()) {
+        if table_names.iter().any(|name| name == "chunks") {
             let table = self
                 .conn
                 .open_table("chunks")
@@ -130,7 +147,7 @@ impl VectorDb {
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
 
             table
-                .delete(format!("document_id = '{}'", document_id).as_str())
+                .delete(&delete_document_filter(document_id))
                 .await
                 .map_err(|e| AppError::VectorDb(e.to_string()))?;
         }
@@ -240,7 +257,16 @@ impl VectorDb {
     }
 
     pub async fn compact(&self) -> Result<(), AppError> {
-        let table = self.get_or_create_table().await?;
+        let _permit = VECTOR_WRITE_LOCK
+            .acquire()
+            .await
+            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
+
+        if !self.chunks_table_exists().await? {
+            return Ok(());
+        }
+
+        let table = self.open_table().await?;
         table
             .optimize(lancedb::table::OptimizeAction::default())
             .await
@@ -262,7 +288,14 @@ impl VectorDb {
             });
         };
 
-        let table = self.get_or_create_table().await?;
+        if !self.chunks_table_exists().await? {
+            return Ok(HybridSearchResult {
+                results: Vec::new(),
+                retrieval_mode: RetrievalMode::Hybrid,
+            });
+        }
+
+        let table = self.open_table().await?;
 
         let query_vector_f32: Vec<f32> = query_vector.to_vec();
         let fts_query = lancedb::index::scalar::FullTextSearchQuery::new(query_text.to_string());
@@ -340,6 +373,38 @@ impl VectorDb {
             retrieval_mode,
         })
     }
+
+    /// Returns the number of stored chunks for each document without creating the table.
+    pub async fn indexed_chunk_counts(&self) -> Result<HashMap<String, usize>, AppError> {
+        if !self.chunks_table_exists().await? {
+            return Ok(HashMap::new());
+        }
+
+        let table = self.open_table().await?;
+        let mut stream = table
+            .query()
+            .select(lancedb::query::Select::columns(&["document_id"]))
+            .execute()
+            .await
+            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+        let mut counts = HashMap::new();
+
+        while let Some(batch) = stream.next().await {
+            let batch = batch.map_err(|e| AppError::VectorDb(e.to_string()))?;
+            let document_ids = batch
+                .column_by_name("document_id")
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+                .ok_or_else(|| AppError::Internal("Missing document_id".into()))?;
+
+            for index in 0..batch.num_rows() {
+                *counts
+                    .entry(document_ids.value(index).to_string())
+                    .or_insert(0) += 1;
+            }
+        }
+
+        Ok(counts)
+    }
 }
 
 fn should_build_ivf_pq(vector_count: usize) -> bool {
@@ -406,7 +471,7 @@ pub struct SearchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{VectorDb, indexed_document_filter, should_build_ivf_pq};
+    use super::{VectorDb, delete_document_filter, indexed_document_filter, should_build_ivf_pq};
     use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
     use std::sync::Arc;
 
@@ -425,6 +490,61 @@ mod tests {
             indexed_document_filter(&["current".to_string(), "quote'identifier".to_string()]),
             Some("document_id IN ('current', 'quote''identifier')".to_string())
         );
+    }
+
+    #[test]
+    fn escapes_document_id_delete_filter() {
+        assert_eq!(
+            delete_document_filter("quote'identifier"),
+            "document_id = 'quote''identifier'"
+        );
+    }
+
+    #[tokio::test]
+    async fn checks_for_chunks_table_without_creating_it() {
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-chunks-table-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = VectorDb::init(&path).await.unwrap();
+
+        assert!(!db.chunks_table_exists().await.unwrap());
+        db.get_or_create_table().await.unwrap();
+        assert!(db.chunks_table_exists().await.unwrap());
+
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_table_reads_and_compaction_do_not_create_chunks_table() {
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-missing-chunks-table-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = VectorDb::init(&path).await.unwrap();
+
+        assert!(db.indexed_chunk_counts().await.unwrap().is_empty());
+        assert!(
+            db.hybrid_search("content", &[0.0; 768], &["indexed".to_string()], 1)
+                .await
+                .unwrap()
+                .results
+                .is_empty()
+        );
+        db.compact().await.unwrap();
+        assert!(!db.chunks_table_exists().await.unwrap());
+
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     fn vector_batch(document_ids: &[&str]) -> RecordBatch {
@@ -458,6 +578,30 @@ mod tests {
             ],
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn indexed_chunk_counts_group_rows_by_document_id() {
+        let path = std::env::temp_dir().join(format!(
+            "mrk-ragtag-indexed-chunk-counts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = VectorDb::init(&path).await.unwrap();
+        db.upsert_chunks(vec![vector_batch(&["first", "first", "second"])])
+            .await
+            .unwrap();
+
+        let counts = db.indexed_chunk_counts().await.unwrap();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts.get("first"), Some(&2));
+        assert_eq!(counts.get("second"), Some(&1));
+
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[tokio::test]

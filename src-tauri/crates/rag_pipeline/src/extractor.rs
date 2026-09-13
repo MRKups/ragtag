@@ -2,8 +2,13 @@ use domain::{AppError, DocumentPreview, MarkdownBlock, MarkdownInline};
 use pulldown_cmark::{
     CodeBlockKind, Event as MarkdownEvent, MetadataBlockKind, Options, Parser, Tag, TagEnd,
 };
-use quick_xml::{Reader, escape::unescape, events::Event};
-use std::{fs::File, io::Read, path::Path};
+use quick_xml::{
+    NsReader,
+    escape::unescape,
+    events::Event,
+    name::{LocalName, ResolveResult},
+};
+use std::{borrow::Cow, fs::File, io::Read, path::Path};
 
 pub struct ExtractedPages {
     pub pages: Vec<(i32, String)>,
@@ -11,27 +16,120 @@ pub struct ExtractedPages {
 }
 
 pub const TEXT_PREVIEW_MAX_BYTES: usize = 1024 * 1024;
+/// Indexed text is capped well below the 50 MiB upload envelope. This matches
+/// the existing retained-PDF-text limit and keeps extraction, chunking, and
+/// embedding memory proportional to a single document.
+pub const EXTRACTED_TEXT_MAX_BYTES: usize = 16 * 1024 * 1024;
 const DOCX_XML_MAX_BYTES: usize = 16 * 1024 * 1024;
+const PDF_MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const PDF_MAX_PAGES: usize = 10_000;
+const PDF_MAX_PAGE_TEXT_BYTES: usize = 4 * 1024 * 1024;
+const PDF_MAX_RETAINED_TEXT_BYTES: usize = EXTRACTED_TEXT_MAX_BYTES;
 const MARKDOWN_MAX_NESTING: usize = 32;
+const WORDPROCESSINGML_NAMESPACE: &str =
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const STRICT_WORDPROCESSINGML_NAMESPACE: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
+
 pub fn extract_pages(
     source_path: &Path,
     file_type: &str,
     on_page_extracted: impl Fn(usize, usize),
 ) -> Result<ExtractedPages, AppError> {
-    match file_type {
+    let extracted = match file_type {
         "pdf" => extract_pdf_pages(source_path, on_page_extracted),
         "docx" => extract_docx_pages(source_path, on_page_extracted),
         "text" => extract_text_pages(source_path, on_page_extracted),
         _ => Err(AppError::InvalidInput(format!(
             "Unsupported document file type '{file_type}'"
         ))),
+    }?;
+    ensure_extracted_pages_within_limit(&extracted.pages)?;
+    Ok(extracted)
+}
+
+struct BoundedPdfText {
+    text: String,
+    max_bytes: usize,
+    limit_reached: bool,
+}
+
+impl BoundedPdfText {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            text: String::with_capacity(max_bytes),
+            max_bytes,
+            limit_reached: false,
+        }
+    }
+
+    fn into_text(self) -> String {
+        self.text
     }
 }
 
+impl std::io::Write for BoundedPdfText {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let Some(total_bytes) = self.text.len().checked_add(bytes.len()) else {
+            self.limit_reached = true;
+            return Err(std::io::Error::other("PDF extracted text limit exceeded"));
+        };
+        if total_bytes > self.max_bytes {
+            self.limit_reached = true;
+            return Err(std::io::Error::other("PDF extracted text limit exceeded"));
+        }
+
+        let text = std::str::from_utf8(bytes).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid PDF text")
+        })?;
+        self.text.push_str(text);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn pdf_text_limit_error() -> AppError {
+    AppError::InvalidInput(format!(
+        "PDF extracted text exceeds the {PDF_MAX_PAGE_TEXT_BYTES}-byte per-page or {PDF_MAX_RETAINED_TEXT_BYTES}-byte total extraction limit"
+    ))
+}
+
+fn ensure_pdf_source_within_limit(source_size: u64) -> Result<(), AppError> {
+    if source_size > PDF_MAX_SOURCE_BYTES {
+        return Err(AppError::InvalidInput(format!(
+            "PDF source exceeds the {PDF_MAX_SOURCE_BYTES}-byte extraction limit"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_pdf_page_count_within_limit(page_count: usize) -> Result<(), AppError> {
+    if page_count > PDF_MAX_PAGES {
+        return Err(AppError::InvalidInput(format!(
+            "PDF has more than the {PDF_MAX_PAGES}-page extraction limit"
+        )));
+    }
+    Ok(())
+}
+
+fn pdf_page_text_limit(retained_text_bytes: usize) -> Result<usize, AppError> {
+    PDF_MAX_RETAINED_TEXT_BYTES
+        .checked_sub(retained_text_bytes)
+        .map(|remaining| remaining.min(PDF_MAX_PAGE_TEXT_BYTES))
+        .filter(|limit| *limit > 0)
+        .ok_or_else(pdf_text_limit_error)
+}
 fn extract_pdf_pages(
     pdf_path: &Path,
     on_page_extracted: impl Fn(usize, usize),
 ) -> Result<ExtractedPages, AppError> {
+    let source_size = std::fs::metadata(pdf_path)
+        .map_err(|e| AppError::Io(format!("PDF extraction failed: {e}")))?
+        .len();
+    ensure_pdf_source_within_limit(source_size)?;
+
     let mut document = pdf_extract::Document::load(pdf_path)
         .map_err(|e| AppError::Io(format!("PDF page enumeration failed: {e}")))?;
     if document.is_encrypted() {
@@ -41,18 +139,27 @@ fn extract_pdf_pages(
     }
 
     let total_pages = document.get_pages().len();
+    ensure_pdf_page_count_within_limit(total_pages)?;
     let mut page_texts = Vec::with_capacity(total_pages);
+    let mut retained_text_bytes = 0;
     for page_index in 1..=total_pages {
         let page_number = u32::try_from(page_index)
             .map_err(|_| AppError::Io("PDF has more pages than this extractor supports".into()))?;
-        let mut text = String::new();
+        let mut page_text = BoundedPdfText::new(pdf_page_text_limit(retained_text_bytes)?);
         let extraction = {
-            let mut output = pdf_extract::PlainTextOutput::new(&mut text);
+            let mut output =
+                pdf_extract::PlainTextOutput::new(&mut page_text as &mut dyn std::io::Write);
             pdf_extract::output_doc_page(&document, &mut output, page_number)
         };
+        if page_text.limit_reached {
+            return Err(pdf_text_limit_error());
+        }
         if extraction.is_err() {
             break;
         }
+
+        let text = page_text.into_text();
+        retained_text_bytes += text.len();
         on_page_extracted(page_index, total_pages);
         page_texts.push(text);
     }
@@ -67,14 +174,77 @@ fn extract_text_pages(
     source_path: &Path,
     on_page_extracted: impl Fn(usize, usize),
 ) -> Result<ExtractedPages, AppError> {
-    let text = std::fs::read_to_string(source_path)
-        .map_err(|e| AppError::Io(format!("Text extraction failed: {e}")))?;
+    let text = bounded_utf8_text(source_path)?;
     let page = nonpaginated_page(text, "text document")?;
     on_page_extracted(1, 1);
     Ok(ExtractedPages {
         pages: vec![(1, page)],
         total_pages: 1,
     })
+}
+
+fn bounded_utf8_text(source_path: &Path) -> Result<String, AppError> {
+    let mut file = File::open(source_path)
+        .map_err(|e| AppError::Io(format!("Text extraction failed: {e}")))?;
+    let source_size = file
+        .metadata()
+        .map_err(|e| AppError::Io(format!("Text extraction failed: {e}")))?
+        .len();
+    if source_size > EXTRACTED_TEXT_MAX_BYTES as u64 {
+        return Err(extracted_text_limit_error());
+    }
+
+    let capacity = usize::try_from(source_size)
+        .unwrap_or(EXTRACTED_TEXT_MAX_BYTES)
+        .min(EXTRACTED_TEXT_MAX_BYTES);
+    bounded_utf8_text_reader(&mut file, capacity)
+}
+
+fn bounded_utf8_text_reader(reader: &mut impl Read, capacity: usize) -> Result<String, AppError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity.min(EXTRACTED_TEXT_MAX_BYTES))
+        .map_err(|e| {
+            AppError::Internal(format!("Text extraction could not allocate buffer: {e}"))
+        })?;
+    if !read_bounded_bytes(
+        reader,
+        &mut bytes,
+        EXTRACTED_TEXT_MAX_BYTES,
+        "Text extraction",
+    )? {
+        return Err(extracted_text_limit_error());
+    }
+
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::InvalidInput("Text extraction source is not valid UTF-8".into()))
+}
+
+fn read_bounded_bytes(
+    reader: &mut impl Read,
+    bytes: &mut Vec<u8>,
+    max_bytes: usize,
+    operation: &str,
+) -> Result<bool, AppError> {
+    let mut buffer = [0u8; 8 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|e| AppError::Io(format!("{operation} failed: {e}")))?;
+        if read == 0 {
+            return Ok(true);
+        }
+        let Some(total_bytes) = bytes.len().checked_add(read) else {
+            return Ok(false);
+        };
+        if total_bytes > max_bytes {
+            return Ok(false);
+        }
+        bytes.try_reserve_exact(read).map_err(|e| {
+            AppError::Internal(format!("{operation} could not allocate buffer: {e}"))
+        })?;
+        bytes.extend_from_slice(&buffer[..read]);
+    }
 }
 
 pub fn document_preview(
@@ -195,46 +365,64 @@ fn truncate_preview_text(mut content: String) -> (String, bool) {
 }
 
 fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, AppError> {
-    let mut reader = Reader::from_reader(xml);
+    let xml = normalized_docx_xml(xml)?;
+    let mut reader = NsReader::from_reader(xml.as_ref());
     reader.config_mut().trim_text(false);
     let mut buffer = Vec::new();
     let mut in_text = false;
     let mut text = String::new();
 
     loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"w:t" | b"t" => in_text = true,
-                b"w:tab" | b"tab" => text.push('\t'),
-                b"w:br" | b"br" | b"w:cr" | b"cr" => text.push('\n'),
-                _ => {}
-            },
-            Ok(Event::Empty(event)) => match event.name().as_ref() {
-                b"w:tab" | b"tab" => text.push('\t'),
-                b"w:br" | b"br" | b"w:cr" | b"cr" => text.push('\n'),
-                _ => {}
-            },
-            Ok(Event::End(event)) => match event.name().as_ref() {
-                b"w:t" | b"t" => in_text = false,
-                b"w:p" | b"p" => text.push('\n'),
-                _ => {}
-            },
-            Ok(Event::Text(event)) if in_text => {
+        match reader.read_resolved_event_into(&mut buffer) {
+            Ok((namespace, Event::Start(event))) => {
+                if is_wordprocessing_element(&namespace, event.local_name(), "t") {
+                    in_text = true;
+                } else if is_wordprocessing_element(&namespace, event.local_name(), "tab") {
+                    append_extracted_text(&mut text, "\t")?;
+                } else if is_wordprocessing_element(&namespace, event.local_name(), "br")
+                    || is_wordprocessing_element(&namespace, event.local_name(), "cr")
+                {
+                    append_extracted_text(&mut text, "\n")?;
+                }
+            }
+            Ok((namespace, Event::Empty(event))) => {
+                if is_wordprocessing_element(&namespace, event.local_name(), "tab") {
+                    append_extracted_text(&mut text, "\t")?;
+                } else if is_wordprocessing_element(&namespace, event.local_name(), "br")
+                    || is_wordprocessing_element(&namespace, event.local_name(), "cr")
+                {
+                    append_extracted_text(&mut text, "\n")?;
+                }
+            }
+            Ok((namespace, Event::End(event))) => {
+                if is_wordprocessing_element(&namespace, event.local_name(), "t") {
+                    in_text = false;
+                } else if is_wordprocessing_element(&namespace, event.local_name(), "p") {
+                    append_extracted_text(&mut text, "\n")?;
+                }
+            }
+            Ok((_, Event::Text(event))) if in_text => {
                 let decoded = event
                     .decode()
                     .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
-                text.push_str(&decoded);
+                append_extracted_text(&mut text, &decoded)?;
             }
-            Ok(Event::GeneralRef(event)) if in_text => {
+            Ok((_, Event::CData(event))) if in_text => {
+                let decoded = event
+                    .decode()
+                    .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
+                append_extracted_text(&mut text, &decoded)?;
+            }
+            Ok((_, Event::GeneralRef(event))) if in_text => {
                 let reference = event
                     .decode()
                     .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
                 let encoded = format!("&{reference};");
                 let resolved = unescape(&encoded)
                     .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
-                text.push_str(&resolved);
+                append_extracted_text(&mut text, &resolved)?;
             }
-            Ok(Event::Eof) => break,
+            Ok((_, Event::Eof)) => break,
             Ok(_) => {}
             Err(_) if allow_truncated_eof => break,
             Err(error) => return Err(AppError::Io(format!("DOCX XML parsing failed: {error}"))),
@@ -243,6 +431,57 @@ fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, AppEr
     }
 
     Ok(text)
+}
+
+fn is_wordprocessing_element(
+    namespace: &ResolveResult<'_>,
+    local_name: LocalName<'_>,
+    expected_local_name: &str,
+) -> bool {
+    let ResolveResult::Bound(namespace) = namespace else {
+        return false;
+    };
+    let namespace = std::str::from_utf8(namespace.as_ref()).ok();
+    let local_name = std::str::from_utf8(local_name.as_ref()).ok();
+    matches!(
+        (namespace, local_name),
+        (
+            Some(WORDPROCESSINGML_NAMESPACE | STRICT_WORDPROCESSINGML_NAMESPACE),
+            Some(local_name)
+        ) if local_name == expected_local_name
+    )
+}
+
+fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
+    let (encoding, xml) = match xml {
+        [0xFF, 0xFE, remainder @ ..] => (Some(true), remainder),
+        [0xFE, 0xFF, remainder @ ..] => (Some(false), remainder),
+        [b'<', 0, b'?', 0, ..] => (Some(true), xml),
+        [0, b'<', 0, b'?', ..] => (Some(false), xml),
+        _ => (None, xml),
+    };
+    let Some(little_endian) = encoding else {
+        return Ok(Cow::Borrowed(xml));
+    };
+    let chunks = xml.chunks_exact(2);
+    if !chunks.remainder().is_empty() {
+        return Err(AppError::InvalidInput(
+            "DOCX document XML has an incomplete UTF-16 code unit".into(),
+        ));
+    }
+
+    let code_units = chunks
+        .map(|bytes| {
+            if little_endian {
+                u16::from_le_bytes([bytes[0], bytes[1]])
+            } else {
+                u16::from_be_bytes([bytes[0], bytes[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    let text = String::from_utf16(&code_units)
+        .map_err(|_| AppError::InvalidInput("DOCX document XML is not valid UTF-16".into()))?;
+    Ok(Cow::Owned(text.into_bytes()))
 }
 
 type MarkdownEvents<'a> = std::iter::Peekable<std::vec::IntoIter<MarkdownEvent<'a>>>;
@@ -763,13 +1002,11 @@ fn bounded_docx_xml(reader: &mut impl Read, declared_size: u64) -> Result<Vec<u8
         return Err(docx_xml_limit_error());
     }
 
-    let mut xml = Vec::with_capacity(declared_size as usize);
-    reader
-        .take((DOCX_XML_MAX_BYTES + 1) as u64)
-        .read_to_end(&mut xml)
-        .map_err(|e| AppError::Io(format!("DOCX extraction failed: {e}")))?;
-
-    if xml.len() > DOCX_XML_MAX_BYTES {
+    let mut xml = Vec::new();
+    xml.try_reserve_exact(declared_size as usize).map_err(|e| {
+        AppError::Internal(format!("DOCX extraction could not allocate buffer: {e}"))
+    })?;
+    if !read_bounded_bytes(reader, &mut xml, DOCX_XML_MAX_BYTES, "DOCX extraction")? {
         return Err(docx_xml_limit_error());
     }
 
@@ -780,6 +1017,35 @@ fn docx_xml_limit_error() -> AppError {
     AppError::InvalidInput(format!(
         "DOCX document XML exceeds the {DOCX_XML_MAX_BYTES}-byte extraction limit"
     ))
+}
+
+fn extracted_text_limit_error() -> AppError {
+    AppError::InvalidInput(format!(
+        "Extracted document text exceeds the {EXTRACTED_TEXT_MAX_BYTES}-byte extraction limit"
+    ))
+}
+
+fn append_extracted_text(text: &mut String, suffix: &str) -> Result<(), AppError> {
+    let Some(total_bytes) = text.len().checked_add(suffix.len()) else {
+        return Err(extracted_text_limit_error());
+    };
+    if total_bytes > EXTRACTED_TEXT_MAX_BYTES {
+        return Err(extracted_text_limit_error());
+    }
+    text.push_str(suffix);
+    Ok(())
+}
+
+fn ensure_extracted_pages_within_limit(pages: &[(i32, String)]) -> Result<(), AppError> {
+    let total_bytes = pages.iter().try_fold(0usize, |total, (_, text)| {
+        total
+            .checked_add(text.len())
+            .ok_or_else(extracted_text_limit_error)
+    })?;
+    if total_bytes > EXTRACTED_TEXT_MAX_BYTES {
+        return Err(extracted_text_limit_error());
+    }
+    Ok(())
 }
 
 fn pages_from_page_texts(
@@ -821,9 +1087,13 @@ fn nonpaginated_page(text: String, format: &str) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DOCX_XML_MAX_BYTES, InlineEnd, MARKDOWN_MAX_NESTING, TEXT_PREVIEW_MAX_BYTES,
-        bounded_docx_xml, document_preview, docx_body_text, extract_pages, markdown_blocks,
-        markdown_preview_blocks, nonpaginated_page, pages_from_page_texts, parse_inlines,
+        BoundedPdfText, DOCX_XML_MAX_BYTES, EXTRACTED_TEXT_MAX_BYTES, InlineEnd,
+        MARKDOWN_MAX_NESTING, PDF_MAX_PAGES, PDF_MAX_RETAINED_TEXT_BYTES, PDF_MAX_SOURCE_BYTES,
+        TEXT_PREVIEW_MAX_BYTES, append_extracted_text, bounded_docx_xml, bounded_utf8_text_reader,
+        document_preview, docx_body_text, ensure_extracted_pages_within_limit,
+        ensure_pdf_page_count_within_limit, ensure_pdf_source_within_limit, extract_pages,
+        markdown_blocks, markdown_preview_blocks, nonpaginated_page, pages_from_page_texts,
+        parse_inlines, pdf_page_text_limit,
     };
     use domain::{DocumentPreview, MarkdownBlock, MarkdownInline};
     use pulldown_cmark::{Event as MarkdownEvent, Tag, TagEnd};
@@ -852,16 +1122,63 @@ mod tests {
     }
 
     #[test]
+    fn bounds_plain_text_and_accumulated_extracted_text_before_growth() {
+        let invalid_utf8 = bounded_utf8_text_reader(&mut Cursor::new(vec![0xFF]), 1)
+            .expect_err("malformed text must return a typed error");
+        assert!(matches!(invalid_utf8, domain::AppError::InvalidInput(_)));
+
+        let oversized = bounded_utf8_text_reader(
+            &mut Cursor::new(vec![b'x'; EXTRACTED_TEXT_MAX_BYTES + 1]),
+            0,
+        )
+        .expect_err("plain text beyond the extraction cap must be rejected");
+        assert!(matches!(oversized, domain::AppError::InvalidInput(_)));
+
+        let mut text = "x".repeat(EXTRACTED_TEXT_MAX_BYTES - 1);
+        append_extracted_text(&mut text, "x").expect("the exact cap is permitted");
+        ensure_extracted_pages_within_limit(&[(1, text.clone())])
+            .expect("the exact aggregate cap is permitted");
+        assert!(append_extracted_text(&mut text, "x").is_err());
+        assert!(
+            ensure_extracted_pages_within_limit(&[
+                (1, "x".repeat(EXTRACTED_TEXT_MAX_BYTES)),
+                (2, "x".to_string()),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_partial_pdf_extraction() {
         let error = pages_from_page_texts(vec!["first".into()], 2, "PDF")
             .expect_err("a missing physical page must fail extraction");
 
         assert!(matches!(error, domain::AppError::Io(_)));
     }
+    #[test]
+    fn bounds_pdf_input_and_retained_text_before_pages_are_kept() {
+        assert!(ensure_pdf_source_within_limit(PDF_MAX_SOURCE_BYTES).is_ok());
+        assert!(ensure_pdf_source_within_limit(PDF_MAX_SOURCE_BYTES + 1).is_err());
+        assert!(ensure_pdf_page_count_within_limit(PDF_MAX_PAGES).is_ok());
+        assert!(ensure_pdf_page_count_within_limit(PDF_MAX_PAGES + 1).is_err());
+
+        assert_eq!(pdf_page_text_limit(0).unwrap(), 4 * 1024 * 1024);
+        assert_eq!(
+            pdf_page_text_limit(PDF_MAX_RETAINED_TEXT_BYTES - 1).unwrap(),
+            1
+        );
+        assert!(pdf_page_text_limit(PDF_MAX_RETAINED_TEXT_BYTES).is_err());
+
+        let mut output = BoundedPdfText::new(4);
+        output.write_all(b"safe").unwrap();
+        assert!(output.write_all(b"!").is_err());
+        assert!(output.limit_reached);
+        assert_eq!(output.into_text(), "safe");
+    }
 
     #[test]
-    fn extracts_docx_paragraph_text() {
-        let xml = br#"<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>First &amp; second</w:t></w:r></w:p><w:p><w:r><w:t>Third</w:t><w:tab/><w:t>column</w:t></w:r></w:p></w:body></w:document>"#;
+    fn resolves_docx_elements_by_wordprocessingml_namespace_and_local_name() {
+        let xml = br#"<doc:document xmlns:doc="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:other="urn:other"><doc:body><doc:p><doc:r><doc:t>First &amp; second</doc:t></doc:r></doc:p><doc:p><doc:r><doc:t>Third</doc:t><doc:tab/><doc:t>column</doc:t></doc:r></doc:p><other:t>ignored</other:t></doc:body></doc:document>"#;
 
         assert_eq!(
             docx_body_text(xml, false).unwrap(),
@@ -870,12 +1187,31 @@ mod tests {
     }
 
     #[test]
+    fn preserves_cdata_inside_docx_text_elements() {
+        let xml = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t><![CDATA[legal <CDATA> & text]]></w:t></w:r></w:p></w:body></w:document>"#;
+
+        assert_eq!(
+            docx_body_text(xml, false).unwrap(),
+            "legal <CDATA> & text\n"
+        );
+    }
+
+    #[test]
+    fn decodes_utf16_docx_xml_before_parsing() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>UTF-16 text</w:t></w:r></w:p></w:body></w:document>"#;
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+
+        assert_eq!(docx_body_text(&utf16, false).unwrap(), "UTF-16 text\n");
+    }
+
+    #[test]
     fn preserves_accumulated_text_when_a_bounded_docx_ends_mid_markup() {
-        let mid_tag = br#"<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><w:p><w:r><w:"#;
+        let mid_tag = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><w:p><w:r><w:"#;
         assert_eq!(docx_body_text(mid_tag, true).unwrap(), "First paragraph\n");
         assert!(docx_body_text(mid_tag, false).is_err());
 
-        let mid_entity = br#"<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><w:p><w:r><w:t>Second &amp"#;
+        let mid_entity = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><w:p><w:r><w:t>Second &amp"#;
         assert_eq!(
             docx_body_text(mid_entity, true).unwrap(),
             "First paragraph\nSecond "
@@ -916,7 +1252,7 @@ mod tests {
                 .unwrap();
             archive
                 .write_all(
-                    br#"<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>DOCX text</w:t></w:r></w:p></w:body></w:document>"#,
+                    br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>DOCX text</w:t></w:r></w:p></w:body></w:document>"#,
                 )
                 .unwrap();
             archive.finish().unwrap();
@@ -947,7 +1283,7 @@ mod tests {
                 .as_nanos()
         );
         let path = std::env::temp_dir().join(format!("ragtag-truncated-docx-{unique}.docx"));
-        let mut xml = br#"<w:document xmlns:w="word"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><!--"#
+        let mut xml = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First paragraph</w:t></w:r></w:p><!--"#
             .to_vec();
         xml.extend(std::iter::repeat_n(
             b'x',
