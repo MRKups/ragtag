@@ -1,3 +1,10 @@
+---
+title: Code review, 2026-09-11
+normative-for: []
+depends: [../../app-architecture.md, ../../data-schema.md, ../../tracker.md]
+status: archival evidence. This dated assessment does not describe current behavior or active work.
+---
+
 # Code Review — 2026-09-11
 
 ## Scope and method

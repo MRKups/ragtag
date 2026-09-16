@@ -1,174 +1,143 @@
-# Data Schema
+---
+title: Data schema and IPC contracts
+normative-for: [persisted data, settings values, Tauri IPC wire vocabulary]
+depends: [app-architecture.md, glossary.md]
+status: current reference. Migrations and source code override conflicting statements.
+---
 
-The data layer uses a local SQLite file for relational data and LanceDB (an embedded, native Rust vector database) for vector storage.
+# Data schema and IPC contracts
 
-## SQLite (`app.db`)
+SQLite stores document identity and lifecycle state. LanceDB stores derived chunks and vectors. Tauri IPC carries requests and request-scoped progress. [Application architecture](app-architecture.md) owns the surrounding flows.
 
-Stored in the operating system application-local data directory as `$APPLOCALDATA/app.db`.
+## SQLite
 
-### `documents` Table
+`app.db` is stored in application-local data. The migrations under `src-tauri/crates/persistence/migrations/` are the DDL source of truth. This document describes their effective schema.
 
-The single source of truth for file registry and processing state.
+### `documents`
 
-```sql
-CREATE TABLE documents (
-    id TEXT PRIMARY KEY,                       -- UUID v7 (time-sortable)
-    
-    -- File info
-    filename TEXT NOT NULL,
-    file_type TEXT NOT NULL,                   -- 'pdf', 'docx', or 'text'
-    file_size_bytes BIGINT,
-    file_hash BLOB,                            -- SHA-512 hash stored as raw bytes (not hex string) to prevent duplicates
-    storage_path TEXT NOT NULL,                -- Relative path inside the AppData folder
-    
-    -- Processing state
-    status TEXT NOT NULL DEFAULT 'queued',
-    -- 'queued'   : Eligible for/recoverable by the background worker
-    -- 'embedding': Background task is actively processing
-    -- 'indexed'  : Replacement vectors were stored successfully and are eligible for citations
-    -- 'deleting' : Durable deletion is in progress; excluded from retrieval and retried at startup
-    -- 'failed'   : Processing error or exhausted automatic recovery; only retryable failures are requeued during startup recovery
-    
-    -- Indexing metadata
-    chunk_count INTEGER,
-    embedding_model TEXT,
-    embedding_attempts INTEGER DEFAULT 0,       -- Starts in the current unsuccessful processing run; reset after successful indexing or intentional indexed-document requeue
+| Column | Nullability | Meaning |
+| --- | --- | --- |
+| `id` | primary key | Document identifier. |
+| `filename` | required | Original user-visible filename. |
+| `file_type` | required | Accepted source type: `pdf`, `docx`, or `text`. |
+| `file_size_bytes` | optional | Managed-source byte length. |
+| `file_hash` | optional, unique when present | Managed-source content hash used for duplicate detection. |
+| `storage_path` | required | Managed-source path relative to application-local data. |
+| `status` | required, default `queued` | Document lifecycle state. |
+| `chunk_count` | optional | Count recorded after successful indexing. |
+| `embedding_model` | optional | Model recorded with successful indexing. |
+| `embedding_attempts` | default `0` | Attempts in the current unsuccessful processing run. |
+| `indexed_extraction_version` | optional | Extraction version recorded after successful indexing. |
+| `indexed_chunk_size` | optional | Chunk size recorded after successful indexing. |
+| `indexed_chunk_overlap` | optional | Chunk overlap recorded after successful indexing. |
+| `created_at` | default current timestamp | Registry creation time. |
+| `processing_started_at` | optional | Most recent processing start time. |
+| `indexed_at` | optional | Most recent successful indexing time. |
+| `error_message` | optional | Most recent processing failure. |
+| `retry_count` | default `0` | Persisted retry count. |
 
-    -- Successful-index provenance (set only after vector replacement succeeds)
-    indexed_extraction_version TEXT,
-    indexed_chunk_size INTEGER,
-    indexed_chunk_overlap INTEGER,
-    
-    -- Timestamps
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    processing_started_at DATETIME,
-    indexed_at DATETIME,
-    
-    -- Error tracking
-    error_message TEXT,
-    retry_count INTEGER DEFAULT 0
-);
+Indexes cover document status, newest creation time, and non-null file hashes. The database does not enforce the accepted `file_type` values or lifecycle transitions. Rust enforces those application contracts.
 
-CREATE INDEX idx_documents_status ON documents(status);
-CREATE UNIQUE INDEX idx_documents_file_hash ON documents(file_hash);
-CREATE INDEX idx_documents_created ON documents(created_at DESC);
+Document lifecycle values are `queued`, `embedding`, `indexed`, `deleting`, and `failed`. SQLite is the authority for retrieval eligibility. LanceDB does not duplicate lifecycle state or indexing provenance.
 
-```
+### `app_settings`
 
-The unique file-hash index also resolves an insert race as typed `DuplicateDocument`; only that constraint is classified as a duplicate, while unrelated database constraints remain database errors.
+`app_settings` is a `key` and `value` table. All values are strings. The accepted keys are application contracts, not SQL constraints.
 
-## LanceDB (Embedded Vector DB)
+| Key | Accepted value | Default when absent |
+| --- | --- | --- |
+| `inference_mode` | `local` or `external` | `local` |
+| `use_query_enhancement` | `true` or `false` | application-defined |
+| `chunk_size` | Integer from 128 through 2048 | `512` |
+| `chunk_overlap` | Integer from 0 through 1024 | `80` |
+| `external_base_url` | Normalized credential-free HTTP or HTTPS base URL | local provider URL |
+| `external_model` | Non-empty provider model identifier | `gpt-4o-mini` |
+| `generation_model` | Valid Hugging Face model identifier | application-defined |
+| `tokenizer_model` | Valid Hugging Face model identifier | `Qwen/Qwen3-1.7B` |
+| `gguf_filename` | Non-empty `.gguf` filename without `/` | application-defined |
 
-Stored locally in a `.lancedb` directory alongside the SQLite database.
+The final chunk overlap must be smaller than the final chunk size. A changed chunk pair makes indexed documents with absent or mismatched provenance eligible for reindexing. The old provenance remains until replacement indexing succeeds.
 
-### Schema / Dataset Layout
+The optional external-provider API key is not an application setting. It is stored in the OS keychain.
 
-LanceDB manages tables using a strongly typed schema. Each row represents a single text chunk from a document.
+## LanceDB
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `vector` | `FixedSizeList<Float32>(768)` | The 768-dimensional embedding from the local model (e.g., `EmbeddingGemma-300M`). |
-| `document_id` | `String` | Foreign key referencing `documents.id` in SQLite. |
-| `page` | `Int32` | 1-indexed page number for citations. |
-| `chunk_index` | `Int32` | Position within the document. |
-| `content` | `String` | Raw chunk text reused for citations and RAG prompt synthesis. The ingest embedding input prepends `"passage: "` without persisting that instruction prefix. |
+The application-local `.lancedb` directory contains the `chunks` table. Each row is derived data for one document chunk.
 
-LanceDB does not contain document status, extraction version, or chunking configuration. SQLite records the nullable successful-index provenance for each document after replacement vectors are stored, so it remains the registry authority for whether an indexed document matches the desired extraction and chunk settings. Startup compares SQLite indexed chunk counts to the existing Lance table and returns missing or partial documents to `queued`; read/compaction paths never create an absent table. First table creation is serialized before concurrent ingestion. The application supplies the SQLite-indexed document-ID filter to LanceDB before hybrid/vector candidate limiting, then rehydrates and rechecks document status before citation use. FTS is available after rows exist; the default IVF-PQ index is deferred until the shared table has at least 256 vectors, with flat vector search serving smaller stores.
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `vector` | fixed list of 768 `float32` values | Local embedding. |
+| `document_id` | UTF-8 string | Logical reference to `documents.id`; it is not a database foreign key. |
+| `page` | signed 32-bit integer | Physical PDF page or logical source page. |
+| `chunk_index` | signed 32-bit integer | Chunk position within a source page. |
+| `content` | UTF-8 string | Raw chunk content used for retrieval context and citations. |
 
-## Application Settings
+The stable chunk identity is `(document_id, page, chunk_index)`. Embedding input adds the `passage: ` instruction prefix, but LanceDB retains raw chunk content. A successful vector replacement precedes the SQLite transition to `indexed`.
 
-Instead of `localStorage` (as done in previous web iterations), settings are safely written to an `app_settings` SQLite table managed by Rust. This ensures atomicity alongside document metadata.
+## IPC commands
 
-```sql
-CREATE TABLE app_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-```
-Example keys:
-- `inference_mode`: `"local"` or `"external"`; selects the default generation route for new queries.
-- `external_base_url`: Credential-free HTTP(S) OpenAI-compatible endpoint stored as a canonical base URL including `/v1`, normalized before `/models` readiness and chat-completions requests.
-- `external_model`: Model name required in the endpoint’s `/models` response and sent to that endpoint; absent values fall back to `"gpt-4o-mini"`.
-- `use_query_enhancement`: `"true"` or `"false"`; expands recognized technical abbreviations only for retrieval, leaving the user prompt unchanged.
-- `generation_model`: Hugging Face repo ID used for local GGUF download. Default: `"unsloth/Qwen3-1.7B-GGUF"`.
-- `tokenizer_model`: Hugging Face tokenizer repository compatible with the local GGUF model. Default: `"Qwen/Qwen3-1.7B"`.
-- `gguf_filename`: Filename of the GGUF file within the generation-model repo. Default: `"Qwen3-1.7B-Q4_K_M.gguf"`.
+The frontend may import Tauri APIs only in `frontend/src/lib/api.ts`. Components and stores call its typed functions.
 
-Changing `generation_model`, `tokenizer_model`, or `gguf_filename` while `inference_mode` is `"local"` immediately withdraws the loaded local model, emits `llm_unready`, and starts one generation-tagged initialization from the persisted settings. Rapid edits coalesce behind the active initialization, so an obsolete initializer cannot publish progress, readiness, errors, or a model and only the newest persisted configuration is subsequently initialized. While `"external"` is selected, those local settings are stored without downloading or building a local model; switching back to `"local"` uses the stored values.
+| Command | Input | Result or outcome |
+| --- | --- | --- |
+| `begin_first_run_init` | none | Starts staged local initialization. |
+| `retry_local_model_initialization` | none | Retries local generation-model initialization. |
+| `upload_document` | `filename`, `fileBytes`, `channel: Channel<IngestionProgress>` | Managed document identifier. |
+| `list_documents` | none | Registry documents. |
+| `get_document_preview` | `documentId` | Typed text or Markdown preview. |
+| `delete_document` | `id` | Removes a managed document and derived data. |
+| `execute_query` | `query`, `requestId`, `channel: Channel<TokenEvent>` | Streams answer events. |
+| `cancel_query` | `requestId` | Cancels the named query request. |
+| `get_settings` | none | String key-value settings. |
+| `set_setting` | `key`, `value` | Persists one validated non-secret setting. |
+| `test_external_provider` | `baseUrl`, optional `apiKey` | Available provider model identifiers. |
+| `set_external_provider_config` | `baseUrl`, `model` | Persists external endpoint and model selection. |
+| `set_api_key` | `key` | Stores the optional external-provider key in the keychain. |
+| `has_api_key` | none | Whether that key exists. |
+| `delete_api_key` | none | Whether a stored key was removed. |
+| `get_storage_info` | none | Database, vector store, document, and model byte counts. |
+| `compact_vector_store` | none | Completion status. |
+| `vacuum_database` | none | Completion status. |
+| `reset_all_data` | `deleteModels` | Whether restart was requested. |
 
-Writing an already-selected `inference_mode` is a no-op and does not restart readiness. The Settings UI retains the last persisted value for every bound setting and restores it if its update fails.
+## Request-scoped events
 
-- `chunk_size`: Token count per embedding-safe chunk (default `"512"`, maximum `"2048"`).
-- `chunk_overlap`: Token overlap between chunks on the same page (default `"80"`).
+`TokenEvent` and `IngestionProgress` use a `type` discriminator with snake-case values.
 
-`chunk_size` and `chunk_overlap` are validated together when a setting changes. Under the document-operations write lock, the final pair is persisted and all indexed documents with absent or mismatched provenance are atomically returned to `queued`; their saved provenance remains until the successful replacement records the new values. After the transaction and lock release, the command uses `try_send()` for reindex jobs: a full queue returns typed `QueueFull` immediately while a background producer awaits capacity for every remaining durable queued job. Chunks are split and counted with the active embedding tokenizer, including the `passage: ` prefix and special tokens, so no stored chunk is silently truncated during embedding.
+### `TokenEvent`
 
-The Settings UI keeps local and external configuration independent. Its header reports the active inference route from `inference_mode`; the Local model and Remote provider cards form an accessible radio group that persists that route and each opens its own configuration modal. The Remote provider modal collects protocol, server address, and optional port, composes the conventional `/v1` endpoint, then tests that unsaved credential-free endpoint with a supplied in-form API key or, when blank, the OS-keychain key; it lists the returned `/models` identifiers in an app-styled dropdown. Testing does not persist settings; changing any endpoint control clears prior models and selection. Save remains disabled until a discovered model is selected, then atomically persists `external_base_url` plus `external_model` before one active-external readiness revalidation. The Local model modal initiates the existing generation-tagged local initialization flow only after durable local settings change.
+| Type | Fields | Meaning |
+| --- | --- | --- |
+| `token` | `text` | Answer text delta. |
+| `warning` | `message` | Non-fatal retrieval degradation. |
+| `done` | `citations` | Successful terminal event. |
+| `error` | `message`, `citations` | Failure after answer streaming began. |
 
-*Note:* Sensitive data like the `external_api_key` for BYO inference must **never** be stored in SQLite. Instead, it is managed securely in the OS keychain using the `keyring` crate.
+Failures before answer streaming reject `execute_query`. Citations have `document_id`, `filename`, `storage_path`, `page`, `chunk_content`, `score`, and `is_hybrid`. Unlike the registry's relative `documents.storage_path`, citation `storage_path` is the resolved managed-source path used for asset viewing. `is_hybrid` means the score is rank-derived and not calibrated confidence.
 
-## IPC Data Types
+### `IngestionProgress`
 
-These types define the shapes sent from Rust to the frontend through request-scoped Tauri v2 Channels.
+| Type | Fields |
+| --- | --- |
+| `extraction` | `document_id`, `current_page`, `total_pages` |
+| `chunking` | `document_id`, `current_page`, `total_pages`, `chunks_on_page`, `total_chunks` |
+| `embedding` | `document_id`, `current_batch`, `total_batches`, `embedded_chunks`, `total_chunks` |
+| `stored` | `document_id`, `chunk_count` |
+| `error` | `document_id`, `message` |
 
-```rust
-// In crates/domain/src/events.rs
-#[derive(serde::Serialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TokenEvent {
-    Token   { text: String },
-    Warning { message: String },
-    Done    { citations: Vec<Citation> },
-    Error   { message: String, citations: Vec<Citation> },
-}
+Progress describes completed work. `stored` follows durable vector replacement and registry update.
 
-#[derive(serde::Serialize, Clone)]
-pub struct Citation {
-    pub document_id: String,
-    pub filename:    String,
-    pub storage_path: String,
-    pub page:        i32,
-    pub chunk_content: String,
-    pub score:       f32,
-    pub is_hybrid:   bool,
-}
+## Document preview
 
+`get_document_preview` accepts an indexed text or DOCX document identifier. It returns one of these tagged values:
 
-#[derive(serde::Serialize, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum IngestionProgress {
-    Extraction { document_id: String, current_page: usize, total_pages: usize },
-    Chunking {
-        document_id: String,
-        current_page: i32,
-        total_pages: usize,
-        chunks_on_page: usize,
-        total_chunks: usize,
-    },
-    Embedding {
-        document_id: String,
-        current_batch: usize,
-        total_batches: usize,
-        embedded_chunks: usize,
-        total_chunks: usize,
-    },
-    Stored { document_id: String, chunk_count: usize },
-    Error { document_id: String, message: String },
-}
-```
+| Kind | Fields |
+| --- | --- |
+| `plain_text` | `content`, `truncated` |
+| `markdown` | `blocks`, `truncated` |
 
-```rust
-// In crates/domain/src/models.rs
-pub enum DocumentPreview {
-    PlainText { content: String, truncated: bool },
-    Markdown { blocks: Vec<MarkdownBlock>, truncated: bool },
-}
-```
+Markdown blocks are `heading`, `paragraph`, `block_quote`, `list`, `code_block`, `table`, and `thematic_break`. Inline values are `text`, `code`, `emphasis`, `strong`, `strikethrough`, `link`, and `break`. The payload represents safe structure, not HTML. `truncated` signals that the preview reached its bounded source limit.
 
-`get_document_preview(document_id)` accepts only indexed `text` or `docx` document IDs. The Tauri adapter resolves the registry-owned app-local path rather than receiving a frontend path. The pipeline returns at most 1 MiB of valid UTF-8 text or typed Markdown blocks; `truncated` signals a bounded preview. If a DOCX XML cap ends in incomplete markup or an entity reference, the preview retains already extracted text. Markdown blocks contain only allowlisted structural/inline values, not generated HTML.
+## Error payload
 
-`Citation::is_hybrid` is `true` when LanceDB used reciprocal-rank fusion. The UI must not treat its rank-derived `score` as calibrated confidence; it displays confidence only for vector-only retrieval.
-
-`TokenEvent::Warning` reports a non-fatal retrieval degradation, such as fallback to vector-only search. `TokenEvent::Error` is used for failures after a response stream begins. Failures before streaming—including no usable retrieved excerpts, retrieval failures, or an external request/status error—reject the `execute_query` IPC command instead.
-
-`upload_document` accepts a typed `{ filename, fileBytes, channel }` envelope rather than a raw request, because the upload payload and its `Channel<IngestionProgress>` must share one IPC invocation. Each uploaded document keeps its own channel through the queue worker. Progress notifications are emitted only after the represented work completes: every physical page extraction, each nonblank page's token chunking, each completed 32-item embedding batch, and durable storage. There are intentionally no intra-page, intra-chunk, or intra-batch estimates because the underlying operations do not expose truthful finer callbacks. The worker places notifications on an unbounded bridge before a separate forwarder calls the Tauri channel, so slow UI delivery never awaits within PDF extraction, chunking, embedding, or storage. Existing `ingestion_progress` application events remain stage-only lifecycle compatibility broadcasts and are not an ordered data stream.
+Command errors serialize as `{ kind, message }`. Current `kind` values are `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`, `Inference`, `DuplicateDocument`, and `InvalidInput`. Consumers branch on `kind`; messages are display text, not stable identifiers.

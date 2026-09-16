@@ -1,3 +1,10 @@
+---
+title: Code review inventory, 2026-08-31
+normative-for: []
+depends: [../../app-architecture.md, ../../data-schema.md, ../../tracker.md]
+status: archival evidence. This dated assessment does not describe current behavior or active work.
+---
+
 # Comprehensive Code Review Tracker — 2026-08-31
 
 ## Scope
