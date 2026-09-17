@@ -9,7 +9,7 @@ status: current release gate. Not ready for public source publication or public 
 
 **Assessment date:** 2026-09-16
 
-This is the current release gate. It is not legal advice and does not select a Ragtag license.
+This is the current release gate, not legal advice or a license selection.
 
 ## Current blocker
 
@@ -32,17 +32,17 @@ Public source publication and public binary distribution remain blocked until th
 
 ## Dependency boundary
 
-[`third-party-license-inventory.json`](third-party-license-inventory.json) contains declared dependency facts from the Rust and npm lockfiles. It is complete for those lockfile inputs, not for a final installer.
+[`third-party-license-inventory.json`](third-party-license-inventory.json) contains declared Rust and npm lockfile facts, not final-installer content.
 
-A release closure must separately inspect bundled JavaScript, CSS, SVG, native libraries, generated assets, runtime artifacts, and distributed model files. A lockfile declaration is inventory data, not legal approval or notice compliance.
+Release closure separately inspects bundled JavaScript, CSS, SVG, native libraries, generated assets, runtime artifacts, and distributed models. Lockfile declarations are not legal approval or notice compliance.
 
 ## Data and external-service boundary
 
-Ragtag retains sources, indexes, models, and default inference locally. Optional external inference sends the user query and retrieved excerpts to the selected endpoint. The current endpoint transport behavior is documented in [Application architecture](app-architecture.md) and [Data schema and IPC contracts](data-schema.md); [B186](tracker.md) is the required restriction before release.
+Ragtag keeps sources, indexes, models, and default inference local. Optional external inference sends the query and retrieved excerpts to the selected endpoint. [B186](tracker.md) must close before release; current transport behavior is in [Application architecture](app-architecture.md) and [Data schema and IPC contracts](data-schema.md).
 
 ## Required release evidence
 
-Before a public release, retain with the release artifact:
+Public releases retain:
 
 1. A final-installer SPDX or CycloneDX SBOM.
 2. Human-readable third-party notices with required license text and attribution.
@@ -53,4 +53,4 @@ Before a public release, retain with the release artifact:
 
 ## Unresolved legal and provenance questions
 
-The repository does not establish the final first-party rights holder, selected project license, contribution terms, branding ownership, or legal sufficiency of model and platform terms. Resolve those questions with appropriate owner and legal review before presenting the project or binary as open-source ready.
+The repository does not establish final rights ownership, license selection, contribution terms, branding ownership, or model and platform term sufficiency. Resolve them with owner and legal review before presenting Ragtag as open-source ready.

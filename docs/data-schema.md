@@ -7,11 +7,11 @@ status: current reference. Migrations and source code override conflicting state
 
 # Data schema and IPC contracts
 
-SQLite stores document identity and lifecycle state. LanceDB stores derived chunks and vectors. Tauri IPC carries requests and request-scoped progress. [Application architecture](app-architecture.md) owns the surrounding flows.
+SQLite owns registry state, LanceDB stores derived chunks and vectors, and Tauri IPC carries requests and progress. See [Application architecture](app-architecture.md) for flows.
 
 ## SQLite
 
-`app.db` is stored in application-local data. The migrations under `src-tauri/crates/persistence/migrations/` are the DDL source of truth. This document describes their effective schema.
+Migrations define the effective DDL schema.
 
 ### `documents`
 
@@ -36,13 +36,11 @@ SQLite stores document identity and lifecycle state. LanceDB stores derived chun
 | `error_message` | optional | Most recent processing failure. |
 | `retry_count` | default `0` | Persisted retry count. |
 
-Indexes cover document status, newest creation time, and non-null file hashes. The database does not enforce the accepted `file_type` values or lifecycle transitions. Rust enforces those application contracts.
-
-Document lifecycle values are `queued`, `embedding`, `indexed`, `deleting`, and `failed`. SQLite is the authority for retrieval eligibility. LanceDB does not duplicate lifecycle state or indexing provenance.
+Indexes cover status, newest creation time, and non-null file hashes. Rust, not the database, enforces accepted `file_type` values and lifecycle transitions. Lifecycle values are `queued`, `embedding`, `indexed`, `deleting`, and `failed`. SQLite decides retrieval eligibility; LanceDB does not duplicate lifecycle state or provenance.
 
 ### `app_settings`
 
-`app_settings` is a `key` and `value` table. All values are strings. The accepted keys are application contracts, not SQL constraints.
+`app_settings` is a string key-value table. Its keys are application contracts, not SQL constraints.
 
 | Key | Accepted value | Default when absent |
 | --- | --- | --- |
@@ -56,9 +54,9 @@ Document lifecycle values are `queued`, `embedding`, `indexed`, `deleting`, and 
 | `tokenizer_model` | Valid Hugging Face model identifier | `Qwen/Qwen3-1.7B` |
 | `gguf_filename` | Non-empty `.gguf` filename without `/` | application-defined |
 
-The final chunk overlap must be smaller than the final chunk size. A changed chunk pair makes indexed documents with absent or mismatched provenance eligible for reindexing. The old provenance remains until replacement indexing succeeds.
+Chunk overlap must be smaller than chunk size. Changed settings requeue indexed documents with absent or mismatched provenance; old provenance remains until replacement succeeds.
 
-The optional external-provider API key is not an application setting. It is stored in the OS keychain.
+The external-provider API key is stored only in the OS keychain.
 
 ## LanceDB
 
@@ -72,11 +70,11 @@ The application-local `.lancedb` directory contains the `chunks` table. Each row
 | `chunk_index` | signed 32-bit integer | Chunk position within a source page. |
 | `content` | UTF-8 string | Raw chunk content used for retrieval context and citations. |
 
-The stable chunk identity is `(document_id, page, chunk_index)`. Embedding input adds the `passage: ` instruction prefix, but LanceDB retains raw chunk content. A successful vector replacement precedes the SQLite transition to `indexed`.
+Chunk identity is `(document_id, page, chunk_index)`. LanceDB retains raw content; embedding input adds `passage: `. Vector replacement precedes the SQLite transition to `indexed`.
 
 ## IPC commands
 
-The frontend may import Tauri APIs only in `frontend/src/lib/api.ts`. Components and stores call its typed functions.
+The frontend uses the typed IPC API.
 
 | Command | Input | Result or outcome |
 | --- | --- | --- |
@@ -102,7 +100,7 @@ The frontend may import Tauri APIs only in `frontend/src/lib/api.ts`. Components
 
 ## Request-scoped events
 
-`TokenEvent` and `IngestionProgress` use a `type` discriminator with snake-case values.
+`TokenEvent` and `IngestionProgress` use snake-case `type` discriminators.
 
 ### `TokenEvent`
 
@@ -113,7 +111,7 @@ The frontend may import Tauri APIs only in `frontend/src/lib/api.ts`. Components
 | `done` | `citations` | Successful terminal event. |
 | `error` | `message`, `citations` | Failure after answer streaming began. |
 
-Failures before answer streaming reject `execute_query`. Citations have `document_id`, `filename`, `storage_path`, `page`, `chunk_content`, `score`, and `is_hybrid`. Unlike the registry's relative `documents.storage_path`, citation `storage_path` is the resolved managed-source path used for asset viewing. `is_hybrid` means the score is rank-derived and not calibrated confidence.
+Failures before answer streaming reject `execute_query`. Citations have `document_id`, `filename`, `storage_path`, `page`, `chunk_content`, `score`, and `is_hybrid`. Citation `storage_path` is resolved for asset viewing; `documents.storage_path` is relative. `is_hybrid` marks a rank-derived, uncalibrated score.
 
 ### `IngestionProgress`
 
@@ -125,18 +123,18 @@ Failures before answer streaming reject `execute_query`. Citations have `documen
 | `stored` | `document_id`, `chunk_count` |
 | `error` | `document_id`, `message` |
 
-Progress describes completed work. `stored` follows durable vector replacement and registry update.
+Progress reports completed work. `stored` follows vector replacement and registry update.
 
 ## Document preview
 
-`get_document_preview` accepts an indexed text or DOCX document identifier. It returns one of these tagged values:
+`get_document_preview` accepts an indexed text or DOCX document identifier and returns one tagged value:
 
 | Kind | Fields |
 | --- | --- |
 | `plain_text` | `content`, `truncated` |
 | `markdown` | `blocks`, `truncated` |
 
-Markdown blocks are `heading`, `paragraph`, `block_quote`, `list`, `code_block`, `table`, and `thematic_break`. Inline values are `text`, `code`, `emphasis`, `strong`, `strikethrough`, `link`, and `break`. The payload represents safe structure, not HTML. `truncated` signals that the preview reached its bounded source limit.
+Markdown uses blocks `heading`, `paragraph`, `block_quote`, `list`, `code_block`, `table`, and `thematic_break`; inline values are `text`, `code`, `emphasis`, `strong`, `strikethrough`, `link`, and `break`. It is safe structure, not HTML. `truncated` signals the bounded source limit.
 
 ## Error payload
 

@@ -7,19 +7,19 @@ status: current reference. Definitions describe documentation terms, not source 
 
 # Glossary
 
-Use these terms consistently in internal documents.
+Use these terms consistently.
 
 | Term | Meaning |
 | --- | --- |
-| Application-local data | Data stored in the operating system location assigned to Ragtag, rather than beside the application binary or in a browser store. |
-| Citation | Retrieved source metadata presented with an answer. It identifies the source document and page or logical source page. |
-| Derived data | Data regenerated from a retained source document, including chunks, embeddings, and search indexes. |
+| Application-local data | Data in Ragtag's OS-assigned directory, not beside the binary or in browser storage. |
+| Citation | Retrieved source metadata shown with an answer, identifying the document and physical or logical source page. |
+| Derived data | Regenerated data from a retained source, including chunks, embeddings, and search indexes. |
 | Document registry | The SQLite record set that owns document identity, lifecycle state, and indexing provenance. |
 | Indexed document | A registry document whose derived chunks have been durably stored and are eligible for retrieval. |
-| Ingestion | The process that validates a source document, retains it, extracts text, creates chunks, embeds them, and stores derived data. |
+| Ingestion | Validating and retaining a source, extracting text, creating chunks, embedding them, and storing derived data. |
 | Logical source page | The single page assigned to a non-paginated text or DOCX source for citation purposes. |
-| Managed source | The retained, application-local copy of a user-provided document. It is the canonical evidence for its derived data. |
-| Preview | A bounded representation of a managed source used by the interface. It is not a general filesystem reader. |
+| Managed source | The application-local retained copy of a user document and canonical evidence for its derived data. |
+| Preview | A bounded interface representation of a managed source, not a general filesystem reader. |
 | Retrieval | The local search that selects indexed chunks to ground an answer. |
-| Source of truth | The authority that decides a fact. SQLite owns document lifecycle; retained sources own original evidence; source code and migrations override conflicting documentation. |
+| Source of truth | Authority for a fact: SQLite owns document lifecycle, retained sources own original evidence, and source code/migrations override conflicting documentation. |
 | Wire contract | The serialized commands, events, values, and error codes exchanged across the Tauri IPC boundary. |

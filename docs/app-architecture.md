@@ -7,13 +7,13 @@ status: current reference. Source code and migrations override conflicting state
 
 # Application architecture
 
-Ragtag is a local-first desktop application for answering questions about user-provided documents. The interface runs in a Tauri WebView. Rust owns document processing, persistence, retrieval, and inference selection.
+Ragtag answers questions about user-provided documents. The interface runs in a Tauri WebView; Rust owns document processing, persistence, retrieval, and inference selection.
 
 ## System boundaries
 
 | Subsystem | Responsibility | Authority boundary |
 | --- | --- | --- |
-| Svelte interface | Collects user input, renders results, and presents progress and recovery actions. | It calls typed IPC only through `frontend/src/lib/api.ts`. |
+| Svelte interface | Collects user input, renders results, and presents progress and recovery actions. | It uses the typed IPC boundary. |
 | Tauri application | Validates requests, coordinates work, and exposes typed IPC commands. | It does not make the frontend a filesystem or database client. |
 | Document pipeline | Extracts supported source formats, produces page-aware chunks, embeds text, and prepares previews. | It creates derived data, not canonical documents. |
 | SQLite | Stores the document registry, lifecycle state, indexing provenance, and non-secret settings. | It decides whether a document is eligible for retrieval. |
@@ -21,13 +21,13 @@ Ragtag is a local-first desktop application for answering questions about user-p
 | OS keychain | Stores the optional external-provider API key. | The key does not enter SQLite, frontend storage, logs, or IPC payloads. |
 | Inference providers | Generate an answer from a query and retrieved excerpts. | Local inference is the default. External inference is a user-selected trust boundary. |
 
-[Data schema](data-schema.md) owns persisted fields, settings, and IPC wire vocabulary. [Design rationale](decisions.md) owns the reasons for durable choices.
+[Data schema](data-schema.md) owns persisted fields, settings, and IPC vocabulary. [Design rationale](decisions.md) owns the rationale for durable choices.
 
 ## Data authority
 
-Original user documents are managed sources. Ragtag retains a byte-for-byte application-local copy before indexing. Chunks, vectors, indexes, previews, and generated answers are derived data.
+Managed sources are retained locally before indexing; chunks, vectors, indexes, previews, and answers are derived.
 
-SQLite is the document registry. A document becomes `indexed` only after its replacement chunks are durable. A `deleting` document is excluded from retrieval until its derived data, managed source, and registry row are removed. Startup reconciles interrupted deletion and missing or incomplete derived data from the registry.
+SQLite is the document registry. A document becomes `indexed` after replacement chunks are durable. A `deleting` document is excluded until its derived data, managed source, and registry row are removed. Startup reconciles interrupted deletion and incomplete derived data.
 
 ## Document lifecycle
 
@@ -37,7 +37,7 @@ SQLite is the document registry. A document becomes `indexed` only after its rep
 4. The pipeline creates tokenizer-boundary chunks, generates local embeddings, and replaces the document's derived rows in LanceDB.
 5. After replacement succeeds, SQLite records indexed status and provenance. The originating request receives completed extraction, chunking, embedding, and storage progress.
 
-Invalid input, a full work queue, source-integrity failure, or processing failure produces a typed error. Failed work remains visible in the registry for recovery or retry. A bounded PDF source size does not yet bound decompression allocation before parser allocation. [B185](tracker.md) records that unresolved security limit.
+Invalid input, a full work queue, source-integrity failure, and processing failure return typed errors. Failed work stays in the registry for recovery or retry. [B185](tracker.md) covers unbounded PDF decompression allocation.
 
 ## Query lifecycle
 
@@ -53,14 +53,12 @@ Invalid input, a full work queue, source-integrity failure, or processing failur
 
 The embedding model initializes locally at startup. Ingestion becomes available when it is ready. Query availability depends on the selected generation route.
 
-Local mode downloads and loads the configured model in the application process. The model is retained in application state and serves local answer generation.
+Local mode downloads and loads the configured model in-process for answer generation.
 
 External mode calls a user-selected OpenAI-compatible endpoint. Ragtag verifies the configured model before enabling queries and sends the query plus retrieved excerpts to that endpoint during inference. The endpoint URL is a non-secret SQLite setting; the optional credential remains in the OS keychain. The current transport policy permits HTTP endpoints. [B186](tracker.md) records the required remote-transport restriction.
 
-Default model files are downloaded rather than bundled. [B187](tracker.md) records the missing immutable revision and checksum verification for those downloads.
+Default model files are downloaded rather than bundled. [B187](tracker.md) tracks artifact pinning and verification.
 
 ## User-visible failure behavior
 
-Operations return serializable typed errors. Query failures before streaming reject the command. Failures after a response stream begins use a terminal error event with the retrieved citations available so far. Ingestion progress reports only completed work.
-
-The interface presents safe recovery guidance rather than raw provider, filesystem, database, or authorization details.
+Operations return serializable typed errors. Failures before answer streaming reject the command; later failures use a terminal error event with available citations. Ingestion progress reports completed work. The interface shows safe recovery guidance instead of raw backend details.

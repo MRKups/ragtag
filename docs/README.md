@@ -7,7 +7,7 @@ status: current guide. Navigation only; linked documents own their subjects.
 
 # Documentation
 
-Start with the document that owns the question. Source code and migrations override any conflicting statement here.
+Use the document that owns the question. Source code and migrations override conflicts.
 
 ## Current guides
 
