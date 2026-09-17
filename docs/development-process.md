@@ -29,6 +29,6 @@ Cross-reference the document that already owns a concept.
 4. Keep mechanics in source. Document behavior, authority, inputs, outputs, limits, and recovery.
 5. Validate relative links, generated-record syntax, and changed facts before merge.
 
-## Preserve record states
+## Keep current records current
 
-Current documents describe the present system. The tracker describes only unresolved work. Generated records identify their inputs and regeneration method. Dated review records are archival evidence: retain their findings and validation context, add a current successor when known, and do not rewrite them to represent later source.
+Current documents describe the present system. The tracker holds unresolved work. Generated records identify inputs and regeneration.

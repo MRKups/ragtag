@@ -13,7 +13,7 @@ Use this document to locate a subsystem. It does not define runtime behavior.
 
 - `README.md`: User-facing setup, operation, development, checks, and build guide.
 - `Taskfile.yml`: Development, Intel-development, checking, build, bundle, and cleanup tasks.
-- `docs/`: Current guides, specifications, records, and archived review evidence. Start at [`docs/README.md`](README.md).
+- `docs/`: Current guides, specifications, and records. Start at [`docs/README.md`](README.md).
 - `frontend/`: Svelte 5 and Vite interface.
 - `src-tauri/`: Tauri application and Rust workspace.
 
@@ -31,7 +31,7 @@ Use this document to locate a subsystem. It does not define runtime behavior.
 - `src/lib/assets/`: Bundled frontend assets.
 - `src/lib/*.test.ts` and `src/lib/stores/*.test.ts`: Maintained frontend error and state tests.
 
-The frontend is a client-only hash-routed SPA. It depends on Tauri only through `src/lib/api.ts`.
+The frontend is a client-only hash-routed SPA with Tauri access only through `src/lib/api.ts`.
 
 ## `src-tauri/`
 
