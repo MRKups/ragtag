@@ -86,13 +86,14 @@ tasks:
           cargo build
 
   test-native:
-    desc: Run the Rust workspace tests on a supported release host
+    desc: Run Rust workspace tests and the vendored inference regression on a release host
     dir: '{{.TAURI_DIR}}'
     cmds:
       - cargo test --workspace
+      - cargo test --locked -p mistralrs-core --lib pipeline::tests::batched_logits_support_quantized_projection -- --exact
 
   test-intel:
-    desc: Run the Intel macOS Rust workspace tests with external ONNX Runtime
+    desc: Run Intel Rust tests and the vendored inference regression with external ONNX Runtime
     deps: [intel-runtime]
     dir: '{{.TAURI_DIR}}'
     cmds:
@@ -101,7 +102,8 @@ tasks:
           export ORT_PREFER_DYNAMIC_LINK=1
           export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          cargo test --workspace
+          cargo test --workspace &&
+            cargo test --locked -p mistralrs-core --lib pipeline::tests::batched_logits_support_quantized_projection -- --exact
 
 
   build:

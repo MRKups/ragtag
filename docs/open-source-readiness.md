@@ -17,6 +17,8 @@ The root `LICENSE` reserves all rights and grants no permission to use, copy, mo
 
 Public source publication and public binary distribution remain blocked until the rights holder confirms ownership of all first-party material, selects a license, replaces the pending license text, and aligns first-party package metadata.
 
+The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package metadata. Treat this local-path dependency as third-party material when assembling provenance and notices; [D007](decisions.md) records Ragtag's source patch.
+
 ## Release gates
 
 | Gate | Current state | Required evidence |
@@ -25,6 +27,7 @@ Public source publication and public binary distribution remain blocked until th
 | PDF parser allocation limit | Open: [B185](tracker.md) | End-to-end bounded extraction tests for compressed content. |
 | External inference transport | Open: [B186](tracker.md) | Enforced remote HTTPS policy, any verified loopback exception, and boundary tests. |
 | Default model artifact integrity | Open: [B187](tracker.md) | Immutable model manifest and verified download behavior. |
+| Local inference upgrade qualification | Open: [B189](tracker.md) | Observed Apple Silicon Metal and packaged-app behavior; the concurrent GGUF repair has been verified on Intel CPU. |
 | Dependency and native-component closure | Open | Final-installer SBOM and third-party notices that cover shipped native code and emitted frontend assets. |
 | Model and platform terms | Open | Current evidence for every distributed or default-downloaded model and every bundled platform component. |
 | Release provenance | Open | Version alignment, signed bundle, checksum, signing and notarization evidence, and release provenance. |

@@ -77,6 +77,22 @@ task test-intel
 
 Set `RAGTAG_INTEL_ORT_ROOT` when the runtime is elsewhere. Do not commit or bundle the runtime or its build output.
 
+## Build profile and upstream deviations
+
+Ragtag does not use a stock crates.io-only inference build. Its generation SDK is pinned to the `mistral.rs` **v0.9.3 Git revision**, while that release also pins Candle to Git. Cargo resolves those sources through the application lockfile; installing a newer standalone `mistralrs` executable does not change Ragtag's embedded engine.
+
+The checked-in `src-tauri/vendor/mistralrs-core` overrides **only the core package** through Cargo's patch mechanism. The unmodified release fails some concurrent GGUF queries because batched output selection produces strided tensors that quantized projection cannot consume. Ragtag's local patch makes those selected rows contiguous, rather than disabling concurrency or serializing requests. The vendor manifest resolves upstream workspace inheritance, keeps sibling crates Git-pinned, and retains the upstream MIT license. Runtime revision reporting identifies the local patch instead of incorrectly reporting Ragtag's own Git revision.
+
+A working development environment needs three independent pieces:
+
+- **Build inputs:** the pinned source graph, checked-in vendor sources and test fixtures, compatible Rust/native toolchains, and any platform libraries. An offline Rust build additionally requires the resolved Cargo sources to be cached.
+- **Inference inputs:** compatible model and tokenizer assets in their expected caches, not merely a successfully linked executable. First-time artifact downloads and engine compilation are separate concerns. The engine can select a GGUF's embedded tokenizer when external tokenizer metadata is incompatible.
+- **Platform qualification:** Intel CPU development requires the external ONNX Runtime described above. Apple Silicon releases use Metal and need their own runtime and packaged-app verification; passing Intel tests does not establish Metal support.
+
+The native test tasks run the application workspace suite and the focused vendored batching regression. The vendor package is deliberately outside the first-party workspace; this is not a claim that the entire upstream test suite or every supported model/backend has been qualified. Current outstanding acceptance gates are recorded in [the tracker](docs/tracker.md).
+
+Maintain the vendor tree as an explicit, minimal deviation from its recorded upstream revision, not as a second independently evolving engine. Replacing the base revision or retiring the override requires comparing upstream changes, preserving equivalent regression coverage, refreshing dependency provenance, and rechecking real model loading, streaming, cancellation, concurrency, and the supported release platform. Keep the override until those checks demonstrate that upstream supplies the repair. [D007](docs/decisions.md#d007--local-in-process-inference-by-default) owns the exact source and patch rationale.
+
 ## Local data and inference
 
 Ragtag stores managed document copies, the SQLite registry, the LanceDB vector store, and app-managed model files in application-local data. The optional external-provider API key stays in the OS keychain.
@@ -92,7 +108,7 @@ task check
 npm test
 ```
 
-`task check` runs Svelte and TypeScript checks. `npm test` runs frontend state and error tests, then Rust workspace tests for the active development architecture.
+`task check` runs Svelte and TypeScript checks. `npm test` runs frontend state and error tests, then Rust workspace tests and the focused vendored-core regression for the active development architecture.
 
 ## Builds
 

@@ -45,6 +45,8 @@ The frontend is a client-only hash-routed SPA with Tauri access only through `sr
 - `src/model_download.rs`: Local model-download reporting.
 - `crates/`: Domain, persistence, and document-processing libraries.
 - `.sqlx/`: Committed SQLx offline query metadata.
+- `vendor/mistralrs-core/`: Licensed upstream v0.9.3 core with Ragtag's explicit tensor-selection repair. Cargo patches this package into the Git-pinned SDK; it is excluded from the first-party workspace. Native test tasks run its focused regression separately. [D007](decisions.md) owns the deviation and retirement policy.
+- `vendor/toml-selectors/`: Two unchanged upstream test fixtures needed to compile the vendored core's test target. They come from the same revision and MIT-licensed source as `vendor/mistralrs-core/`.
 
 ### `src-tauri/crates/domain/`
 

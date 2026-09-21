@@ -65,6 +65,14 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Default processing, retrieval, and generation need no model server; external inference crosses the configured provider boundary. The key remains in the OS keychain, and [B186](tracker.md) tracks the transport restriction.
 
+**Dependency source:** Pin `mistral.rs` v0.9.3 to Git revision `24dbf5c256f232176ee5949485ba264049407fbe` in both target-specific dependency declarations, retaining Metal only on Apple Silicon. At the 2026-09-21 review, crates.io's latest SDK was 0.8.1. Use the source revision rather than a floating branch or tag, and retain the application's resolved `Cargo.lock`, including Candle 0.11.0 at Git revision `35d7ae7ca5c93e17c77359c3617376b8a72e96a4`.
+
+**Maintained deviation:** Override only `mistralrs-core` with the licensed source in `src-tauri/vendor/mistralrs-core`. Patch `ragtag.1` makes narrowed batched logits selections contiguous before quantized projection; it preserves concurrent inference rather than adding a request semaphore. The vendored manifest resolves upstream workspace inheritance and keeps sibling packages on the same Git revision. Its build script reports the upstream revision plus `ragtag.1`, not the enclosing application's Git HEAD. All other upstream source remains unchanged.
+
+**Maintenance boundary:** Keep the imported package and license intact, with the manifest normalization, revision reporting, and selection repair as explicit deviations. Preserve the two original fixtures in the adjacent `vendor/toml-selectors/`; the upstream crate needs them even when compiling a filtered test target. Its focused regression is part of the native test tasks; the rest of the upstream suite is not implicitly part of Ragtag's workspace. Retire the override only after an upstream replacement provides the repair and equivalent regression and real-model qualification pass. [README](../README.md#build-profile-and-upstream-deviations) explains the build inputs and platform requirements without treating compilation as runtime acceptance.
+
+**Qualification:** Intel CPU execution with the default Qwen3 GGUF has exercised normal and Unicode completion, cancellation followed by another query, and two simultaneous queries with independent successful answer streams. The patched engine also loaded cached assets and completed those scenarios with `HF_HUB_OFFLINE=1`. The narrow batching regression fails before the selection repair and passes after it. These observations are not a controlled performance comparison or packaged-app qualification; [B189](tracker.md) retains the Apple Silicon Metal and packaged-app acceptance gate.
+
 ## D008 — Format-specific extraction with page preservation
 
 **Context:** Citations must identify where retrieved evidence came from across paginated and non-paginated sources.

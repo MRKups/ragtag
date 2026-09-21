@@ -38,3 +38,13 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 **Acceptance:** Tests cover valid artifacts, revision and checksum mismatches, interrupted downloads, stale caches, and custom sources. User-selected repositories remain explicitly unverified.
 
 **References:** [Architecture](app-architecture.md), [D011](decisions.md), [release gate](open-source-readiness.md).
+
+## B189 — Qualify the pinned engine on Apple Silicon
+
+**Problem:** Intel builds and CPU inference do not verify Metal execution or the packaged Apple Silicon application.
+
+**Outcome:** The pinned inference stack is exercised on an Apple Silicon host using the existing native test, release-build, and bundle tasks.
+
+**Acceptance:** Launch the packaged app and verify actual Metal model loading, streamed completion with citations, cancellation and subsequent queries, concurrent queries, cached offline restart, and provider switching. Record startup, first-token latency, generation performance, and peak memory against a same-model baseline; review material regressions before accepting them.
+
+**References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).

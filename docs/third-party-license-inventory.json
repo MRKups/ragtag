@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_on": "2026-09-16",
+  "generated_on": "2026-09-21",
   "purpose": "Lockfile dependency license inventory for notice and SBOM inputs. It does not select a project license or approve a release.",
   "license_data": {
     "format": "Raw declared package license text.",
@@ -14,10 +14,10 @@
   "sources": {
     "rust": {
       "lockfile": "src-tauri/Cargo.lock",
-      "lockfile_sha256": "63693509069035c81f4c7cee68a2ae1f30fcc3b21f20f544e3c9559af574cad7",
+      "lockfile_sha256": "1025dc4c4ddfd56d4b1d485284530ff0e378c4c9e23b5bb3cb2e896253712294",
       "resolution_command": "cargo metadata --offline --locked --format-version 1 --manifest-path src-tauri/Cargo.toml",
-      "scope": "All resolved registry, local-workspace, platform-conditional, and build-time packages.",
-      "package_count": 1188
+      "scope": "All resolved registry, Git, local-path (first-party and vendored), platform-conditional, and build-time packages.",
+      "package_count": 1196
     },
     "npm": {
       "lockfile": "frontend/package-lock.json",
@@ -707,27 +707,27 @@
       },
       {
         "name": "candle-core",
-        "version": "0.10.2",
+        "version": "0.11.0",
         "license": "MIT OR Apache-2.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/huggingface/candle.git?rev=35d7ae7ca5c93e17c77359c3617376b8a72e96a4#35d7ae7ca5c93e17c77359c3617376b8a72e96a4"
       },
       {
         "name": "candle-metal-kernels",
-        "version": "0.10.2",
+        "version": "0.11.0",
         "license": "MIT OR Apache-2.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/huggingface/candle.git?rev=35d7ae7ca5c93e17c77359c3617376b8a72e96a4#35d7ae7ca5c93e17c77359c3617376b8a72e96a4"
       },
       {
         "name": "candle-nn",
-        "version": "0.10.2",
+        "version": "0.11.0",
         "license": "MIT OR Apache-2.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/huggingface/candle.git?rev=35d7ae7ca5c93e17c77359c3617376b8a72e96a4#35d7ae7ca5c93e17c77359c3617376b8a72e96a4"
       },
       {
         "name": "candle-ug",
-        "version": "0.10.2",
+        "version": "0.11.0",
         "license": "MIT OR Apache-2.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/huggingface/candle.git?rev=35d7ae7ca5c93e17c77359c3617376b8a72e96a4#35d7ae7ca5c93e17c77359c3617376b8a72e96a4"
       },
       {
         "name": "cargo-platform",
@@ -3047,6 +3047,12 @@
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
       {
+        "name": "landlock",
+        "version": "0.4.7",
+        "license": "MIT OR Apache-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
         "name": "lazy_static",
         "version": "1.5.0",
         "license": "MIT OR Apache-2.0",
@@ -3377,6 +3383,12 @@
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
       {
+        "name": "metrics",
+        "version": "0.24.6",
+        "license": "MIT",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
         "name": "mime",
         "version": "0.3.17",
         "license": "MIT OR Apache-2.0",
@@ -3426,51 +3438,70 @@
       },
       {
         "name": "mistralrs",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-audio",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
+      },
+      {
+        "name": "mistralrs-code-exec",
+        "version": "0.9.3",
+        "license": "MIT",
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-core",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": null,
+        "path": "src-tauri/vendor/mistralrs-core"
       },
       {
         "name": "mistralrs-macros",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-mcp",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
+      },
+      {
+        "name": "mistralrs-metal-compile",
+        "version": "0.9.3",
+        "license": "MIT",
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-paged-attn",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-quant",
-        "version": "0.8.1",
+        "version": "0.9.3",
+        "license": "MIT AND Apache-2.0",
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
+      },
+      {
+        "name": "mistralrs-sandbox",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "mistralrs-vision",
-        "version": "0.8.1",
+        "version": "0.9.3",
         "license": "MIT",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
+        "source": "git+https://github.com/EricLBuehler/mistral.rs?rev=24dbf5c256f232176ee5949485ba264049407fbe#24dbf5c256f232176ee5949485ba264049407fbe"
       },
       {
         "name": "moka",
@@ -3578,6 +3609,12 @@
       {
         "name": "nibble_vec",
         "version": "0.1.0",
+        "license": "MIT",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "nix",
+        "version": "0.31.3",
         "license": "MIT",
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
@@ -4466,6 +4503,12 @@
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
       {
+        "name": "rapidhash",
+        "version": "4.5.1",
+        "license": "MIT OR Apache-2.0",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
         "name": "rav1e",
         "version": "0.8.1",
         "license": "BSD-2-Clause",
@@ -4749,12 +4792,6 @@
       },
       {
         "name": "safetensors",
-        "version": "0.7.0",
-        "license": "Apache-2.0",
-        "source": "registry+https://github.com/rust-lang/crates.io-index"
-      },
-      {
-        "name": "safetensors",
         "version": "0.8.0",
         "license": "Apache-2.0",
         "source": "registry+https://github.com/rust-lang/crates.io-index"
@@ -4823,6 +4860,12 @@
         "name": "scraper",
         "version": "0.25.0",
         "license": "ISC",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "seccompiler",
+        "version": "0.5.0",
+        "license": "Apache-2.0 OR BSD-3-Clause",
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
       {
@@ -7090,6 +7133,12 @@
       {
         "name": "zip",
         "version": "7.2.0",
+        "license": "MIT",
+        "source": "registry+https://github.com/rust-lang/crates.io-index"
+      },
+      {
+        "name": "zip",
+        "version": "8.6.0",
         "license": "MIT",
         "source": "registry+https://github.com/rust-lang/crates.io-index"
       },
