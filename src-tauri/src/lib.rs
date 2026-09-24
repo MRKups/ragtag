@@ -2435,21 +2435,38 @@ fn managed_documents_directory(
             "Managed documents directory must be a real directory, not a symlink".into(),
         ));
     }
-    std::fs::canonicalize(documents).map_err(|error| {
-        AppError::Io(format!(
-            "Could not resolve managed documents directory: {error}"
-        ))
-    })
+    std::fs::canonicalize(documents)
+        .map(strip_unc_prefix)
+        .map_err(|error| {
+            AppError::Io(format!(
+                "Could not resolve managed documents directory: {error}"
+            ))
+        })
+}
+
+fn strip_unc_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let path_str = path.to_string_lossy();
+        if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(stripped);
+        }
+    }
+    path
 }
 
 fn managed_storage_filename(storage_path: &str) -> Result<&str, AppError> {
-    let Some(filename) = storage_path.strip_prefix("documents/") else {
+    let normalized = storage_path
+        .strip_prefix("documents/")
+        .or_else(|| storage_path.strip_prefix("documents\\"));
+    let Some(filename) = normalized else {
         return Err(AppError::Internal(
             "Document has an unsafe storage path".into(),
         ));
     };
     if filename.is_empty()
         || filename.contains('/')
+        || filename.contains('\\')
         || std::path::Path::new(filename)
             .components()
             .any(|component| !matches!(component, std::path::Component::Normal(_)))
@@ -2492,7 +2509,7 @@ fn document_storage_candidate_for_deletion(
             ))
         }
         Ok(_) => std::fs::canonicalize(documents)
-            .map(|documents| Some(documents.join(filename)))
+            .map(|documents| Some(strip_unc_prefix(documents).join(filename)))
             .map_err(|error| {
                 AppError::Io(format!(
                     "Could not resolve managed documents directory: {error}"
@@ -2523,11 +2540,13 @@ fn document_storage_path(
     let documents = candidate
         .parent()
         .ok_or_else(|| AppError::Internal("Managed document path has no parent".into()))?;
-    let source = std::fs::canonicalize(&candidate).map_err(|error| {
-        AppError::Io(format!(
-            "Could not resolve managed document source: {error}"
-        ))
-    })?;
+    let source = std::fs::canonicalize(&candidate)
+        .map(strip_unc_prefix)
+        .map_err(|error| {
+            AppError::Io(format!(
+                "Could not resolve managed document source: {error}"
+            ))
+        })?;
     if !source.starts_with(documents) {
         return Err(AppError::Io(
             "Managed document source resolves outside the documents directory".into(),
@@ -3261,6 +3280,17 @@ async fn reset_all_data(
     Ok(serde_json::json!({"restarting": true}))
 }
 
+#[tauri::command]
+fn get_platform() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -3548,7 +3578,8 @@ pub fn run() {
             get_storage_info,
             compact_vector_store,
             vacuum_database,
-            reset_all_data
+            reset_all_data,
+            get_platform
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -3563,7 +3594,7 @@ mod tests {
         MAX_SSE_TOKEN_BYTES, complete_pending_reset, document_storage_path,
         enqueue_requeued_documents, external_model_ids, external_model_is_available,
         external_sse_token, fetch_external_models, finish_llm_initialization,
-        indexed_chunk_count_mismatch, inference_mode_is_unchanged, invalidate_llm_initialization,
+        get_platform, indexed_chunk_count_mismatch, inference_mode_is_unchanged, invalidate_llm_initialization,
         is_managed_document_source_filename, llm_initialization_is_current,
         managed_storage_filename, normalize_external_base_url, parse_external_models_response,
         probe_external_inference_readiness_cancellable, reconcile_orphan_document_sources,
@@ -3910,6 +3941,37 @@ mod tests {
             "018f8db8-ef20-7d50-b7ad-f4567d0b5f85.archive.tar"
         ));
         assert!(!is_managed_document_source_filename("notes.txt"));
+    }
+
+    #[test]
+    fn validates_managed_storage_filename_cross_platform() {
+        let valid_id = uuid::Uuid::now_v7();
+        let valid_filename = format!("{valid_id}.pdf");
+        assert_eq!(
+            managed_storage_filename(&format!("documents/{valid_filename}")).unwrap(),
+            valid_filename.as_str()
+        );
+        assert_eq!(
+            managed_storage_filename(&format!("documents\\{valid_filename}")).unwrap(),
+            valid_filename.as_str()
+        );
+        assert!(managed_storage_filename("documents/../outside.txt").is_err());
+        assert!(managed_storage_filename("documents\\..\\outside.txt").is_err());
+        assert!(managed_storage_filename("documents/sub/file.pdf").is_err());
+        assert!(managed_storage_filename("documents\\sub\\file.pdf").is_err());
+        assert!(managed_storage_filename("other/file.pdf").is_err());
+    }
+
+    #[test]
+    fn reports_current_platform() {
+        let platform = get_platform();
+        assert!(["macos", "windows", "linux"].contains(&platform));
+        #[cfg(target_os = "macos")]
+        assert_eq!(platform, "macos");
+        #[cfg(target_os = "windows")]
+        assert_eq!(platform, "windows");
+        #[cfg(target_os = "linux")]
+        assert_eq!(platform, "linux");
     }
 
     #[test]

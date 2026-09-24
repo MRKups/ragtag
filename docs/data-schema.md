@@ -97,6 +97,7 @@ The frontend uses the typed IPC API.
 | `compact_vector_store` | none | Completion status. |
 | `vacuum_database` | none | Completion status. |
 | `reset_all_data` | `deleteModels` | Whether restart was requested. |
+| `get_platform` | none | Host operating system identifier: `macos`, `windows`, or `linux`. |
 
 ## Request-scoped events
 

@@ -120,3 +120,11 @@ This document records durable choices and tradeoffs. Linked references own curre
 **Decision:** Target Apple Silicon (`aarch64-apple-darwin`) exclusively with Metal acceleration. Intel macOS development and external ONNX Runtime workarounds have been retired.
 
 **Consequences:** Build tasks, dependencies, and environments target Apple Silicon and Metal directly. Intel-specific task runners and external ONNX Runtime setup are removed.
+
+## D014 — Cross-platform scaffolding
+
+**Context:** The application needs foundational compile-time switches, path normalization, and platform-adaptive UI hooks to prepare for Linux and Windows support without disrupting primary macOS Apple Silicon functionality.
+
+**Decision:** Use target-conditional dependency blocks for `mistralrs` (enabling Metal only on Apple Silicon, with CPU/CUDA fallback on non-macOS), normalize file paths against Windows backslashes and UNC prefixes, expose a typed `get_platform` IPC hook, and adapt frontend header padding dynamically.
+
+**Consequences:** macOS continues to compile with native Metal acceleration while the codebase gains structural portability for future Windows and Linux builds.

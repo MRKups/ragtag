@@ -6,6 +6,7 @@ import type {
   DocumentPreview,
   ExternalProviderConnection,
   IngestionProgress,
+  Platform,
   TokenEvent
 } from './types';
 
@@ -80,5 +81,7 @@ export const api = {
 
   vacuumDatabase: () => invoke<{ status: string }>('vacuum_database'),
 
-  resetAllData: (deleteModels: boolean) => invoke<{ restarting: boolean }>('reset_all_data', { deleteModels })
+  resetAllData: (deleteModels: boolean) => invoke<{ restarting: boolean }>('reset_all_data', { deleteModels }),
+
+  getPlatform: () => invoke<Platform>('get_platform')
 };

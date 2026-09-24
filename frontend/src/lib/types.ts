@@ -1,3 +1,5 @@
+export type Platform = "macos" | "windows" | "linux";
+
 export type DocumentStatus = "queued" | "embedding" | "indexed" | "failed" | "deleting";
 
 export interface IndexProvenance {

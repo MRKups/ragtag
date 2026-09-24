@@ -33,7 +33,16 @@ hf-hub = "1.0.0"
 futures-util = "0.3.34"
 log = "0.4.34"
 env_logger = "0.11.11"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe", features = ["metal"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
+
+[features]
+default = []
+cuda = ["mistralrs/cuda"]
 
 [patch."https://github.com/EricLBuehler/mistral.rs"]
 mistralrs-core = { path = "vendor/mistralrs-core" }

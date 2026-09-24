@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from '@lucide/svelte';
+  import { api } from '$lib/api';
   import { settingsState } from '$lib/stores/settings.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import AppInitializer from '$lib/components/AppInitializer.svelte';
@@ -39,6 +40,12 @@
   }
 
   onMount(() => {
+    void api.getPlatform().then((platform) => {
+      document.documentElement.classList.add(`platform-${platform}`);
+    }).catch(() => {
+      document.documentElement.classList.add('platform-macos');
+    });
+
     const handleError = (event: ErrorEvent) => {
       event.preventDefault();
       reportUnexpectedClientError();
@@ -166,6 +173,10 @@
     align-items: center;
     gap: 0.75rem;
     width: 300px;
+    padding-left: 0.5rem;
+  }
+
+  :global(.platform-macos) .brand {
     padding-left: 4.5rem;
   }
 
