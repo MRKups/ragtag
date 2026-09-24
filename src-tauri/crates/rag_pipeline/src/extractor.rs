@@ -489,19 +489,20 @@ fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
     let Some(little_endian) = encoding else {
         return Ok(Cow::Borrowed(xml));
     };
-    let chunks = xml.chunks_exact(2);
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = xml.as_chunks::<2>();
+    if !remainder.is_empty() {
         return Err(AppError::InvalidInput(
             "DOCX document XML has an incomplete UTF-16 code unit".into(),
         ));
     }
 
     let code_units = chunks
+        .iter()
         .map(|bytes| {
             if little_endian {
-                u16::from_le_bytes([bytes[0], bytes[1]])
+                u16::from_le_bytes(*bytes)
             } else {
-                u16::from_be_bytes([bytes[0], bytes[1]])
+                u16::from_be_bytes(*bytes)
             }
         })
         .collect::<Vec<_>>();
@@ -579,10 +580,10 @@ fn parse_blocks(
     let mut blocks = Vec::new();
 
     while let Some(event) = events.next() {
-        if let MarkdownEvent::End(tag_end) = &event {
-            if matches_block_end(tag_end, end) {
-                break;
-            }
+        if let MarkdownEvent::End(tag_end) = &event
+            && matches_block_end(tag_end, end)
+        {
+            break;
         }
 
         match event {
@@ -741,7 +742,7 @@ fn flatten_block(events: &mut MarkdownEvents<'_>) -> Vec<MarkdownInline> {
     let mut content = Vec::new();
     let mut nesting = 1;
 
-    while let Some(event) = events.next() {
+    for event in events.by_ref() {
         match event {
             MarkdownEvent::Start(Tag::BlockQuote(_)) | MarkdownEvent::Start(Tag::List(_)) => {
                 nesting += 1;
@@ -770,7 +771,7 @@ fn parse_code_block(events: &mut MarkdownEvents<'_>, kind: CodeBlockKind<'_>) ->
     };
     let mut content = String::new();
 
-    while let Some(event) = events.next() {
+    for event in events.by_ref() {
         match event {
             MarkdownEvent::Text(text) | MarkdownEvent::Code(text) => content.push_str(&text),
             MarkdownEvent::End(TagEnd::CodeBlock) => break,
@@ -841,10 +842,10 @@ fn parse_inlines(
     let mut content = Vec::new();
 
     while let Some(event) = events.next() {
-        if let MarkdownEvent::End(tag_end) = &event {
-            if matches_inline_end(tag_end, end) {
-                break;
-            }
+        if let MarkdownEvent::End(tag_end) = &event
+            && matches_inline_end(tag_end, end)
+        {
+            break;
         }
 
         match event {
@@ -936,7 +937,7 @@ fn flatten_inlines(events: &mut MarkdownEvents<'_>, expected: InlineEnd) -> Vec<
     let mut content = Vec::new();
     let mut nesting = 1;
 
-    while let Some(event) = events.next() {
+    for event in events.by_ref() {
         match &event {
             MarkdownEvent::Start(tag) if starts_inline_end(tag, expected) => nesting += 1,
             MarkdownEvent::End(tag_end) if matches_inline_end(tag_end, expected) => {
@@ -1016,7 +1017,7 @@ fn safe_link_href(href: &str) -> Option<String> {
 }
 
 fn skip_until(events: &mut MarkdownEvents<'_>, expected: TagEnd) {
-    while let Some(event) = events.next() {
+    for event in events.by_ref() {
         if matches!(event, MarkdownEvent::End(tag_end) if tag_end == expected) {
             break;
         }

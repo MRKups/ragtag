@@ -17,8 +17,17 @@ class HashRouter {
 
 	#sync() {
 		const hash = window.location.hash.slice(1) || '/';
-		this.current = hash === '/documents' ? 'documents' :
-		               hash === '/settings' ? 'settings' : 'query';
+		const next: Route = hash === '/documents' ? 'documents' :
+		                    hash === '/settings' ? 'settings' : 'query';
+		if (this.current === next) return;
+
+		if (typeof document !== 'undefined' && 'startViewTransition' in document) {
+			document.startViewTransition(() => {
+				this.current = next;
+			});
+		} else {
+			this.current = next;
+		}
 	}
 }
 

@@ -209,12 +209,9 @@ fn sse_event_data(event: &str) -> Result<Option<String>, AppError> {
 
         let (field, value) = line.split_once(':').unwrap_or((line, ""));
         let value = value.strip_prefix(' ').unwrap_or(value);
-        match field {
-            "data" => {
-                saw_data = true;
-                data_lines.push(value);
-            }
-            _ => {}
+        if field == "data" {
+            saw_data = true;
+            data_lines.push(value);
         }
     }
 
@@ -906,12 +903,11 @@ async fn forward_local_responses(
         match response {
             Some(mistralrs::Response::Chunk(chunk)) => {
                 if let Some(choice) = chunk.choices.into_iter().next() {
-                    if let Some(token) = choice.delta.content.filter(|token| !token.is_empty()) {
-                        if !send_inference_event(cancellation, events, InferenceEvent::Token(token))
+                    if let Some(token) = choice.delta.content.filter(|token| !token.is_empty())
+                        && !send_inference_event(cancellation, events, InferenceEvent::Token(token))
                             .await
-                        {
-                            return Ok(());
-                        }
+                    {
+                        return Ok(());
                     }
                     if choice.finish_reason.is_some() {
                         send_inference_event(cancellation, events, InferenceEvent::Done).await;
@@ -2159,7 +2155,7 @@ async fn upload_document(
     }
 
     let doc_id = uuid::Uuid::now_v7().to_string();
-    let storage_filename = format!("{}.{}", &doc_id, storage_extension(&filename, file_type));
+    let storage_filename = format!("{}.{}", doc_id, storage_extension(&filename, file_type));
     let storage_path = docs_dir.join(&storage_filename);
     let relative_storage_path = format!("documents/{}", storage_filename);
 
@@ -2256,7 +2252,7 @@ async fn execute_query(
     let use_query_enhancement = settings_repo
         .get("use_query_enhancement")
         .await?
-        .map_or(true, |value| value == "true");
+        .is_none_or(|value| value == "true");
     let retrieval_query = if use_query_enhancement {
         rag_pipeline::enhance_query(&query)
     } else {
@@ -3044,27 +3040,19 @@ async fn get_api_key_status(
         });
     }
 
-    if let Ok(Some(db_key)) = repo.get("external_api_key").await {
-        if !db_key.trim().is_empty() {
-            return Ok(ApiKeyStatus {
-                has_key: true,
-                storage: ApiKeyStorage::Database,
-            });
-        }
+    if let Ok(Some(db_key)) = repo.get("external_api_key").await
+        && !db_key.trim().is_empty()
+    {
+        return Ok(ApiKeyStatus {
+            has_key: true,
+            storage: ApiKeyStorage::Database,
+        });
     }
 
     Ok(ApiKeyStatus {
         has_key: false,
         storage: ApiKeyStorage::None,
     })
-}
-
-#[tauri::command]
-async fn has_api_key(
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, AppError> {
-    let status = get_api_key_status(state).await?;
-    Ok(status.has_key)
 }
 
 #[tauri::command]
@@ -3495,7 +3483,6 @@ pub fn run() {
             let llm_initialization = Arc::new(tokio::sync::Mutex::new(
                 state::LlmInitializationState::default(),
             ));
-            let registry_read_retries = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
             let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
@@ -3506,7 +3493,6 @@ pub fn run() {
                 vector_db: vector_db.clone(),
                 local_llm: local_llm.clone(),
                 llm_initialization,
-                registry_read_retries: registry_read_retries.clone(),
                 document_operations: document_operations.clone(),
                 active_queries: active_queries.clone(),
                 http_client: reqwest::Client::builder()
@@ -3523,9 +3509,9 @@ pub fn run() {
             let embedder_worker = embedder.clone();
             let document_operations_worker = document_operations.clone();
             let job_queue_worker = tx;
-            let registry_read_retries_worker = registry_read_retries;
             tauri::async_runtime::spawn(async move {
                 let repo = DocumentRepository::new(pool.clone());
+                let mut registry_read_retries: HashMap<String, u32> = HashMap::new();
                 while let Some(job) = rx.recv().await {
                     let IngestionJob {
                         document_id: doc_id,
@@ -3554,7 +3540,7 @@ pub fn run() {
 
                     let result = match repo.get_by_id(&doc_id).await {
                         Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
-                            registry_read_retries_worker.lock().await.remove(&doc_id);
+                            registry_read_retries.remove(&doc_id);
                             let settings_repo = AppSettingsRepository::new(pool.clone());
                             match desired_indexing_provenance(&settings_repo).await {
                                 Ok(provenance) => {
@@ -3571,22 +3557,16 @@ pub fn run() {
                                     });
                                     match integrity {
                                         Ok(Ok(source_path)) => {
-                                            let app_for_stage = app_handle.clone();
-                                            let doc_id_for_stage = doc_id.clone();
                                             rag_pipeline::process_document(
-                                                &source_path,
-                                                &doc.file_type,
-                                                &doc_id,
-                                                provenance,
+                                                rag_pipeline::DocumentIngestion {
+                                                    source_path: &source_path,
+                                                    file_type: &doc.file_type,
+                                                    document_id: &doc_id,
+                                                    provenance,
+                                                },
                                                 embedder,
                                                 &repo,
                                                 &vector_db,
-                                                move |stage| {
-                                                    let _ = app_for_stage.emit("ingestion_progress", serde_json::json!({
-                                                        "document_id": &doc_id_for_stage,
-                                                        "stage": stage,
-                                                    }));
-                                                },
                                                 Arc::clone(&progress_callback),
                                             )
                                             .await
@@ -3598,7 +3578,7 @@ pub fn run() {
                             }
                         }
                         Ok(Some(document)) => {
-                            registry_read_retries_worker.lock().await.remove(&doc_id);
+                            registry_read_retries.remove(&doc_id);
                             debug!(
                                 "document {doc_id} is {:?}; ignoring stale queue entry",
                                 document.status,
@@ -3606,14 +3586,13 @@ pub fn run() {
                             continue;
                         }
                         Ok(None) => {
-                            registry_read_retries_worker.lock().await.remove(&doc_id);
+                            registry_read_retries.remove(&doc_id);
                             warn!("document {doc_id} not found in DB — may have been deleted");
                             continue;
                         }
                         Err(error) => {
                             let attempt = {
-                                let mut retries = registry_read_retries_worker.lock().await;
-                                let attempt = retries.entry(doc_id.clone()).or_insert(0);
+                                let attempt = registry_read_retries.entry(doc_id.clone()).or_insert(0);
                                 *attempt = attempt.saturating_add(1);
                                 *attempt
                             };
@@ -3680,7 +3659,6 @@ pub fn run() {
             set_api_key,
             test_external_provider,
             set_external_provider_config,
-            has_api_key,
             get_api_key_status,
             delete_api_key,
             get_storage_info,

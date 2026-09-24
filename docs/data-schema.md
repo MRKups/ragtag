@@ -91,7 +91,6 @@ The frontend uses the typed IPC API.
 | `test_external_provider` | `baseUrl`, optional `apiKey` | Available provider model identifiers. |
 | `set_external_provider_config` | `baseUrl`, `model` | Persists external endpoint and model selection. |
 | `set_api_key` | `key` | Stores the optional external-provider key in the keychain with unencrypted SQLite fallback. |
-| `has_api_key` | none | Whether an API key exists. |
 | `get_api_key_status` | none | Stored key existence and storage type (`keychain`, `database`, `none`). |
 | `delete_api_key` | none | Whether a stored key was removed from keychain and database. |
 | `get_storage_info` | none | Database, vector store, document, and model byte counts. |

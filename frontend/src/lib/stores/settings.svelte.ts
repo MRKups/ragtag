@@ -87,6 +87,11 @@ export class SettingsState {
     this.applySettingValue(key, persistedValue);
   }
 
+  setExternalProvider(baseUrl: string, model: string) {
+    this.persistSettingValue('external_base_url', baseUrl);
+    this.persistSettingValue('external_model', model);
+  }
+
 
   async load() {
     this.isLoading = true;

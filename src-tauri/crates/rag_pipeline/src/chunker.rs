@@ -16,6 +16,7 @@ const MAX_OVERLAP_FRACTION_DENOMINATOR: usize = 2;
 /// Splits page text at the embedder tokenizer's token boundaries. Every emitted
 /// `content` is counted after its `passage:` prefix is added, so it fits within
 /// the active embedder's truncation limit.
+#[cfg(test)]
 pub fn chunk_pages(
     pages: Vec<(i32, String)>,
     max_tokens: usize,

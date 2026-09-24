@@ -32,7 +32,7 @@ export class AppState {
   errorMessage = $state('');
   embedderAvailable = $state(false);
   llmReady = $state(false);
-  localModelRetrying = $state(false);
+  #localModelRetrying = false;
 
 
   async init() {
@@ -68,7 +68,7 @@ export class AppState {
         console.log('[AppState] download progress:', p);
 
         if (p.type === 'error') {
-          this.localModelRetrying = false;
+          this.#localModelRetrying = false;
           errorDialog.report({
             dedupeKey: 'local-model-initialization',
             title: 'Local model unavailable',
@@ -120,7 +120,7 @@ export class AppState {
 
       await api.listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
-        this.localModelRetrying = false;
+        this.#localModelRetrying = false;
         this.llmReady = true;
         errorDialog.clear('local-model-initialization');
         errorDialog.clear('external-inference-readiness');
@@ -128,7 +128,7 @@ export class AppState {
       });
       await api.listen('llm_unready', () => {
         console.log('[AppState] inference initialization requested');
-        this.localModelRetrying = false;
+        this.#localModelRetrying = false;
         this.llmReady = false;
         errorDialog.clear('local-model-initialization');
         errorDialog.clear('external-inference-readiness');
@@ -170,15 +170,15 @@ export class AppState {
   }
 
   async retryLocalModel() {
-    if (this.localModelRetrying || this.llmReady) return;
+    if (this.#localModelRetrying || this.llmReady) return;
 
-    this.localModelRetrying = true;
+    this.#localModelRetrying = true;
     this.downloadMessage = 'Retrying local model initialization...';
     this.downloadIsIndeterminate = true;
     try {
       await api.retryLocalModelInitialization();
     } catch {
-      this.localModelRetrying = false;
+      this.#localModelRetrying = false;
       errorDialog.report({
         dedupeKey: 'local-model-initialization',
         title: 'Local model retry failed',

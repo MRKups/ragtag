@@ -35,7 +35,6 @@ pub struct AppState {
     pub vector_db: Arc<VectorDb>,
     pub local_llm: Arc<RwLock<Option<Arc<mistralrs::Model>>>>,
     pub llm_initialization: Arc<Mutex<LlmInitializationState>>,
-    pub registry_read_retries: Arc<Mutex<HashMap<String, u32>>>,
     pub http_client: reqwest::Client,
     pub document_operations: Arc<RwLock<()>>,
     pub active_queries: Arc<StdMutex<HashMap<String, watch::Sender<bool>>>>,

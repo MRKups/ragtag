@@ -31,20 +31,28 @@ pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
     .map_err(|e| AppError::Internal(format!("Failed to init embedder: {e}")))
 }
 
+pub struct DocumentIngestion<'a> {
+    pub source_path: &'a Path,
+    pub file_type: &'a str,
+    pub document_id: &'a str,
+    pub provenance: IndexProvenance,
+}
+
 pub async fn process_document(
-    source_path: &Path,
-    file_type: &str,
-    document_id: &str,
-    provenance: IndexProvenance,
+    doc: DocumentIngestion<'_>,
     embedder: Arc<std::sync::Mutex<TextEmbedding>>,
     repo: &DocumentRepository,
     vector_db: &VectorDb,
-    on_stage: impl Fn(&str) + Send + Sync + 'static,
     on_progress: Arc<dyn Fn(IngestionProgress) + Send + Sync>,
 ) -> Result<(), AppError> {
+    let DocumentIngestion {
+        source_path,
+        file_type,
+        document_id,
+        provenance,
+    } = doc;
     repo.mark_embedding(document_id).await?;
 
-    on_stage("extracting");
     let source_path = source_path.to_path_buf();
     let file_type = file_type.to_string();
     let extraction_progress = Arc::clone(&on_progress);
@@ -64,9 +72,6 @@ pub async fn process_document(
     })
     .await
     .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
-    ensure_extracted_text_within_limit(&extracted_pages.pages)?;
-
-    on_stage("chunking");
     let (tokenizer, embedding_token_limit) = {
         let model = embedder
             .lock()
@@ -118,7 +123,6 @@ pub async fn process_document(
     .map_err(|e| AppError::Internal(format!("Chunking task panicked: {e}")))??;
     ensure_chunk_budget(&chunks)?;
 
-    on_stage("embedding");
     let (chunks, embeddings) = {
         let embedder = Arc::clone(&embedder);
         let embedding_progress = Arc::clone(&on_progress);
@@ -163,7 +167,6 @@ pub async fn process_document(
 
     let batch = build_record_batch(document_id, &chunks, &embeddings)?;
 
-    on_stage("storing");
     vector_db.delete_chunks(document_id).await?;
     vector_db.upsert_chunks(std::iter::once(batch)).await?;
 
@@ -183,18 +186,6 @@ pub async fn process_document(
 }
 fn embedding_batch_count(total_chunks: usize) -> usize {
     total_chunks.div_ceil(EMBEDDING_BATCH_SIZE)
-}
-
-fn ensure_extracted_text_within_limit(pages: &[(i32, String)]) -> Result<(), AppError> {
-    let total_bytes = pages.iter().try_fold(0usize, |total, (_, text)| {
-        total
-            .checked_add(text.len())
-            .ok_or_else(extracted_text_limit_error)
-    })?;
-    if total_bytes > extractor::EXTRACTED_TEXT_MAX_BYTES {
-        return Err(extracted_text_limit_error());
-    }
-    Ok(())
 }
 
 fn ensure_chunk_budget(chunks: &[Chunk]) -> Result<(), AppError> {
@@ -226,13 +217,6 @@ fn bounded_embedding_input_bytes(
         return Err(embedding_input_limit_error());
     }
     Ok(total_input_bytes)
-}
-
-fn extracted_text_limit_error() -> AppError {
-    AppError::InvalidInput(format!(
-        "Extracted document text exceeds the {}-byte indexing limit",
-        extractor::EXTRACTED_TEXT_MAX_BYTES
-    ))
 }
 
 fn embedding_input_limit_error() -> AppError {
@@ -272,10 +256,12 @@ fn validate_embedding_shapes(chunks: &[Chunk], embeddings: &[Vec<f32>]) -> Resul
     checked_embedding_value_count(chunks.len())
 }
 
+type ReservedRecordBatchColumns = (Vec<f32>, Vec<String>, Vec<i32>, Vec<i32>, Vec<String>);
+
 fn reserve_record_batch_columns(
     num_chunks: usize,
     embedding_values: usize,
-) -> Result<(Vec<f32>, Vec<String>, Vec<i32>, Vec<i32>, Vec<String>), AppError> {
+) -> Result<ReservedRecordBatchColumns, AppError> {
     let mut all_floats = Vec::new();
     let mut doc_ids = Vec::new();
     let mut pages = Vec::new();
@@ -385,10 +371,9 @@ pub fn enhance_query(query: &str) -> String {
         if let Some((_, expansion)) = EXPANSIONS
             .iter()
             .find(|(abbreviation, _)| token.eq_ignore_ascii_case(abbreviation))
+            .filter(|(_, exp)| !expansions.contains(exp))
         {
-            if !expansions.contains(expansion) {
-                expansions.push(*expansion);
-            }
+            expansions.push(*expansion);
         }
     }
 
@@ -397,6 +382,21 @@ pub fn enhance_query(query: &str) -> String {
     } else {
         format!("{query} ({})", expansions.join(", "))
     }
+}
+
+pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
+    let mut context = String::new();
+
+    for chunk in chunks {
+        context.push_str(&format!(
+            "[Document: {}, Page: {}]\n{}\n\n",
+            chunk.filename, chunk.page, chunk.chunk_content
+        ));
+    }
+
+    context.push_str(&format!("User question: {}", query));
+
+    context
 }
 
 #[cfg(test)]
@@ -470,19 +470,4 @@ mod tests {
         );
         assert!(checked_embedding_value_count(usize::MAX).is_err());
     }
-}
-
-pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
-    let mut context = String::new();
-
-    for chunk in chunks {
-        context.push_str(&format!(
-            "[Document: {}, Page: {}]\n{}\n\n",
-            chunk.filename, chunk.page, chunk.chunk_content
-        ));
-    }
-
-    context.push_str(&format!("User question: {}", query));
-
-    context
 }

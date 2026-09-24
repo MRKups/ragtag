@@ -67,8 +67,6 @@ export const api = {
   setExternalProviderConfig: (baseUrl: string, model: string) =>
     invoke<void>('set_external_provider_config', { baseUrl, model }),
 
-  hasApiKey: () => invoke<boolean>('has_api_key'),
-
   getApiKeyStatus: () => invoke<ApiKeyStatus>('get_api_key_status'),
 
   deleteApiKey: () => invoke<boolean>('delete_api_key'),

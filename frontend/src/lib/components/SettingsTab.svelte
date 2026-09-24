@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
   import { Cpu, Database, HardDrive, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
@@ -65,7 +65,9 @@
   $effect(() => {
     const requested = settingsState.requestedInferenceConfiguration;
     if (requested) {
-      openInferenceConfiguration(settingsState.consumeInferenceConfiguration()!);
+      untrack(() => {
+        openInferenceConfiguration(settingsState.consumeInferenceConfiguration()!);
+      });
     }
   });
 
@@ -256,14 +258,13 @@
   async function restoreLocalDefaults() {
     isRestoringLocalDefaults = true;
     try {
-      await Promise.all(
-        Object.keys(DEFAULT_LOCAL_INFERENCE).map(
-          (key) => pendingSettingUpdates.get(key) ?? Promise.resolve(true)
-        )
-      );
-      await Promise.all(
-        Object.entries(DEFAULT_LOCAL_INFERENCE).map(([key, value]) => updateSetting(key, value))
-      );
+      for (const key of Object.keys(DEFAULT_LOCAL_INFERENCE)) {
+        const pending = pendingSettingUpdates.get(key);
+        if (pending) await pending;
+      }
+      for (const [key, value] of Object.entries(DEFAULT_LOCAL_INFERENCE)) {
+        await updateSetting(key, value);
+      }
     } finally {
       isRestoringLocalDefaults = false;
     }
@@ -397,8 +398,7 @@
     isSavingExternalProvider = true;
     try {
       await api.setExternalProviderConfig(baseUrl, model);
-      settingsState.external_base_url = baseUrl;
-      settingsState.external_model = model;
+      settingsState.setExternalProvider(baseUrl, model);
       externalConnectionStatus = 'Provider saved. Ragtag is validating it for queries.';
     } catch {
       externalConnectionStatus = 'Provider was not saved. Review the error dialog and try again.';
