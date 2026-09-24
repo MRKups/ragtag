@@ -41,7 +41,7 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 
 ## B189 — Qualify the pinned engine on Apple Silicon
 
-**Problem:** Intel builds and CPU inference do not verify Metal execution or the packaged Apple Silicon application.
+**Problem:** Packaged Apple Silicon application verification requires end-to-end qualification of Metal execution.
 
 **Outcome:** The pinned inference stack is exercised on an Apple Silicon host using the existing native test, release-build, and bundle tasks.
 

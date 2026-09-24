@@ -14,7 +14,7 @@
     "check": "npm run check --prefix frontend",
     "test:errors": "npm run test:errors --prefix frontend",
     "test:state": "npm run test:state --prefix frontend",
-    "test": "npm run test:errors --prefix frontend && npm run test:state --prefix frontend && if [ \"$(uname -m)\" = \"x86_64\" ]; then task test-intel; else task test-native; fi"
+    "test": "npm run test:errors --prefix frontend && npm run test:state --prefix frontend && task test-native"
   },
   "private": true,
   "repository": {

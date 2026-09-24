@@ -27,7 +27,7 @@ The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package met
 | PDF parser allocation limit | Open: [B185](tracker.md) | End-to-end bounded extraction tests for compressed content. |
 | External inference transport | Open: [B186](tracker.md) | Enforced remote HTTPS policy, any verified loopback exception, and boundary tests. |
 | Default model artifact integrity | Open: [B187](tracker.md) | Immutable model manifest and verified download behavior. |
-| Local inference upgrade qualification | Open: [B189](tracker.md) | Observed Apple Silicon Metal and packaged-app behavior; the concurrent GGUF repair has been verified on Intel CPU. |
+| Local inference upgrade qualification | Open: [B189](tracker.md) | Observed Apple Silicon Metal and packaged-app behavior. |
 | Dependency and native-component closure | Open | Final-installer SBOM and third-party notices that cover shipped native code and emitted frontend assets. |
 | Model and platform terms | Open | Current evidence for every distributed or default-downloaded model and every bundled platform component. |
 | Release provenance | Open | Version alignment, signed bundle, checksum, signing and notarization evidence, and release provenance. |

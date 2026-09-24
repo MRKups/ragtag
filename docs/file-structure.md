@@ -12,7 +12,7 @@ Use this document to locate a subsystem. It does not define runtime behavior.
 ## Root
 
 - `README.md`: User-facing setup, operation, development, checks, and build guide.
-- `Taskfile.yml`: Development, Intel-development, checking, build, bundle, and cleanup tasks.
+- `Taskfile.yml`: Development, checking, build, bundle, and cleanup tasks.
 - `docs/`: Current guides, specifications, and records. Start at [`docs/README.md`](README.md).
 - `frontend/`: Svelte 5 and Vite interface.
 - `src-tauri/`: Tauri application and Rust workspace.

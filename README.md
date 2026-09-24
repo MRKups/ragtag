@@ -52,31 +52,6 @@ npm run dev --prefix frontend
 
 This starts Vite without Tauri IPC, keychain access, native filesystem behavior, or the asset protocol.
 
-## Intel macOS development
-
-Intel macOS is a development and test path only. It requires an external x86_64 ONNX Runtime 1.28.0 build outside the checkout.
-
-Build the runtime once:
-
-```sh
-ORT_VERSION=1.28.0
-ORT_ROOT="$HOME/.cache/mrk-ragtag/onnxruntime-$ORT_VERSION"
-git clone --depth 1 --branch "v$ORT_VERSION" https://github.com/microsoft/onnxruntime.git "$ORT_ROOT"
-cd "$ORT_ROOT"
-./build.sh --config Release --build_shared_lib --parallel --skip_tests \
-  --cmake_extra_defines CMAKE_DISABLE_FIND_PACKAGE_Protobuf=TRUE
-```
-
-The build must produce `build/MacOS/Release/libonnxruntime.1.28.0.dylib`. Then run:
-
-```sh
-task dev-intel
-task build-intel
-task test-intel
-```
-
-Set `RAGTAG_INTEL_ORT_ROOT` when the runtime is elsewhere. Do not commit or bundle the runtime or its build output.
-
 ## Build profile and upstream deviations
 
 Ragtag does not use a stock crates.io-only inference build. Its generation SDK is pinned to the `mistral.rs` **v0.9.3 Git revision**, while that release also pins Candle to Git. Cargo resolves those sources through the application lockfile; installing a newer standalone `mistralrs` executable does not change Ragtag's embedded engine.
@@ -87,7 +62,7 @@ A working development environment needs three independent pieces:
 
 - **Build inputs:** the pinned source graph, checked-in vendor sources and test fixtures, compatible Rust/native toolchains, and any platform libraries. An offline Rust build additionally requires the resolved Cargo sources to be cached.
 - **Inference inputs:** compatible model and tokenizer assets in their expected caches, not merely a successfully linked executable. First-time artifact downloads and engine compilation are separate concerns. The engine can select a GGUF's embedded tokenizer when external tokenizer metadata is incompatible.
-- **Platform qualification:** Intel CPU development requires the external ONNX Runtime described above. Apple Silicon releases use Metal and need their own runtime and packaged-app verification; passing Intel tests does not establish Metal support.
+- **Platform qualification:** Ragtag targets Apple Silicon macOS with Metal acceleration and requires its own runtime and packaged-app verification.
 
 The native test tasks run the application workspace suite and the focused vendored batching regression. The vendor package is deliberately outside the first-party workspace; this is not a claim that the entire upstream test suite or every supported model/backend has been qualified. Current outstanding acceptance gates are recorded in [the tracker](docs/tracker.md).
 
@@ -108,7 +83,7 @@ task check
 npm test
 ```
 
-`task check` runs Svelte and TypeScript checks. `npm test` runs frontend state and error tests, then Rust workspace tests and the focused vendored-core regression for the active development architecture.
+`task check` runs Svelte and TypeScript checks. `npm test` runs frontend state and error tests, then Rust workspace tests and the focused vendored-core regression.
 
 ## Builds
 

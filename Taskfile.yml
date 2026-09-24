@@ -4,13 +4,10 @@ vars:
   FRONTEND_DIR: frontend
   TAURI_DIR: src-tauri
   RELEASE_BIN: target/release/mrk-ragtag-app
-  INTEL_ORT_VERSION: '1.28.0'
-  INTEL_ORT_ROOT:
-    sh: 'printf "%s" "${RAGTAG_INTEL_ORT_ROOT:-$HOME/.cache/mrk-ragtag/onnxruntime-{{.INTEL_ORT_VERSION}}}"'
-  INTEL_ORT_LIB: '{{.INTEL_ORT_ROOT}}/build/MacOS/Release'
 
 env:
   RUST_BACKTRACE: 1
+  TOOLCHAINS: Metal
 
 tasks:
   default:
@@ -42,68 +39,12 @@ tasks:
     cmds:
       - cargo tauri dev
 
-  intel-runtime:
-    internal: true
-    desc: Verify the external Intel ONNX Runtime development dependency
-    preconditions:
-      - sh: test "$(uname -m)" = x86_64
-        msg: Intel development tasks require an x86_64 macOS host.
-      - sh: test -f '{{.INTEL_ORT_LIB}}/libonnxruntime.dylib'
-        msg: External ONNX Runtime is missing. Follow README.md's Intel macOS development setup or set RAGTAG_INTEL_ORT_ROOT.
-      - sh: test "$(cat '{{.INTEL_ORT_ROOT}}/VERSION_NUMBER')" = '{{.INTEL_ORT_VERSION}}'
-        msg: External ONNX Runtime must be version {{.INTEL_ORT_VERSION}}.
-      - sh: test -f '{{.INTEL_ORT_LIB}}/libonnxruntime.{{.INTEL_ORT_VERSION}}.dylib'
-        msg: External ONNX Runtime {{.INTEL_ORT_VERSION}} library is missing.
-    cmds:
-      - |
-          case "$(file '{{.INTEL_ORT_LIB}}/libonnxruntime.dylib')" in
-            *x86_64*) ;;
-            *) echo "Expected an x86_64 ONNX Runtime dylib at {{.INTEL_ORT_LIB}}." >&2; exit 1 ;;
-          esac
-
-  dev-intel:
-    desc: Run the Intel macOS development build with external ONNX Runtime
-    deps: [setup-frontend, intel-runtime]
-    dir: '{{.TAURI_DIR}}'
-    cmds:
-      - |
-          export ORT_LIB_LOCATION='{{.INTEL_ORT_LIB}}'
-          export ORT_PREFER_DYNAMIC_LINK=1
-          export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-          export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          cargo tauri dev
-
-  build-intel:
-    desc: Compile the Intel macOS debug application with external ONNX Runtime
-    deps: [intel-runtime]
-    dir: '{{.TAURI_DIR}}'
-    cmds:
-      - |
-          export ORT_LIB_LOCATION='{{.INTEL_ORT_LIB}}'
-          export ORT_PREFER_DYNAMIC_LINK=1
-          export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-          export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          cargo build
-
   test-native:
-    desc: Run Rust workspace tests and the vendored inference regression on a release host
+    desc: Run Rust workspace tests and the vendored inference regression
     dir: '{{.TAURI_DIR}}'
     cmds:
       - cargo test --workspace
       - cargo test --locked -p mistralrs-core --lib pipeline::tests::batched_logits_support_quantized_projection -- --exact
-
-  test-intel:
-    desc: Run Intel Rust tests and the vendored inference regression with external ONNX Runtime
-    deps: [intel-runtime]
-    dir: '{{.TAURI_DIR}}'
-    cmds:
-      - |
-          export ORT_LIB_LOCATION='{{.INTEL_ORT_LIB}}'
-          export ORT_PREFER_DYNAMIC_LINK=1
-          export DYLD_LIBRARY_PATH="$ORT_LIB_LOCATION${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-          export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$ORT_LIB_LOCATION"
-          cargo test --workspace &&
-            cargo test --locked -p mistralrs-core --lib pipeline::tests::batched_logits_support_quantized_projection -- --exact
 
 
   build:
