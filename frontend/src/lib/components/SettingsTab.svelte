@@ -8,10 +8,11 @@
   import AppSelect, { type SelectOption } from './AppSelect.svelte';
 
   type InferenceConfig = 'local' | 'external';
-
+  import type { ApiKeyStorage } from '$lib/types';
 
   let apiKeyValue = $state('');
   let apiKeyExists = $state(false);
+  let apiKeyStorage = $state<ApiKeyStorage>('none');
   let apiKeySaved = $state(false);
 
   const protocolOptions: SelectOption[] = [
@@ -50,15 +51,13 @@
 
   onMount(async () => {
     try {
-      apiKeyExists = await api.hasApiKey();
+      const status = await api.getApiKeyStatus();
+      apiKeyExists = status.has_key;
+      apiKeyStorage = status.storage;
     } catch {
-      errorDialog.report({
-        dedupeKey: 'api-key-status',
-        title: 'Keychain unavailable',
-        message: 'Ragtag could not check the remote provider API key.',
-        guidance: 'Open remote settings and try again after the system keychain is available.'
-      });
-      console.error('Failed to check API key');
+      apiKeyExists = false;
+      apiKeyStorage = 'none';
+      console.warn('Failed to check API key status');
     }
     await loadStorageInfo();
   });
@@ -293,8 +292,9 @@
   async function saveApiKey() {
     if (!apiKeyValue.trim()) return;
     try {
-      await api.setApiKey(apiKeyValue.trim());
-      apiKeyExists = true;
+      const res = await api.setApiKey(apiKeyValue.trim());
+      apiKeyExists = res.has_key;
+      apiKeyStorage = res.storage;
       apiKeySaved = true;
       apiKeyValue = '';
       resetExternalModelDiscovery();
@@ -303,8 +303,8 @@
       errorDialog.report({
         dedupeKey: 'api-key-save',
         title: 'API key not saved',
-        message: 'Ragtag could not save the API key in your system keychain.',
-        guidance: 'Check that your system keychain is available, then try again.'
+        message: 'Ragtag could not save the API key.',
+        guidance: 'Check that the key is valid and try again.'
       });
       console.error('Failed to save API key');
     }
@@ -314,14 +314,15 @@
     try {
       await api.deleteApiKey();
       apiKeyExists = false;
+      apiKeyStorage = 'none';
       apiKeyValue = '';
       resetExternalModelDiscovery();
     } catch {
       errorDialog.report({
         dedupeKey: 'api-key-delete',
         title: 'API key not removed',
-        message: 'Ragtag could not remove the API key from your system keychain.',
-        guidance: 'Try again after the system keychain is available.'
+        message: 'Ragtag could not remove the API key.',
+        guidance: 'Try again.'
       });
       console.error('Failed to delete API key');
     }
@@ -349,7 +350,7 @@
         externalModelDraft = '';
       }
       externalConnectionStatus = `Connected. ${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available.`;
-    } catch {
+    } catch (err: unknown) {
       if (
         requestRevision !== externalProviderDraftRevision
         || testId !== externalProviderTestId
@@ -357,12 +358,23 @@
         return;
       }
 
+      const errorMessage = typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message: unknown }).message === 'string'
+        ? (err as { message: string }).message
+        : String(err);
+
       externalConnectionStatus = 'Connection test failed. Review the error dialog and try again.';
+
+      const isAuthError = errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.toLowerCase().includes('authentication');
+
       errorDialog.report({
         dedupeKey: 'external-provider-test',
-        title: 'Remote provider unavailable',
-        message: 'Ragtag could not connect to that remote provider.',
-        guidance: 'Verify the base URL, start the provider, and save an API key if it requires authentication.'
+        title: isAuthError ? 'Authentication required' : 'Remote provider unavailable',
+        message: isAuthError
+          ? 'The remote provider requires an API key (HTTP 401/403).'
+          : errorMessage || 'Ragtag could not connect to that remote provider.',
+        guidance: isAuthError
+          ? 'Enter your API key in the field below and test again.'
+          : 'Verify the base URL, ensure the provider is running, or check network settings.'
       });
     } finally {
       if (testId === externalProviderTestId) isTestingExternalProvider = false;
@@ -705,15 +717,22 @@
                     </span>
                     {#if apiKeyExists}
                       <div class="keyring-row">
-                        <span class="keyring-status">Stored in OS keychain</span>
+                        {#if apiKeyStorage === 'database'}
+                          <span class="keyring-status warning">Stored in local database</span>
+                        {:else}
+                          <span class="keyring-status">Stored in OS keychain</span>
+                        {/if}
                         <button type="button" class="btn btn-small btn-danger" onclick={clearApiKey}>Clear key</button>
                       </div>
+                      {#if apiKeyStorage === 'database'}
+                        <p class="unencrypted-warning-text" role="status">⚠️ OS keychain is unavailable. This key is stored unencrypted in the local database.</p>
+                      {/if}
                     {:else}
                       <div class="keyring-row">
                         <input
                           id="external_api_key"
                           type="password"
-                          placeholder="sk-..."
+                          placeholder="sk-... (optional for Ollama/LM Studio)"
                           autocomplete="off"
                           aria-label="External API key"
                           bind:value={apiKeyValue}
@@ -724,9 +743,13 @@
                       </div>
                     {/if}
                     {#if apiKeySaved}
-                      <p class="success-text" role="status">API key saved securely.</p>
+                      <p class="success-text" role="status">
+                        {apiKeyStorage === 'database'
+                          ? 'API key saved to local database (unencrypted at rest).'
+                          : 'API key saved securely in OS keychain.'}
+                      </p>
                     {/if}
-                    <p class="help-text">Stored in the OS keychain, never in the database or on disk. Save it before testing when required by the provider.</p>
+                    <p class="help-text">Optional. Leave blank if your local server does not require authentication. If the OS keychain is unavailable, the key falls back to local storage unencrypted.</p>
                   </div>
                 </div>
 
@@ -1373,6 +1396,17 @@
     color: var(--success);
     font-size: 0.8125rem;
     font-weight: 500;
+  }
+
+  .keyring-status.warning {
+    color: #eab308;
+  }
+
+  .unencrypted-warning-text {
+    font-size: 0.75rem;
+    color: #eab308;
+    margin: 0.25rem 0 0;
+    line-height: 1.4;
   }
 
   .btn {

@@ -83,6 +83,13 @@ export interface ExternalProviderConnection {
   models: string[];
 }
 
+export type ApiKeyStorage = 'keychain' | 'database' | 'none';
+
+export interface ApiKeyStatus {
+  has_key: boolean;
+  storage: ApiKeyStorage;
+}
+
 
 export type IngestionProgress =
   | {

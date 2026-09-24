@@ -526,6 +526,16 @@ impl AppSettingsRepository {
         Ok(())
     }
 
+    pub async fn delete(&self, key: &str) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await
+            .map_err(sql_err)?;
+
+        Ok(())
+    }
+
     pub async fn set_external_inference_config(
         &self,
         base_url: &str,
@@ -874,6 +884,21 @@ mod tests {
             settings.get("external_model").await.unwrap().as_deref(),
             Some("model-a")
         );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_delete_removes_entry() {
+        let (pool, path) = temporary_pool().await;
+        let settings = AppSettingsRepository::new(pool.clone());
+
+        settings.set("test_key", "test_value").await.unwrap();
+        assert_eq!(settings.get("test_key").await.unwrap().as_deref(), Some("test_value"));
+
+        settings.delete("test_key").await.unwrap();
+        assert_eq!(settings.get("test_key").await.unwrap(), None);
 
         pool.close().await;
         std::fs::remove_dir_all(path).unwrap();

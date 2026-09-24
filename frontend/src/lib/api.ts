@@ -2,6 +2,7 @@ import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AppErrorPayload,
+  ApiKeyStatus,
   Document,
   DocumentPreview,
   ExternalProviderConnection,
@@ -58,7 +59,7 @@ export const api = {
   
   setSetting: (key: string, value: string) => invoke<void>('set_setting', { key, value }),
 
-  setApiKey: (key: string) => invoke<boolean>('set_api_key', { key }),
+  setApiKey: (key: string) => invoke<ApiKeyStatus>('set_api_key', { key }),
 
   testExternalProvider: (baseUrl: string, apiKey: string | null) =>
     invoke<ExternalProviderConnection>('test_external_provider', { baseUrl, apiKey }),
@@ -67,6 +68,8 @@ export const api = {
     invoke<void>('set_external_provider_config', { baseUrl, model }),
 
   hasApiKey: () => invoke<boolean>('has_api_key'),
+
+  getApiKeyStatus: () => invoke<ApiKeyStatus>('get_api_key_status'),
 
   deleteApiKey: () => invoke<boolean>('delete_api_key'),
 

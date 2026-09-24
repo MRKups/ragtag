@@ -441,21 +441,39 @@ fn apply_external_auth(
     }
 }
 
-async fn read_external_api_key() -> Result<Option<String>, AppError> {
-    tokio::task::spawn_blocking(|| {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
-            AppError::Internal(format!("System keychain is unavailable: {error}"))
-        })?;
+async fn read_external_api_key(
+    settings: &AppSettingsRepository,
+) -> Result<Option<String>, AppError> {
+    let from_keychain = tokio::task::spawn_blocking(|| {
+        let entry = match keyring::v1::Entry::new("ragtag", "external_api_key") {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::warn!("System keychain entry unavailable: {error}");
+                return None;
+            }
+        };
         match entry.get_password() {
-            Ok(api_key) if !api_key.is_empty() => Ok(Some(api_key)),
-            Ok(_) | Err(keyring::v1::Error::NoEntry) => Ok(None),
-            Err(error) => Err(AppError::Internal(format!(
-                "System keychain is unavailable: {error}"
-            ))),
+            Ok(api_key) if !api_key.is_empty() => Some(api_key),
+            Ok(_) | Err(keyring::v1::Error::NoEntry) => None,
+            Err(error) => {
+                log::warn!("System keychain password read failed: {error}");
+                None
+            }
         }
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+    .unwrap_or(None);
+
+    if let Some(key) = from_keychain {
+        return Ok(Some(key));
+    }
+
+    let from_db = settings
+        .get("external_api_key")
+        .await?
+        .filter(|key| !key.trim().is_empty());
+
+    Ok(from_db)
 }
 
 async fn external_inference_config(
@@ -475,7 +493,7 @@ async fn external_inference_config(
     Ok(ExternalInferenceConfig {
         base_url: normalize_external_base_url(&base_url)?,
         model: model.trim().to_string(),
-        api_key: read_external_api_key().await?,
+        api_key: read_external_api_key(settings).await?,
     })
 }
 
@@ -515,7 +533,14 @@ async fn fetch_external_models(
             ))
         })?;
 
-    if !response.status().is_success() {
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        || response.status() == reqwest::StatusCode::FORBIDDEN
+    {
+        return Err(AppError::Inference(format!(
+            "Authentication required: endpoint returned HTTP {}",
+            response.status()
+        )));
+    } else if !response.status().is_success() {
         return Err(AppError::Inference(format!(
             "External inference readiness check failed: endpoint returned HTTP {}",
             response.status()
@@ -2822,16 +2847,18 @@ async fn test_external_provider(
     base_url: String,
     api_key: Option<String>,
 ) -> Result<ExternalProviderConnection, AppError> {
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
     let candidate_api_key = api_key
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty());
+    let resolved_key = match candidate_api_key {
+        Some(key) => Some(key),
+        None => read_external_api_key(&repo).await?,
+    };
     let config = ExternalInferenceConfig {
         base_url: normalize_external_base_url(&base_url)?,
         model: DEFAULT_EXTERNAL_MODEL.to_string(),
-        api_key: match candidate_api_key {
-            Some(key) => Some(key),
-            None => read_external_api_key().await?,
-        },
+        api_key: resolved_key,
     };
     let models = external_model_ids(&fetch_external_models(&state.http_client, &config).await?);
     if models.is_empty() {
@@ -2923,46 +2950,112 @@ async fn set_setting(
     enqueue_requeued_documents(state.job_queue.clone(), requeued_ids)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyStorage {
+    Keychain,
+    Database,
+    None,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ApiKeyStatus {
+    pub has_key: bool,
+    pub storage: ApiKeyStorage,
+}
+
 #[tauri::command]
 async fn set_api_key(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     key: String,
-) -> Result<bool, AppError> {
+) -> Result<ApiKeyStatus, AppError> {
+    let key_to_save = key.trim().to_string();
+    if key_to_save.is_empty() {
+        return Err(AppError::InvalidInput("API key cannot be empty".into()));
+    }
+
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
-    let saved = tokio::task::spawn_blocking(move || {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
-            AppError::Internal(format!("System keychain is unavailable: {error}"))
-        })?;
-        entry.set_password(&key).map_err(|error| {
-            AppError::Internal(format!("System keychain is unavailable: {error}"))
-        })?;
-        Ok::<bool, AppError>(true)
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+
+    let key_for_keychain = key_to_save.clone();
+    let keychain_result = tokio::task::spawn_blocking(move || {
+        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
+            .map_err(|e| format!("Entry error: {e}"))?;
+        entry.set_password(&key_for_keychain)
+            .map_err(|e| format!("Set password error: {e}"))?;
+        Ok::<(), String>(())
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?;
+    .await;
+
+    let storage = match keychain_result {
+        Ok(Ok(())) => {
+            let _ = repo.delete("external_api_key").await;
+            ApiKeyStorage::Keychain
+        }
+        _ => {
+            log::warn!("System keychain is unavailable; falling back to SQLite storage for API key");
+            repo.set("external_api_key", &key_to_save).await?;
+            ApiKeyStorage::Database
+        }
+    };
+
     if should_start {
         request_llm_initialization_from_persisted_state(&app, &state).await?;
     }
-    saved
+
+    Ok(ApiKeyStatus {
+        has_key: true,
+        storage,
+    })
 }
 
 #[tauri::command]
-async fn has_api_key() -> Result<bool, AppError> {
-    tokio::task::spawn_blocking(|| {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
-            AppError::Internal(format!("System keychain is unavailable: {error}"))
-        })?;
+async fn get_api_key_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<ApiKeyStatus, AppError> {
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+    let has_keychain_key = tokio::task::spawn_blocking(|| {
+        let entry = match keyring::v1::Entry::new("ragtag", "external_api_key") {
+            Ok(entry) => entry,
+            Err(_) => return false,
+        };
         match entry.get_password() {
-            Ok(password) => Ok(!password.is_empty()),
-            Err(keyring::v1::Error::NoEntry) => Ok(false),
-            Err(error) => Err(AppError::Internal(format!(
-                "System keychain is unavailable: {error}"
-            ))),
+            Ok(password) => !password.is_empty(),
+            Err(_) => false,
         }
     })
     .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?
+    .unwrap_or(false);
+
+    if has_keychain_key {
+        return Ok(ApiKeyStatus {
+            has_key: true,
+            storage: ApiKeyStorage::Keychain,
+        });
+    }
+
+    if let Ok(Some(db_key)) = repo.get("external_api_key").await {
+        if !db_key.trim().is_empty() {
+            return Ok(ApiKeyStatus {
+                has_key: true,
+                storage: ApiKeyStorage::Database,
+            });
+        }
+    }
+
+    Ok(ApiKeyStatus {
+        has_key: false,
+        storage: ApiKeyStorage::None,
+    })
+}
+
+#[tauri::command]
+async fn has_api_key(
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, AppError> {
+    let status = get_api_key_status(state).await?;
+    Ok(status.has_key)
 }
 
 #[tauri::command]
@@ -2971,24 +3064,21 @@ async fn delete_api_key(
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, AppError> {
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
-    let deleted = tokio::task::spawn_blocking(|| {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key").map_err(|error| {
-            AppError::Internal(format!("System keychain is unavailable: {error}"))
-        })?;
-        match entry.delete_credential() {
-            Ok(()) => Ok(true),
-            Err(keyring::v1::Error::NoEntry) => Ok(false),
-            Err(error) => Err(AppError::Internal(format!(
-                "System keychain is unavailable: {error}"
-            ))),
+    let repo = AppSettingsRepository::new(state.db_pool.clone());
+
+    let _ = tokio::task::spawn_blocking(|| {
+        if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
+            let _ = entry.delete_credential();
         }
     })
-    .await
-    .map_err(|e| AppError::Internal(format!("keyring task panicked: {e}")))?;
+    .await;
+
+    let _ = repo.delete("external_api_key").await;
+
     if should_start {
         request_llm_initialization_from_persisted_state(&app, &state).await?;
     }
-    deleted
+    Ok(true)
 }
 
 #[tauri::command]
@@ -3574,6 +3664,7 @@ pub fn run() {
             test_external_provider,
             set_external_provider_config,
             has_api_key,
+            get_api_key_status,
             delete_api_key,
             get_storage_info,
             compact_vector_store,
@@ -3602,7 +3693,7 @@ mod tests {
         remove_non_fastembed_models, require_retrieved_citations, sse_complete_event_exceeds_limit,
         sse_event_boundary, sse_event_data, sse_incomplete_buffer_exceeds_limit,
         sse_output_exceeds_limit, sse_token_exceeds_limit, storage_extension,
-        validate_document_preview_document, validate_query_request, validate_setting,
+        read_external_api_key, validate_document_preview_document, validate_query_request, validate_setting,
         validate_upload,
     };
     use domain::{AppError, Document, DocumentStatus};
@@ -4372,5 +4463,21 @@ mod tests {
         assert_eq!(registry_read_retry_delay(1), Duration::from_millis(250));
         assert_eq!(registry_read_retry_delay(3), Duration::from_secs(1));
         assert_eq!(registry_read_retry_delay(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[tokio::test]
+    async fn read_external_api_key_falls_back_to_sqlite() {
+        let app_local_data = std::env::temp_dir().join(format!("ragtag-test-{}", uuid::Uuid::now_v7()));
+        tokio::fs::create_dir_all(&app_local_data).await.unwrap();
+        let pool = persistence::init_pool(&app_local_data).await.unwrap();
+        let settings = persistence::AppSettingsRepository::new(pool.clone());
+
+        settings.set("external_api_key", "sk-test-fallback-key").await.unwrap();
+        let retrieved = read_external_api_key(&settings).await.unwrap();
+        assert!(retrieved.is_some());
+
+        settings.delete("external_api_key").await.unwrap();
+        let _ = pool.close().await;
+        let _ = tokio::fs::remove_dir_all(&app_local_data).await;
     }
 }
