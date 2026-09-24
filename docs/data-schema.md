@@ -56,7 +56,7 @@ Indexes cover status, newest creation time, and non-null file hashes. Rust, not 
 
 Chunk overlap must be smaller than chunk size. Changed settings requeue indexed documents with absent or mismatched provenance; old provenance remains until replacement succeeds.
 
-The external-provider API key is stored only in the OS keychain.
+The external-provider API key is stored in the OS keychain, with automatic fallback to unencrypted SQLite storage (`app_settings.external_api_key`) if keychain services are unavailable.
 
 ## LanceDB
 

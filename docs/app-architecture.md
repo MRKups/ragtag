@@ -18,7 +18,7 @@ Ragtag answers questions about user-provided documents. The interface runs in a 
 | Document pipeline | Extracts supported source formats, produces page-aware chunks, embeds text, and prepares previews. | It creates derived data, not canonical documents. |
 | SQLite | Stores the document registry, lifecycle state, indexing provenance, and non-secret settings. | It decides whether a document is eligible for retrieval. |
 | LanceDB | Stores derived chunks and vectors for local search. | It is recoverable from retained sources and the SQLite registry. |
-| OS keychain | Stores the optional external-provider API key. | The key does not enter SQLite, frontend storage, logs, or IPC payloads. |
+| OS keychain | Stores the optional external-provider API key (falling back to SQLite if keychain is unavailable). | The key does not enter frontend storage, logs, or IPC payloads. |
 | Inference providers | Generate an answer from a query and retrieved excerpts. | Local inference is the default. External inference is a user-selected trust boundary. |
 
 [Data schema](data-schema.md) owns persisted fields, settings, and IPC vocabulary. [Design rationale](decisions.md) owns the rationale for durable choices.
@@ -37,7 +37,7 @@ SQLite is the document registry. A document becomes `indexed` after replacement 
 4. The pipeline creates tokenizer-boundary chunks, generates local embeddings, and replaces the document's derived rows in LanceDB.
 5. After replacement succeeds, SQLite records indexed status and provenance. The originating request receives completed extraction, chunking, embedding, and storage progress.
 
-Invalid input, a full work queue, source-integrity failure, and processing failure return typed errors. Failed work stays in the registry for recovery or retry. [B185](tracker.md) covers unbounded PDF decompression allocation.
+Invalid input, a full work queue, source-integrity failure, and processing failure return typed errors. Failed work stays in the registry for recovery or retry.
 
 ## Query lifecycle
 
@@ -55,9 +55,9 @@ The embedding model initializes locally at startup. Ingestion becomes available 
 
 Local mode downloads and loads the configured model in-process for answer generation.
 
-External mode calls a user-selected OpenAI-compatible endpoint. Ragtag verifies the configured model before enabling queries and sends the query plus retrieved excerpts to that endpoint during inference. The endpoint URL is a non-secret SQLite setting; the optional credential remains in the OS keychain. The current transport policy permits HTTP endpoints. [B186](tracker.md) records the required remote-transport restriction.
+External mode calls a user-selected OpenAI-compatible endpoint. Ragtag verifies the configured model before enabling queries and sends the query plus retrieved excerpts to that endpoint during inference. The endpoint URL is an SQLite setting; optional credentials are kept in the OS keychain (or SQLite as a fallback if the keychain is unavailable). Both HTTP (for local providers like Ollama or LM Studio) and HTTPS (for remote cloud providers) endpoints are supported. If no API key is specified, probing and inference proceed keyless; if provided, authentication headers are sent regardless of the endpoint scheme.
 
-Default model files are downloaded rather than bundled. [B187](tracker.md) tracks artifact pinning and verification.
+Default model files are downloaded on first use rather than bundled, using configurable Hugging Face repositories and GGUF filenames.
 
 ## User-visible failure behavior
 

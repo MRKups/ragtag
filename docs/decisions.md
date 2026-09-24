@@ -63,7 +63,7 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Decision:** Run FastEmbed embeddings and `mistral.rs` generation in the application process by default. Support user-selected OpenAI-compatible external inference as an exception.
 
-**Consequences:** Default processing, retrieval, and generation need no model server; external inference crosses the configured provider boundary. The key remains in the OS keychain, and [B186](tracker.md) tracks the transport restriction.
+**Consequences:** Default processing, retrieval, and generation need no model server; external inference crosses the configured provider boundary. Credentials reside in the OS keychain with automatic fallback to SQLite when unavailable; external endpoints support standard HTTP for local servers (Ollama, LM Studio) and HTTPS for cloud providers.
 
 **Dependency source:** Pin `mistral.rs` v0.9.3 to Git revision `24dbf5c256f232176ee5949485ba264049407fbe` with Metal acceleration on Apple Silicon. At the 2026-09-21 review, crates.io's latest SDK was 0.8.1. Use the source revision rather than a floating branch or tag, and retain the application's resolved `Cargo.lock`, including Candle 0.11.0 at Git revision `35d7ae7ca5c93e17c77359c3617376b8a72e96a4`.
 
@@ -79,7 +79,7 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Decision:** Extract PDFs with the PDF pipeline, DOCX locally, and other supported sources as UTF-8 text.
 
-**Consequences:** PDF chunks retain physical pages. DOCX and UTF-8 sources use one logical source page. [B185](tracker.md) records the unresolved PDF decompression-allocation limit.
+**Consequences:** PDF chunks retain physical pages. DOCX and UTF-8 sources use one logical source page. Extraction relies on streaming parser limits without artificial decompression budgets.
 
 ## D009 — Tokenizer-boundary chunking
 
@@ -103,7 +103,7 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Decision:** Download default model artifacts on first use rather than bundle them in the installer.
 
-**Consequences:** The application exposes staged availability. App-managed model files can be removed without deleting a user-selected Hugging Face cache. [B187](tracker.md) tracks artifact pinning and verification.
+**Consequences:** The application exposes staged availability. App-managed model files can be removed without deleting a user-selected Hugging Face cache. Repositories and GGUF filenames are user-configurable with lightweight defaults.
 
 ## D012 — Native macOS window chrome
 
@@ -128,3 +128,11 @@ This document records durable choices and tradeoffs. Linked references own curre
 **Decision:** Use target-conditional dependency blocks for `mistralrs` (enabling Metal only on Apple Silicon, with CPU/CUDA fallback on non-macOS), normalize file paths against Windows backslashes and UNC prefixes, expose a typed `get_platform` IPC hook, and adapt frontend header padding dynamically.
 
 **Consequences:** macOS continues to compile with native Metal acceleration while the codebase gains structural portability for future Windows and Linux builds.
+
+## D015 — Resilient external inference and credential fallback
+
+**Context:** Local inference servers (e.g. Ollama, LM Studio, vLLM) frequently operate on loopback or local networks without requiring authentication or TLS encryption. Furthermore, desktop environments may have locked, unconfigured, or unavailable OS keychain services. Enforcing mandatory API credentials or strictly requiring remote HTTPS breaks local developer workflows and causes total credential persistence failures on environments lacking OS keyring support.
+
+**Decision:** Support keyless external inference by sending unauthenticated probing requests when the API key is omitted, forward keys in standard `Authorization: Bearer <key>` headers whenever provided (regardless of local or remote endpoint), and provide automatic non-fatal fallback of credential storage to SQLite (`app_settings.external_api_key`) when the OS keychain is inaccessible, displaying explicit UI indicators and warnings for unencrypted database storage.
+
+**Consequences:** Local inference engines connect out-of-the-box without requiring dummy keys. Environments without functional OS keychains can persist external inference credentials with transparent user notification. Cloud providers requiring authentication continue to receive secure authorization headers.

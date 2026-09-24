@@ -70,11 +70,11 @@ Maintain the vendor tree as an explicit, minimal deviation from its recorded ups
 
 ## Local data and inference
 
-Ragtag stores managed document copies, the SQLite registry, the LanceDB vector store, and app-managed model files in application-local data. The optional external-provider API key stays in the OS keychain.
+Ragtag stores managed document copies, the SQLite registry, the LanceDB vector store, and app-managed model files in application-local data. The optional external-provider API key stays in the OS keychain (falling back to SQLite if keychain services are unavailable).
 
 Ragtag accepts PDF, DOCX, and UTF-8 text. PDFs retain physical page identity. DOCX and text use one logical source page for citations.
 
-The first local use downloads model artifacts. An external provider receives the query and retrieved excerpts during generation. Use only a provider and data-handling policy you trust. [B186](docs/tracker.md) remains an open release gate.
+The first local use downloads model artifacts. An external provider receives the query and retrieved excerpts during generation. Use only a provider and data-handling policy you trust.
 
 ## Checks and tests
 

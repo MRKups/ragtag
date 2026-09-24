@@ -46,7 +46,7 @@ persistence -> domain
 - **Local-first is the default.** Do not add an internal HTTP server, cloud backend, sidecar, or required hosted service. Embeddings and default generation run in-process; external OpenAI-compatible inference is an explicit user-selected exception.
 - **Original documents are user-owned evidence.** Store uploaded PDFs in application-local data without rewriting their content. Do not make a vector chunk, generated answer, or model output the canonical source document.
 - **SQLite owns the registry and settings.** `documents` is the source of truth for document identity and processing state; `app_settings` owns non-secret configuration. LanceDB stores derived chunks, vectors, and search indexes and must remain recoverable from retained documents.
-- **Secrets stay in the OS keychain.** `external_api_key` must never enter SQLite, frontend storage, logs, events, or diagnostics.
+- **Secrets stay in the OS keychain by default.** `external_api_key` falls back to unencrypted SQLite storage (`app_settings`) only when keychain services are unavailable. It must never enter frontend storage, logs, events, or diagnostics.
 - **Citations are retrieval-grounded.** Citation page and document metadata come from retrieved chunks, not model-generated page numbers. Preserve page boundaries through extraction, chunking, indexing, search, and IPC.
 - **Indexing is crash-safe and idempotent.** Keep per-document chunk keys stable, upsert vectors before marking SQLite records indexed, and preserve startup recovery for queued or interrupted embedding jobs.
 - **Inference is staged.** Document ingestion unlocks only after the embedder is ready; local querying waits for the local model, while configured external inference does not require a local LLM download.
@@ -66,7 +66,7 @@ persistence -> domain
 - Treat `src-tauri/Cargo.toml` and each crate manifest as the source of truth for versions. Preserve exact pins where declared, especially `sqlx`, `fastembed`, `mistralrs`, LanceDB, and Arrow compatibility.
 - Use Tauri v2 APIs and configuration. Do not introduce v1 import paths, `distDir`/`devPath` config, or legacy window APIs.
 - Use `sqlx` with SQLite migrations; do not add an ORM. Create the application-local data directory before opening the pool, preserve the committed `.sqlx/` offline-query cache when SQLx macros are used, and keep app settings in SQLite.
-- Store external API keys only in `keyring`; use its upsert semantics rather than a delete-then-set sequence.
+- Store external API keys primarily in `keyring` (with SQLite fallback if unavailable); use its upsert semantics rather than a delete-then-set sequence.
 - Run blocking filesystem, PDF extraction, embedding initialization, and embedding work in `spawn_blocking` or an appropriate blocking worker. Do not block an async Tauri command or the runtime executor.
 - Use `std::sync::Mutex` unless a lock must survive an `.await`; then use Tokio synchronization deliberately. The shared `mistralrs::Model` is `Arc`-shared and must not gain a mutex.
 - Enqueue document work from commands with `try_send()` and report typed queue-full errors. Background producers may await `send()` for backpressure.

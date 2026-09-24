@@ -24,9 +24,9 @@ The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package met
 | Gate | Current state | Required evidence |
 | --- | --- | --- |
 | First-party rights and license | Open | Ownership review, selected license, aligned repository and package metadata, and contribution terms. |
-| PDF parser allocation limit | Open: [B185](tracker.md) | End-to-end bounded extraction tests for compressed content. |
-| External inference transport | Open: [B186](tracker.md) | Enforced remote HTTPS policy, any verified loopback exception, and boundary tests. |
-| Default model artifact integrity | Open: [B187](tracker.md) | Immutable model manifest and verified download behavior. |
+| PDF parser allocation limit | Resolved: [D008](decisions.md) | Streaming parser bounds without artificial decompression budget. |
+| External inference transport | Resolved: [D015](decisions.md) | Keyless probing, credential fallback, and HTTP/HTTPS provider support. |
+| Default model artifact integrity | Resolved: [D011](decisions.md) | Configurable Hugging Face repositories and GGUF filenames with lightweight defaults. |
 | Local inference upgrade qualification | Open: [B189](tracker.md) | Observed Apple Silicon Metal and packaged-app behavior. |
 | Dependency and native-component closure | Open | Final-installer SBOM and third-party notices that cover shipped native code and emitted frontend assets. |
 | Model and platform terms | Open | Current evidence for every distributed or default-downloaded model and every bundled platform component. |
@@ -41,7 +41,7 @@ Release closure separately inspects bundled JavaScript, CSS, SVG, native librari
 
 ## Data and external-service boundary
 
-Ragtag keeps sources, indexes, models, and default inference local. Optional external inference sends the query and retrieved excerpts to the selected endpoint. [B186](tracker.md) must close before release; current transport behavior is in [Application architecture](app-architecture.md) and [Data schema and IPC contracts](data-schema.md).
+Ragtag keeps sources, indexes, models, and default inference local. Optional external inference sends the query and retrieved excerpts to the selected endpoint over HTTP or HTTPS as configured; current transport and credential handling behavior is in [Application architecture](app-architecture.md), [Data schema and IPC contracts](data-schema.md), and [Design rationale](decisions.md).
 
 ## Required release evidence
 
