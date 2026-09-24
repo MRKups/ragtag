@@ -225,6 +225,13 @@ fn external_sse_token(data: &str) -> Result<Option<String>, AppError> {
     let payload: serde_json::Value = serde_json::from_str(data).map_err(|_| {
         AppError::Inference("External inference sent malformed SSE JSON payload.".into())
     })?;
+    if let Some(error) = payload.get("error") {
+        let message = error
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("External provider returned an error.");
+        return Err(AppError::Inference(format!("External provider error: {message}")));
+    }
     let choices = payload
         .get("choices")
         .and_then(serde_json::Value::as_array)
@@ -686,16 +693,20 @@ async fn stream_external_inference(
 ) -> Result<(), AppError> {
     use futures_util::StreamExt;
 
+    if *cancellation.borrow() {
+        return Ok(());
+    }
+
     let request = apply_external_auth(client.post(url).json(&body), api_key.as_deref());
 
     let response = tokio::select! {
         _ = cancellation.changed() => return Ok(()),
         result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
-    .map_err(|_| AppError::Inference("BYO request timed out before the response started.".into()))?
-    .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?
+    .map_err(|_| AppError::Inference("External inference request timed out before the response started.".into()))?
+    .map_err(|e| AppError::Inference(format!("External inference request failed: {e}")))?
     .error_for_status()
-    .map_err(|e| AppError::Inference(format!("BYO request failed: {e}")))?;
+    .map_err(|e| AppError::Inference(format!("External inference request failed: {e}")))?;
 
     let mut stream = response.bytes_stream();
     let mut total_output_bytes = 0;
@@ -785,7 +796,7 @@ async fn stream_external_inference(
             };
             buffer.drain(..event_end + delimiter_len);
 
-            match data.as_deref() {
+            match data.as_deref().map(str::trim) {
                 Some("[DONE]") => {
                     send_inference_event(cancellation, events, InferenceEvent::Done).await;
                     return Ok(());
@@ -2703,10 +2714,8 @@ async fn reconcile_orphan_document_sources(
         .await?
         .into_iter()
         .filter_map(|document| {
-            document
-                .storage_path
-                .strip_prefix("documents/")
-                .filter(|filename| is_managed_document_source_filename(filename))
+            managed_storage_filename(&document.storage_path)
+                .ok()
                 .map(str::to_owned)
         })
         .collect();
@@ -3320,6 +3329,10 @@ fn complete_pending_reset(
         )));
     }
 
+    if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
+        let _ = entry.delete_credential();
+    }
+
     std::fs::remove_file(sentinel)
         .map_err(|error| AppError::Io(format!("Could not clear pending reset marker: {error}")))?;
     Ok(())
@@ -3363,6 +3376,10 @@ async fn reset_all_data(
     .map_err(|error| AppError::Internal(format!("Reset validation task panicked: {error}")))??;
     let payload = serde_json::json!({"delete_models": delete_models});
     tokio::fs::write(&sentinel, payload.to_string()).await?;
+
+    if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
+        let _ = entry.delete_credential();
+    }
 
     info!("reset requested — restarting application");
     app.request_restart();

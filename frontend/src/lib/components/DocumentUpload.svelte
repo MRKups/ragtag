@@ -3,7 +3,7 @@
   import { api } from '$lib/api';
   import { documentProgressState } from '$lib/stores/document-progress.svelte';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
-  import { errorMessage } from '$lib/error';
+  import { errorMessage, isAppError } from '$lib/error';
 
   let { onUploadComplete }: { onUploadComplete?: () => void } = $props();
 
@@ -120,7 +120,9 @@
         successCount++;
       } catch (error) {
         const message = errorMessage(error);
-        const rejected = message.startsWith('Invalid input:') || message.startsWith('A document with this content already exists:');
+        const rejected = isAppError(error)
+          ? error.kind === 'InvalidInput' || error.kind === 'DuplicateDocument'
+          : message.startsWith('Invalid input:') || message.startsWith('A document with this content already exists:');
         updateUploadStatus(target.id, rejected ? 'rejected' : 'error', rejected ? 'Upload rejected' : 'Upload did not start');
         errorDialog.report({
           dedupeKey: rejected ? 'document-upload-rejected' : `document-upload-${target.file.name}`,

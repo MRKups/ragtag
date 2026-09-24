@@ -17,14 +17,14 @@
   }
 
 
-  function reportQueryFailure(streamStarted: boolean, noEvidence = false) {
+  function reportQueryFailure(streamStarted: boolean, noEvidence = false, customMessage?: string) {
     if (!noEvidence && settingsState.inference_mode === 'external') {
       errorDialog.report({
         dedupeKey: 'external-inference-readiness',
         title: streamStarted ? 'Remote answer interrupted' : 'Remote provider unavailable',
-        message: streamStarted
+        message: customMessage || (streamStarted
           ? 'The configured remote provider stopped responding before the answer finished.'
-          : 'Ragtag could not start an answer with the configured remote provider.',
+          : 'Ragtag could not start an answer with the configured remote provider.'),
         guidance: 'Check that the provider is running and that its endpoint, model name, and API key are correct.',
         action: { label: 'Open remote settings', run: openRemoteSettings }
       });
@@ -34,9 +34,9 @@
     errorDialog.report({
       dedupeKey: streamStarted ? 'query-stream-failed' : 'query-request-failed',
       title: streamStarted ? 'Answer interrupted' : 'Ragtag could not answer that question',
-      message: streamStarted
+      message: customMessage || (streamStarted
         ? 'The answer stopped before Ragtag finished generating it.'
-        : 'Ragtag could not prepare an answer from your indexed documents.',
+        : 'Ragtag could not prepare an answer from your indexed documents.'),
       guidance: streamStarted
         ? 'Any completed text and sources remain available. Try the question again if you need a complete answer.'
         : 'Make sure at least one relevant document has finished indexing, then try again.',
@@ -68,7 +68,7 @@
         } else if (event.type === 'done') {
           queryState.complete(event.citations);
         } else if (event.type === 'error') {
-          reportQueryFailure(true);
+          reportQueryFailure(true, false, event.message);
           queryState.citations = event.citations;
           queryState.currentRequestId = null;
           queryState.isStreaming = false;
@@ -77,7 +77,8 @@
       });
     } catch (error) {
       if (queryState.currentRequestId !== requestId) return;
-      reportQueryFailure(false, errorMessage(error).includes('No usable document excerpts were retrieved'));
+      const message = errorMessage(error);
+      reportQueryFailure(false, message.includes('No usable document excerpts were retrieved'), message);
       queryState.currentRequestId = null;
       queryState.isStreaming = false;
       queryState.isLoading = false;

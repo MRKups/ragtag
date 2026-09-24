@@ -31,6 +31,8 @@ export class DocumentProgressState {
     for (const document of documents) {
       if (document.status === 'indexed' || document.status === 'failed') {
         this.finalize(document.id);
+      } else {
+        this.terminalDocumentIds.delete(document.id);
       }
     }
   }

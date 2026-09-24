@@ -216,8 +216,9 @@ fn bounded_utf8_text_reader(reader: &mut impl Read, capacity: usize) -> Result<S
         return Err(extracted_text_limit_error());
     }
 
-    String::from_utf8(bytes)
-        .map_err(|_| AppError::InvalidInput("Text extraction source is not valid UTF-8".into()))
+    let text = String::from_utf8(bytes)
+        .map_err(|_| AppError::InvalidInput("Text extraction source is not valid UTF-8".into()))?;
+    Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())
 }
 
 fn read_bounded_bytes(
@@ -286,19 +287,32 @@ fn utf8_preview(source_path: &Path, operation: &str) -> Result<(String, bool), A
     let (bytes, truncated) = preview_bytes(&mut file, operation)?;
     let content = String::from_utf8(bytes)
         .map_err(|_| AppError::InvalidInput(format!("{operation} source is not valid UTF-8")))?;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
     Ok((content, truncated))
 }
 
-fn preview_bytes(reader: &mut impl Read, operation: &str) -> Result<(Vec<u8>, bool), AppError> {
-    let mut bytes = Vec::with_capacity(TEXT_PREVIEW_MAX_BYTES + 1);
+fn preview_raw_bytes(
+    reader: &mut impl Read,
+    max_bytes: usize,
+    operation: &str,
+) -> Result<(Vec<u8>, bool), AppError> {
+    let mut bytes = Vec::with_capacity(max_bytes + 1);
     reader
-        .take((TEXT_PREVIEW_MAX_BYTES + 1) as u64)
+        .take((max_bytes + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| AppError::Io(format!("{operation} could not read source: {e}")))?;
 
-    let truncated = bytes.len() > TEXT_PREVIEW_MAX_BYTES;
+    let truncated = bytes.len() > max_bytes;
     if truncated {
-        bytes.truncate(TEXT_PREVIEW_MAX_BYTES);
+        bytes.truncate(max_bytes);
+    }
+
+    Ok((bytes, truncated))
+}
+
+fn preview_bytes(reader: &mut impl Read, operation: &str) -> Result<(Vec<u8>, bool), AppError> {
+    let (mut bytes, truncated) = preview_raw_bytes(reader, TEXT_PREVIEW_MAX_BYTES, operation)?;
+    if truncated {
         while let Err(error) = std::str::from_utf8(&bytes) {
             if error.error_len().is_some() {
                 return Err(AppError::InvalidInput(format!(
@@ -342,7 +356,17 @@ fn docx_preview(source_path: &Path) -> Result<DocumentPreview, AppError> {
     let mut document_xml = archive
         .by_name("word/document.xml")
         .map_err(|_| AppError::Io("DOCX preview archive does not contain document text".into()))?;
-    let (xml, xml_truncated) = preview_bytes(&mut document_xml, "DOCX preview")?;
+    let (mut xml, xml_truncated) =
+        preview_raw_bytes(&mut document_xml, TEXT_PREVIEW_MAX_BYTES, "DOCX preview")?;
+    if xml_truncated
+        && xml.len() % 2 != 0
+        && (xml.starts_with(&[0xFF, 0xFE])
+            || xml.starts_with(&[0xFE, 0xFF])
+            || xml.starts_with(&[b'<', 0, b'?', 0])
+            || xml.starts_with(&[0, b'<', 0, b'?']))
+    {
+        xml.pop();
+    }
     let (content, text_truncated) = truncate_preview_text(docx_body_text(&xml, xml_truncated)?);
 
     Ok(DocumentPreview::PlainText {
@@ -390,6 +414,7 @@ fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, AppEr
                     append_extracted_text(&mut text, "\t")?;
                 } else if is_wordprocessing_element(&namespace, event.local_name(), "br")
                     || is_wordprocessing_element(&namespace, event.local_name(), "cr")
+                    || is_wordprocessing_element(&namespace, event.local_name(), "p")
                 {
                     append_extracted_text(&mut text, "\n")?;
                 }
@@ -456,6 +481,7 @@ fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
     let (encoding, xml) = match xml {
         [0xFF, 0xFE, remainder @ ..] => (Some(true), remainder),
         [0xFE, 0xFF, remainder @ ..] => (Some(false), remainder),
+        [0xEF, 0xBB, 0xBF, remainder @ ..] => (None, remainder),
         [b'<', 0, b'?', 0, ..] => (Some(true), xml),
         [0, b'<', 0, b'?', ..] => (Some(false), xml),
         _ => (None, xml),
@@ -1636,5 +1662,47 @@ mod tests {
                 truncated: false,
             }
         );
+    }
+
+    #[test]
+    fn strips_bom_from_utf8_text_extraction_and_preview() {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("ragtag-bom-{unique}.txt"));
+        let bom_content = "\u{feff}Hello, world!";
+        std::fs::write(&path, bom_content).unwrap();
+
+        let extracted = extract_pages(&path, "text", |_, _| {}).unwrap();
+        let preview = document_preview(&path, "text", "test.txt").unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(extracted.pages[0].1, "Hello, world!");
+        assert_eq!(
+            preview,
+            DocumentPreview::PlainText {
+                content: "Hello, world!".into(),
+                truncated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn empty_docx_paragraphs_preserve_newlines() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>First line</w:t></w:r></w:p>
+    <w:p/>
+    <w:p><w:r><w:t>Second line</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let text = docx_body_text(xml, false).unwrap();
+        assert_eq!(text, "First line\n\nSecond line\n");
     }
 }

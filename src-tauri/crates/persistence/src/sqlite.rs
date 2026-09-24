@@ -4,7 +4,6 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use std::path::Path;
-use std::str::FromStr;
 
 fn sql_err(e: sqlx::Error) -> AppError {
     AppError::Database(e.to_string())
@@ -27,9 +26,12 @@ pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError
 
     let db_path = app_local_data_dir.join("app.db");
 
-    let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path.display()))
-        .map_err(sql_err)?
-        .create_if_missing(true);
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)

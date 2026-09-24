@@ -70,7 +70,7 @@ fn append_page_chunks(
 ) -> Result<(), AppError> {
     let source_tokens = tokenizer
         .encode(text, false)
-        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize PDF text: {e}")))?;
+        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize document text: {e}")))?;
     let offsets = source_tokens
         .get_offsets()
         .iter()
@@ -91,7 +91,7 @@ fn append_page_chunks(
     })?;
     if content_token_budget == 0 {
         return Err(AppError::InvalidInput(format!(
-            "Embedding token limit ({max_tokens}) leaves no room for PDF text"
+            "Embedding token limit ({max_tokens}) leaves no room for document text"
         )));
     }
 
@@ -110,12 +110,15 @@ fn append_page_chunks(
             let embedding_text = format!("{PASSAGE_PREFIX}{content}");
 
             if token_count(tokenizer, &embedding_text)? <= max_tokens {
-                chunks.push(Chunk {
-                    page,
-                    chunk_index,
-                    content: content.to_string(),
-                });
-                chunk_index += 1;
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    chunks.push(Chunk {
+                        page,
+                        chunk_index,
+                        content: trimmed.to_string(),
+                    });
+                    chunk_index += 1;
+                }
                 let chunk_token_count = end_token - start_token;
                 start_token = end_token - overlap.min(chunk_token_count.saturating_sub(1));
                 emitted = true;
@@ -149,11 +152,14 @@ fn push_chunk(
         )));
     }
 
-    chunks.push(Chunk {
-        page,
-        chunk_index: 0,
-        content: text.to_string(),
-    });
+    let trimmed = text.trim();
+    if !trimmed.is_empty() {
+        chunks.push(Chunk {
+            page,
+            chunk_index: 0,
+            content: trimmed.to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -161,7 +167,7 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<usize, AppError> {
     tokenizer
         .encode(text, true)
         .map(|encoding| encoding.len())
-        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize PDF text: {e}")))
+        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize document text: {e}")))
 }
 
 #[cfg(test)]

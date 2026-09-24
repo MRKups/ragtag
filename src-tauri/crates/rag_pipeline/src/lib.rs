@@ -124,9 +124,6 @@ pub async fn process_document(
         let embedding_progress = Arc::clone(&on_progress);
         let embedding_document_id = document_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let mut model = embedder
-                .lock()
-                .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
             let total_chunks = chunks.len();
             let total_batches = embedding_batch_count(total_chunks);
             let mut embeddings = Vec::new();
@@ -139,9 +136,14 @@ pub async fn process_document(
                     .iter()
                     .map(|chunk| format!("{PASSAGE_PREFIX}{}", chunk.content))
                     .collect::<Vec<_>>();
-                let batch_embeddings = model
-                    .embed(texts, Some(EMBEDDING_BATCH_SIZE))
-                    .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?;
+                let batch_embeddings = {
+                    let mut model = embedder
+                        .lock()
+                        .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
+                    model
+                        .embed(texts, Some(EMBEDDING_BATCH_SIZE))
+                        .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?
+                };
                 validate_embedding_shapes(chunk_batch, &batch_embeddings)?;
                 embeddings.extend(batch_embeddings);
                 embedding_progress(IngestionProgress::Embedding {
@@ -354,10 +356,17 @@ pub fn embed_query(
     let embeddings = model
         .embed(vec![query_text.as_str()], None)
         .map_err(|e| AppError::Internal(format!("Query embedding failed: {e}")))?;
-    embeddings
+    let embedding = embeddings
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::Internal("No embedding returned".into()))
+        .ok_or_else(|| AppError::Internal("No embedding returned".into()))?;
+    if embedding.len() != EMBEDDING_DIMENSION {
+        return Err(AppError::Internal(format!(
+            "Query embedding dimension {} != {EMBEDDING_DIMENSION}",
+            embedding.len()
+        )));
+    }
+    Ok(embedding)
 }
 
 pub fn enhance_query(query: &str) -> String {

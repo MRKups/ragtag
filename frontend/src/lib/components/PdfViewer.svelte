@@ -52,10 +52,17 @@
   });
 
   $effect(() => {
-    if (totalPages && !loading) {
+    const target = pageNum;
+    if (totalPages && !loading && target >= 1) {
+      let cancelled = false;
       tick().then(() => {
-        setTimeout(() => scrollToPage(pageNum), 100);
+        if (!cancelled) {
+          scrollToPage(target);
+        }
       });
+      return () => {
+        cancelled = true;
+      };
     }
   });
 

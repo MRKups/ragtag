@@ -13,12 +13,12 @@
   }
 </script>
 
-<div class="setting-item" role="button" tabindex="0" onclick={toggle} onkeydown={(e) => e.key === 'Enter' && toggle()}>
+<div class="setting-item" role="switch" aria-checked={checked} tabindex="0" onclick={toggle} onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), toggle())}>
   <div class="setting-info">
     <div class="setting-label">
       {#if icon}
         {@const Icon = icon}
-        <Icon size={16} class="text-blue-400" />
+        <Icon size={16} />
       {/if}
       {label}
     </div>

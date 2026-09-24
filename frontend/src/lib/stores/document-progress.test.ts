@@ -37,3 +37,16 @@ progress.reconcile([{ id: 'document-2', status: 'indexed' }]);
 if (progress.get('document-2') !== undefined) {
   throw new Error('A terminal registry status must clear cached document progress.');
 }
+
+// Requeued documents must accept new progress events
+progress.reconcile([{ id: 'document-1', status: 'queued' }]);
+progress.record({
+  type: 'extraction',
+  document_id: 'document-1',
+  current_page: 1,
+  total_pages: 2
+});
+
+if (progress.get('document-1') === undefined) {
+  throw new Error('A requeued document must accept new progress events.');
+}
