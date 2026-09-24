@@ -1792,38 +1792,9 @@ async fn request_llm_initialization_with_resources(
 }
 
 async fn requeue_indexed_documents_after_vector_loss(
-    pool: &sqlx::SqlitePool,
+    repo: &DocumentRepository,
 ) -> Result<Vec<String>, AppError> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    let ids = sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    if !ids.is_empty() {
-        sqlx::query(
-            "UPDATE documents
-             SET status = 'queued',
-                 chunk_count = NULL,
-                 embedding_model = NULL,
-                 embedding_attempts = 0,
-                 processing_started_at = NULL,
-                 indexed_at = NULL,
-                 error_message = NULL,
-                 retry_count = 0
-             WHERE status = 'indexed'",
-        )
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    Ok(ids)
+    repo.requeue_indexed_documents_after_vector_loss().await
 }
 
 fn indexed_chunk_count_mismatch(recorded_count: Option<i64>, indexed_count: Option<usize>) -> bool {
@@ -1834,19 +1805,10 @@ fn indexed_chunk_count_mismatch(recorded_count: Option<i64>, indexed_count: Opti
 }
 
 async fn requeue_indexed_documents_with_chunk_count_mismatches(
-    pool: &sqlx::SqlitePool,
+    repo: &DocumentRepository,
     indexed_chunk_counts: &HashMap<String, usize>,
 ) -> Result<Vec<String>, AppError> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    let indexed_documents = sqlx::query_as::<_, (String, Option<i64>)>(
-        "SELECT id, chunk_count FROM documents WHERE status = 'indexed'",
-    )
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|error| AppError::Database(error.to_string()))?;
+    let indexed_documents = repo.list_indexed_chunk_counts().await?;
     let ids = indexed_documents
         .into_iter()
         .filter_map(|(id, chunk_count)| {
@@ -1855,29 +1817,7 @@ async fn requeue_indexed_documents_with_chunk_count_mismatches(
         })
         .collect::<Vec<_>>();
 
-    for id in &ids {
-        sqlx::query(
-            "UPDATE documents
-             SET status = 'queued',
-                 chunk_count = NULL,
-                 embedding_model = NULL,
-                 embedding_attempts = 0,
-                 processing_started_at = NULL,
-                 indexed_at = NULL,
-                 error_message = NULL,
-                 retry_count = 0
-             WHERE id = ? AND status = 'indexed'",
-        )
-        .bind(id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
-
+    repo.requeue_indexed_documents_by_ids(&ids).await?;
     Ok(ids)
 }
 
@@ -1891,11 +1831,11 @@ async fn recover_startup_documents(
     let mut recovered_ids = HashSet::new();
 
     if !vector_db.chunks_table_exists().await? {
-        recovered_ids.extend(requeue_indexed_documents_after_vector_loss(pool).await?);
+        recovered_ids.extend(requeue_indexed_documents_after_vector_loss(&repo).await?);
     } else {
         let indexed_chunk_counts = vector_db.indexed_chunk_counts().await?;
         recovered_ids.extend(
-            requeue_indexed_documents_with_chunk_count_mismatches(pool, &indexed_chunk_counts)
+            requeue_indexed_documents_with_chunk_count_mismatches(&repo, &indexed_chunk_counts)
                 .await?,
         );
     }
@@ -2298,12 +2238,18 @@ async fn execute_query(
                 continue;
             }
 
+            let doc_storage_path = doc.storage_path.clone();
+            let app_data = app_local_data.clone();
+            let storage_path = tokio::task::spawn_blocking(move || {
+                document_storage_path(&app_data, &doc_storage_path)
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("Storage path check task panicked: {e}")))??;
+
             citations.push(Citation {
                 document_id: result.document_id,
                 filename: doc.filename,
-                storage_path: document_storage_path(&app_local_data, &doc.storage_path)?
-                    .to_string_lossy()
-                    .to_string(),
+                storage_path: storage_path.to_string_lossy().to_string(),
                 page: result.page as i32,
                 chunk_content: result.content,
                 score: 1.0 / (1.0 + result.score),
@@ -2823,9 +2769,8 @@ async fn get_settings(
     state: tauri::State<'_, AppState>,
 ) -> Result<HashMap<String, String>, AppError> {
     let repo = AppSettingsRepository::new(state.db_pool.clone());
-
-    let mut settings = HashMap::new();
-    let keys = vec![
+    let mut all = repo.get_all().await?;
+    const KEYS: &[&str] = &[
         "inference_mode",
         "external_base_url",
         "external_model",
@@ -2836,14 +2781,8 @@ async fn get_settings(
         "chunk_size",
         "chunk_overlap",
     ];
-
-    for key in keys {
-        if let Some(val) = repo.get(key).await? {
-            settings.insert(key.to_string(), val);
-        }
-    }
-
-    Ok(settings)
+    all.retain(|k, _| KEYS.contains(&k.as_str()));
+    Ok(all)
 }
 
 #[tauri::command]
@@ -3208,10 +3147,7 @@ async fn compact_vector_store(
 
 #[tauri::command]
 async fn vacuum_database(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    sqlx::query("VACUUM")
-        .execute(&state.db_pool)
-        .await
-        .map_err(|error| AppError::Database(error.to_string()))?;
+    persistence::vacuum(&state.db_pool).await?;
     Ok(serde_json::json!({"status": "vacuumed"}))
 }
 
@@ -3428,9 +3364,10 @@ pub fn run() {
                 tauri::async_runtime::block_on(vector_db.chunks_table_exists()).map_err(|error| {
                     Box::new(std::io::Error::other(error.to_string()))
                 })?;
+            let recovery_repo = DocumentRepository::new(pool.clone());
             if !chunks_table_exists {
                 let requeued = tauri::async_runtime::block_on(
-                    requeue_indexed_documents_after_vector_loss(&pool),
+                    requeue_indexed_documents_after_vector_loss(&recovery_repo),
                 )
                 .map_err(|error| Box::new(std::io::Error::other(error.to_string())))?;
                 if !requeued.is_empty() {
@@ -3439,15 +3376,14 @@ pub fn run() {
                         requeued.len()
                     );
                 }
-            }
-            else {
+            } else {
                 let indexed_chunk_counts =
                     tauri::async_runtime::block_on(vector_db.indexed_chunk_counts()).map_err(
                         |error| Box::new(std::io::Error::other(error.to_string())),
                     )?;
                 let requeued = tauri::async_runtime::block_on(
                     requeue_indexed_documents_with_chunk_count_mismatches(
-                        &pool,
+                        &recovery_repo,
                         &indexed_chunk_counts,
                     ),
                 )

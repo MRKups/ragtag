@@ -47,6 +47,14 @@ pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError
     Ok(pool)
 }
 
+pub async fn vacuum(pool: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query("VACUUM")
+        .execute(pool)
+        .await
+        .map_err(sql_err)?;
+    Ok(())
+}
+
 pub struct DocumentRepository {
     pool: SqlitePool,
 }
@@ -364,6 +372,71 @@ impl DocumentRepository {
 
         Ok(ids)
     }
+
+    pub async fn requeue_indexed_documents_after_vector_loss(
+        &self,
+    ) -> Result<Vec<String>, AppError> {
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+        let ids = sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(sql_err)?;
+        if !ids.is_empty() {
+            sqlx::query(
+                "UPDATE documents
+                 SET status = 'queued',
+                     chunk_count = NULL,
+                     embedding_model = NULL,
+                     embedding_attempts = 0,
+                     processing_started_at = NULL,
+                     indexed_at = NULL,
+                     error_message = NULL,
+                     retry_count = 0
+                 WHERE status = 'indexed'",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_err)?;
+        }
+        transaction.commit().await.map_err(sql_err)?;
+        Ok(ids)
+    }
+
+    pub async fn list_indexed_chunk_counts(&self) -> Result<Vec<(String, Option<i64>)>, AppError> {
+        sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT id, chunk_count FROM documents WHERE status = 'indexed'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_err)
+    }
+
+    pub async fn requeue_indexed_documents_by_ids(&self, ids: &[String]) -> Result<(), AppError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(sql_err)?;
+        for id in ids {
+            sqlx::query(
+                "UPDATE documents
+                 SET status = 'queued',
+                     chunk_count = NULL,
+                     embedding_model = NULL,
+                     embedding_attempts = 0,
+                     processing_started_at = NULL,
+                     indexed_at = NULL,
+                     error_message = NULL,
+                     retry_count = 0
+                 WHERE id = ? AND status = 'indexed'",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_err)?;
+        }
+        transaction.commit().await.map_err(sql_err)?;
+        Ok(())
+    }
 }
 
 async fn requeue_stale_indexed_documents(
@@ -508,6 +581,17 @@ impl AppSettingsRepository {
             .map_err(sql_err)?;
 
         Ok(row.map(|r| r.value))
+    }
+
+    pub async fn get_all(&self) -> Result<std::collections::HashMap<String, String>, AppError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT key, value FROM app_settings",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_err)?;
+
+        Ok(rows.into_iter().collect())
     }
 
     pub async fn set(&self, key: &str, value: &str) -> Result<(), AppError> {
