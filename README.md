@@ -122,5 +122,9 @@ Ragtag is licensed under the [MIT License](LICENSE).
 ### Third-Party Models & Dependencies
 - The application source code is distributed under the MIT License.
 - AI models downloaded or executed by the application (such as EmbeddingGemma or community GGUF models) are subject to their respective upstream licenses and acceptable use policies.
-- For third-party dependency license inventory, see [`docs/third-party-license-inventory.json`](docs/third-party-license-inventory.json).
+- For third-party notices and licenses, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [`docs/third-party-license-inventory.json`](docs/third-party-license-inventory.json).
+
+## Contributing
+
+Contributions, bug reports, and suggestions are welcome! Please review [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development setup, architecture invariants, and testing standards.
 

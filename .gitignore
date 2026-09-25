@@ -65,3 +65,11 @@ rag-demo2/
 opencode.jsonc
 opencode.json
 referenceOnly/
+
+# Models & Weights
+models/
+*.gguf
+*.onnx
+*.safetensors
+*.bin
+
