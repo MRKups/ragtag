@@ -140,7 +140,7 @@ pub fn run() {
                 vector_db,
                 embedder,
                 document_operations,
-                docs_dir: app_local_data,
+                app_local_data,
                 rx,
                 tx,
             });

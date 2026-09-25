@@ -42,7 +42,7 @@ pub struct DocumentWorkerConfig {
     pub vector_db: Arc<VectorDb>,
     pub embedder: Arc<tokio::sync::RwLock<Option<Arc<std::sync::Mutex<fastembed::TextEmbedding>>>>>,
     pub document_operations: Arc<tokio::sync::RwLock<()>>,
-    pub docs_dir: PathBuf,
+    pub app_local_data: PathBuf,
     pub rx: mpsc::Receiver<IngestionJob>,
     pub tx: mpsc::Sender<IngestionJob>,
 }
@@ -54,7 +54,7 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
         vector_db,
         embedder: embedder_worker,
         document_operations: document_operations_worker,
-        docs_dir,
+        app_local_data,
         mut rx,
         tx,
     } = config;
@@ -95,9 +95,9 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                     match desired_indexing_provenance(&settings_repo).await {
                         Ok(provenance) => {
                             let integrity = tokio::task::spawn_blocking({
-                                let docs_dir = docs_dir.clone();
+                                let app_local_data = app_local_data.clone();
                                 let document = doc.clone();
-                                move || verify_document_source_integrity(&docs_dir, &document)
+                                move || verify_document_source_integrity(&app_local_data, &document)
                             })
                             .await
                             .map_err(|error| {
