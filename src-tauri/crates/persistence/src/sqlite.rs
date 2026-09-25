@@ -6,7 +6,11 @@ use sqlx::{
 use std::path::Path;
 
 fn sql_err(e: sqlx::Error) -> AppError {
-    AppError::Database(e.to_string())
+    AppError::storage(
+        "Database operation",
+        e.to_string(),
+        "Check that the application data directory is writable and restart Ragtag.",
+    )
 }
 
 fn insert_document_err(error: sqlx::Error) -> AppError {
@@ -15,7 +19,11 @@ fn insert_document_err(error: sqlx::Error) -> AppError {
             .message()
             .contains("UNIQUE constraint failed: documents.file_hash")
     }) {
-        AppError::DuplicateDocument("This file was uploaded concurrently".into())
+        AppError::duplicate_document(
+            "Register document",
+            "This file was uploaded concurrently",
+            "Verify whether the document is already present in your document library.",
+        )
     } else {
         sql_err(error)
     }
@@ -42,7 +50,13 @@ pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .map_err(|e| AppError::Database(format!("Migration failed: {}", e)))?;
+        .map_err(|e| {
+            AppError::storage(
+                "Run database migrations",
+                format!("Migration failed: {e}"),
+                "Verify database file permissions and restart Ragtag.",
+            )
+        })?;
 
     Ok(pool)
 }
@@ -145,8 +159,13 @@ impl DocumentRepository {
         embedding_model: &str,
         provenance: &IndexProvenance,
     ) -> Result<(), AppError> {
-        let chunk_count = i32::try_from(chunk_count)
-            .map_err(|_| AppError::Database("Chunk count exceeds SQLite integer range".into()))?;
+        let chunk_count = i32::try_from(chunk_count).map_err(|_| {
+            AppError::storage(
+                "Store document chunk count",
+                "Chunk count exceeds SQLite integer range",
+                "Split the document into smaller sections under the chunk budget.",
+            )
+        })?;
 
         sqlx::query(
             "UPDATE documents
@@ -682,7 +701,7 @@ impl AppSettingsRepository {
 #[cfg(test)]
 mod tests {
     use super::{AppSettingsRepository, DocumentRepository, init_pool};
-    use domain::{AppError, Document, DocumentStatus, models::IndexProvenance};
+    use domain::{Document, DocumentStatus, models::IndexProvenance};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DATABASE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -937,16 +956,16 @@ mod tests {
         concurrent.file_hash = first.file_hash.clone();
 
         documents.insert(&first).await.unwrap();
-        assert!(matches!(
-            documents.insert(&concurrent).await,
-            Err(AppError::DuplicateDocument(_))
-        ));
+        assert_eq!(
+            documents.insert(&concurrent).await.unwrap_err().code,
+            domain::ErrorCode::DuplicateDocument
+        );
         let mut id_collision = indexed_document("first", provenance);
         id_collision.file_hash = Some(vec![43; 64]);
-        assert!(matches!(
-            documents.insert(&id_collision).await,
-            Err(AppError::Database(_))
-        ));
+        assert_eq!(
+            documents.insert(&id_collision).await.unwrap_err().code,
+            domain::ErrorCode::Storage
+        );
 
         pool.close().await;
         std::fs::remove_dir_all(path).unwrap();

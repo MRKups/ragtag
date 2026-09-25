@@ -21,8 +21,10 @@ pub fn validate_query_request_id(request_id: &str) -> Result<(), AppError> {
     if request_id.len() > MAX_EXTERNAL_REQUEST_ID_BYTES
         || uuid::Uuid::parse_str(request_id).is_err()
     {
-        return Err(AppError::InvalidInput(
-            "Query request ID must be a UUID no longer than 64 bytes".into(),
+        return Err(AppError::invalid_input(
+            "Validate query request ID",
+            "Query request ID must be a UUID no longer than 64 bytes",
+            "Provide a valid UUID for request_id.",
         ));
     }
 
@@ -31,8 +33,10 @@ pub fn validate_query_request_id(request_id: &str) -> Result<(), AppError> {
 
 pub fn validate_query_request(query: &str, request_id: &str) -> Result<(), AppError> {
     if query.len() > MAX_EXTERNAL_QUERY_BYTES {
-        return Err(AppError::InvalidInput(
-            "Query exceeds the 32 KiB limit".into(),
+        return Err(AppError::invalid_input(
+            "Validate query request",
+            "Query exceeds the 32 KiB limit",
+            "Shorten the query prompt to less than 32 KiB.",
         ));
     }
     validate_query_request_id(request_id)
@@ -40,9 +44,10 @@ pub fn validate_query_request(query: &str, request_id: &str) -> Result<(), AppEr
 
 pub fn require_retrieved_citations(citations: &[Citation]) -> Result<(), AppError> {
     if citations.is_empty() {
-        return Err(AppError::Inference(
-            "No usable document excerpts were retrieved. Add or wait for indexed documents, then try again."
-                .into(),
+        return Err(AppError::inference(
+            "Execute query",
+            "No usable document excerpts were retrieved. Add or wait for indexed documents, then try again.",
+            "Upload relevant documents and ensure indexing has completed before querying.",
         ));
     }
 
@@ -67,18 +72,28 @@ pub fn register_active_query(
     request_id: &str,
 ) -> Result<tokio::sync::watch::Receiver<bool>, AppError> {
     if request_id.is_empty() {
-        return Err(AppError::InvalidInput(
-            "Query request ID must not be empty.".into(),
+        return Err(AppError::invalid_input(
+            "Register active query",
+            "Query request ID must not be empty",
+            "Provide a non-empty request_id.",
         ));
     }
 
     let (sender, receiver) = tokio::sync::watch::channel(false);
     let mut queries = queries
         .lock()
-        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?;
+        .map_err(|_| {
+            AppError::internal(
+                "Register active query",
+                "Query cancellation state is poisoned",
+                "Restart the application to reset query state.",
+            )
+        })?;
     if queries.contains_key(request_id) {
-        return Err(AppError::InvalidInput(
-            "A query with this request ID is already active.".into(),
+        return Err(AppError::invalid_input(
+            "Register active query",
+            "A query with this request ID is already active",
+            "Wait for the active query to finish or cancel it before starting another with the same ID.",
         ));
     }
     queries.insert(request_id.to_owned(), sender);
@@ -107,7 +122,13 @@ pub async fn execute_query(
         guard.clone()
     };
     let embedder = embedder_opt
-        .ok_or_else(|| AppError::Internal("Embedding model not yet loaded. Please wait.".into()))?;
+        .ok_or_else(|| {
+            AppError::internal(
+                "Embed query",
+                "Embedding model not yet loaded. Please wait.",
+                "Wait for the local embedding model to finish loading before executing queries.",
+            )
+        })?;
     let vector_db = state.vector_db.clone();
     let local_llm = state.local_llm.clone();
 
@@ -126,13 +147,25 @@ pub async fn execute_query(
         let retrieval_query = retrieval_query.clone();
         tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&embedder, &retrieval_query))
             .await
-            .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
+            .map_err(|e| {
+                AppError::internal(
+                    "Embed query",
+                    format!("Embedding task panicked: {e}"),
+                    "Restart the application and retry the query.",
+                )
+            })?
     }?;
 
     let app_local_data = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?;
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve storage path",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Verify application local storage permissions.",
+            )
+        })?;
     let citations = {
         let _document_operation = state.document_operations.read().await;
         let indexed_document_ids = repo.get_indexed_ids().await?;
@@ -166,7 +199,13 @@ pub async fn execute_query(
                 document_storage_path(&app_data, &doc_storage_path)
             })
             .await
-            .map_err(|e| AppError::Internal(format!("Storage path check task panicked: {e}")))??;
+            .map_err(|e| {
+                AppError::internal(
+                    "Resolve citation path",
+                    format!("Storage path check task panicked: {e}"),
+                    "Restart the application and retry the query.",
+                )
+            })??;
 
             citations.push(Citation {
                 document_id: result.document_id,
@@ -248,7 +287,13 @@ pub async fn cancel_query(
     let queries = state
         .active_queries
         .lock()
-        .map_err(|_| AppError::Internal("Query cancellation state is poisoned".into()))?;
+        .map_err(|_| {
+            AppError::internal(
+                "Cancel query",
+                "Query cancellation state is poisoned",
+                "Restart the application to reset query state.",
+            )
+        })?;
     if let Some(sender) = queries.get(&request_id) {
         let _ = sender.send(true);
     }
@@ -275,20 +320,17 @@ mod tests {
     #[test]
     fn refuses_queries_without_retrieved_citations() {
         let error = require_retrieved_citations(&[]).unwrap_err();
-        assert!(matches!(&error, AppError::Inference(_)));
-        assert_eq!(
-            serde_json::to_value(error).unwrap()["kind"],
-            serde_json::Value::String("Inference".into())
-        );
+        assert_eq!(error.code, domain::ErrorCode::Inference);
+        let serialized = serde_json::to_value(error).unwrap();
+        assert_eq!(serialized["code"], "inference");
+        assert!(!serialized["recovery"].as_str().unwrap().is_empty());
     }
 
     #[test]
     fn rejects_duplicate_active_query_request_ids() {
         let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
         assert!(register_active_query(&active_queries, "request-1").is_ok());
-        assert!(matches!(
-            register_active_query(&active_queries, "request-1"),
-            Err(AppError::InvalidInput(_))
-        ));
+        let err = register_active_query(&active_queries, "request-1").unwrap_err();
+        assert_eq!(err.code, domain::ErrorCode::InvalidInput);
     }
 }

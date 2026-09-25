@@ -16,6 +16,7 @@
     Loader2
   } from '@lucide/svelte';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
+  import { errorMessage, isAppError, isTransientError } from '$lib/error';
   import Toggle from './Toggle.svelte';
   import AppSelect, { type SelectOption } from './AppSelect.svelte';
 
@@ -411,11 +412,9 @@
         return;
       }
 
-      const errorMessage = typeof err === 'object' && err !== null && 'message' in err && typeof (err as { message: unknown }).message === 'string'
-        ? (err as { message: string }).message
-        : String(err);
-
-      const isAuthError = errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.toLowerCase().includes('authentication');
+      const appErr = isAppError(err) ? err : null;
+      const errDetail = appErr?.detail ?? errorMessage(err);
+      const isAuthError = errDetail.includes('401') || errDetail.includes('403') || errDetail.toLowerCase().includes('authentication');
 
       if (externalModelDraft && !availableExternalModels.includes(externalModelDraft)) {
         availableExternalModels = [externalModelDraft];
@@ -436,13 +435,15 @@
 
         errorDialog.report({
           dedupeKey: 'external-provider-test',
-          title: isAuthError ? 'Authentication required' : 'Remote provider unavailable',
+          title: appErr?.operation ?? (isAuthError ? 'Authentication required' : 'Remote provider unavailable'),
           message: isAuthError
             ? 'The remote provider requires an API key (HTTP 401/403).'
-            : errorMessage || 'Ragtag could not connect to that remote provider.',
-          guidance: isAuthError
+            : errDetail || 'Ragtag could not connect to that remote provider.',
+          guidance: appErr?.recovery ?? (isAuthError
             ? 'Enter your API key in the field below and test again.'
-            : 'Verify the base URL, ensure the provider is running, or check network settings.'
+            : 'Verify the base URL, ensure the provider is running, or check network settings.'),
+          code: appErr?.code ?? 'inference',
+          transient: appErr ? isTransientError(appErr) : true,
         });
       }
     } finally {

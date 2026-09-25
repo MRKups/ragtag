@@ -39,7 +39,13 @@ pub async fn begin_first_run_init(
     let models_dir = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve models directory",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Verify application local storage permissions.",
+            )
+        })?
         .join("models");
 
     if !embedder_ready && !EMBEDDER_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
@@ -113,8 +119,10 @@ pub async fn retry_local_model_initialization(
         .await?
         .unwrap_or_else(|| "local".to_string());
     if mode != "local" {
-        return Err(AppError::InvalidInput(
-            "Local model retry is unavailable while external inference is selected".into(),
+        return Err(AppError::invalid_input(
+            "Retry local model initialization",
+            "Local model retry is unavailable while external inference is selected",
+            "Switch inference mode to local in settings before retrying local model initialization.",
         ));
     }
     if state.local_llm.read().await.is_some() {
@@ -125,7 +133,13 @@ pub async fn retry_local_model_initialization(
     let models_dir = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve models directory",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Verify application local storage permissions.",
+            )
+        })?
         .join("models");
     request_llm_initialization(&app, &state, models_dir).await;
     Ok(())

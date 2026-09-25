@@ -1,11 +1,18 @@
 use domain::AppError;
 
 pub fn storage_sizes(app_local_data: &std::path::Path) -> Result<(u64, u64, u64, u64), AppError> {
-    let metadata = std::fs::symlink_metadata(app_local_data)
-        .map_err(|error| AppError::Io(format!("Could not inspect app data directory: {error}")))?;
+    let metadata = std::fs::symlink_metadata(app_local_data).map_err(|error| {
+        AppError::storage(
+            "Inspect application data directory",
+            format!("Could not inspect app data directory: {error}"),
+            "Check that the application local data directory exists and is accessible.",
+        )
+    })?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(AppError::Io(
-            "App data directory must be a real directory, not a symlink".into(),
+        return Err(AppError::storage(
+            "Inspect application data directory",
+            "App data directory must be a real directory, not a symlink",
+            "Ensure the application data directory is a regular folder.",
         ));
     }
 
@@ -20,17 +27,19 @@ pub fn storage_sizes(app_local_data: &std::path::Path) -> Result<(u64, u64, u64,
 pub fn managed_file_size(path: &std::path::Path) -> Result<u64, AppError> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(AppError::Io(format!(
-                "Managed storage path is not a regular file: {}",
-                path.display()
-            )))
+            Err(AppError::storage(
+                "Inspect managed file",
+                format!("Managed storage path is not a regular file: {}", path.display()),
+                "Verify file integrity in the storage directory.",
+            ))
         }
         Ok(metadata) => Ok(metadata.len()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(error) => Err(AppError::Io(format!(
-            "Could not inspect managed storage file {}: {error}",
-            path.display()
-        ))),
+        Err(error) => Err(AppError::storage(
+            "Inspect managed file",
+            format!("Could not inspect managed storage file {}: {error}", path.display()),
+            "Verify file permissions for the storage file.",
+        )),
     }
 }
 
@@ -39,38 +48,43 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(error) => {
-            return Err(AppError::Io(format!(
-                "Could not inspect managed storage directory {}: {error}",
-                path.display()
-            )));
+            return Err(AppError::storage(
+                "Inspect directory size",
+                format!("Could not inspect managed storage directory {}: {error}", path.display()),
+                "Check folder permissions for the directory.",
+            ));
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(AppError::Io(format!(
-            "Managed storage directory is unsafe: {}",
-            path.display()
-        )));
+        return Err(AppError::storage(
+            "Inspect directory size",
+            format!("Managed storage directory is unsafe: {}", path.display()),
+            "Ensure storage directories are regular directories, not symlinks.",
+        ));
     }
 
     let mut total = 0u64;
     let entries = std::fs::read_dir(path).map_err(|error| {
-        AppError::Io(format!(
-            "Could not read managed storage directory {}: {error}",
-            path.display()
-        ))
+        AppError::storage(
+            "Read directory entries",
+            format!("Could not read managed storage directory {}: {error}", path.display()),
+            "Check disk permissions for the directory.",
+        )
     })?;
     for entry in entries {
         let entry = entry.map_err(|error| {
-            AppError::Io(format!(
-                "Could not inspect an entry in {}: {error}",
-                path.display()
-            ))
+            AppError::storage(
+                "Read directory entry",
+                format!("Could not inspect an entry in {}: {error}", path.display()),
+                "Check disk permissions for the directory.",
+            )
         })?;
         let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
-            AppError::Io(format!(
-                "Could not inspect managed storage entry {}: {error}",
-                entry.path().display()
-            ))
+            AppError::storage(
+                "Inspect entry metadata",
+                format!("Could not inspect managed storage entry {}: {error}", entry.path().display()),
+                "Check disk permissions for the file.",
+            )
         })?;
         if metadata.file_type().is_symlink() {
             continue;
@@ -80,16 +94,18 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
         } else if metadata.is_file() {
             metadata.len()
         } else {
-            return Err(AppError::Io(format!(
-                "Managed storage entry is not a regular file or directory: {}",
-                entry.path().display()
-            )));
+            return Err(AppError::storage(
+                "Calculate storage size",
+                format!("Managed storage entry is not a regular file or directory: {}", entry.path().display()),
+                "Ensure only regular files and folders reside in application storage.",
+            ));
         };
         total = total.checked_add(size).ok_or_else(|| {
-            AppError::Io(format!(
-                "Managed storage size overflowed for {}",
-                path.display()
-            ))
+            AppError::storage(
+                "Calculate storage size",
+                format!("Managed storage size overflowed for {}", path.display()),
+                "Reduce file sizes or remove unused files.",
+            )
         })?;
     }
     Ok(total)
@@ -138,35 +154,47 @@ pub fn complete_pending_reset(
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(AppError::Io(format!(
-                "Could not inspect app data directory: {error}"
-            )));
+            return Err(AppError::storage(
+                "Inspect application data directory",
+                format!("Could not inspect app data directory: {error}"),
+                "Verify file permissions for the application data directory.",
+            ));
         }
     };
     if app_data_metadata.file_type().is_symlink() || !app_data_metadata.is_dir() {
-        return Err(AppError::Io(
-            "App data directory must be a real directory, not a symlink".into(),
+        return Err(AppError::storage(
+            "Apply pending reset",
+            "App data directory must be a real directory, not a symlink",
+            "Ensure the application data directory is a regular folder.",
         ));
     }
     if std::fs::symlink_metadata(sentinel)
         .map(|metadata| metadata.file_type().is_symlink())
         .unwrap_or(false)
     {
-        return Err(AppError::Io(
-            "Pending reset marker must not be a symlink".into(),
+        return Err(AppError::storage(
+            "Apply pending reset",
+            "Pending reset marker must not be a symlink",
+            "Remove any invalid symlink at the reset marker location.",
         ));
     }
     let contents = match std::fs::read_to_string(sentinel) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(AppError::Io(format!(
-                "Could not read pending reset marker: {error}"
-            )));
+            return Err(AppError::storage(
+                "Apply pending reset",
+                format!("Could not read pending reset marker: {error}"),
+                "Verify file permissions for the application data directory.",
+            ));
         }
     };
     let config: serde_json::Value = serde_json::from_str(&contents).map_err(|error| {
-        AppError::InvalidInput(format!("Pending reset marker is invalid: {error}"))
+        AppError::invalid_input(
+            "Apply pending reset",
+            format!("Pending reset marker is invalid: {error}"),
+            "Remove the corrupted pending reset sentinel file and retry reset.",
+        )
     })?;
     let delete_models = config["delete_models"].as_bool().unwrap_or(false);
 
@@ -191,18 +219,24 @@ pub fn complete_pending_reset(
     }
 
     if !failures.is_empty() {
-        return Err(AppError::Io(format!(
-            "Pending data reset incomplete: {}",
-            failures.join("; "),
-        )));
+        return Err(AppError::storage(
+            "Apply pending reset",
+            format!("Pending data reset incomplete: {}", failures.join("; ")),
+            "Check for open files or lock processes and restart Ragtag.",
+        ));
     }
 
     if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
         let _ = entry.delete_credential();
     }
 
-    std::fs::remove_file(sentinel)
-        .map_err(|error| AppError::Io(format!("Could not clear pending reset marker: {error}")))?;
+    std::fs::remove_file(sentinel).map_err(|error| {
+        AppError::storage(
+            "Apply pending reset",
+            format!("Could not clear pending reset marker: {error}"),
+            "Remove the reset sentinel file manually if needed.",
+        )
+    })?;
     Ok(())
 }
 

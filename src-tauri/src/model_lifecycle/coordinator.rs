@@ -31,13 +31,25 @@ pub fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
             .ok()
             .filter(|size| (128..=2048).contains(size))
             .map(|_| ())
-            .ok_or_else(|| AppError::InvalidInput("chunk_size must be 128–2048".into())),
+            .ok_or_else(|| {
+                AppError::invalid_input(
+                    "Validate setting",
+                    "chunk_size must be 128–2048",
+                    "Set chunk_size to an integer between 128 and 2048.",
+                )
+            }),
         "chunk_overlap" => value
             .parse::<usize>()
             .ok()
             .filter(|size| *size <= 1024)
             .map(|_| ())
-            .ok_or_else(|| AppError::InvalidInput("chunk_overlap must be 0–1024".into())),
+            .ok_or_else(|| {
+                AppError::invalid_input(
+                    "Validate setting",
+                    "chunk_overlap must be 0–1024",
+                    "Set chunk_overlap to an integer between 0 and 1024.",
+                )
+            }),
         "external_base_url" => normalize_external_base_url(value).map(|_| ()),
         "external_model" if !value.trim().is_empty() => Ok(()),
 
@@ -51,9 +63,11 @@ pub fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
         {
             Ok(())
         }
-        _ => Err(AppError::InvalidInput(format!(
-            "Unsupported or invalid setting: {key}"
-        ))),
+        _ => Err(AppError::invalid_input(
+            "Validate setting",
+            format!("Unsupported or invalid setting: {key}"),
+            "Provide a supported setting name and valid configuration value.",
+        )),
     }
 }
 
@@ -258,7 +272,13 @@ pub async fn request_llm_initialization_from_persisted_state(
     let models_dir = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve models directory",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Ensure application storage path is accessible.",
+            )
+        })?
         .join("models");
     request_llm_initialization(app, state, models_dir).await;
     Ok(())

@@ -46,8 +46,10 @@ pub async fn requeue_indexed_documents_with_chunk_count_mismatches(
 
 pub fn validate_indexing_provenance(provenance: &IndexProvenance) -> Result<(), AppError> {
     if provenance.chunk_overlap >= provenance.chunk_size {
-        return Err(AppError::InvalidInput(
-            "chunk_overlap must be smaller than chunk_size".into(),
+        return Err(AppError::invalid_input(
+            "Validate indexing provenance",
+            "chunk_overlap must be smaller than chunk_size",
+            "Set chunk_overlap to less than chunk_size in settings.",
         ));
     }
 
@@ -58,7 +60,7 @@ pub fn parse_chunk_setting(key: &str, value: &str) -> Result<i32, AppError> {
     validate_setting(key, value)?;
     value
         .parse::<i32>()
-        .map_err(|_| AppError::InvalidInput(format!("Invalid {key}")))
+        .map_err(|_| AppError::invalid_input("Parse chunk setting", format!("Invalid {key}: expected an integer"), "Provide an integer value for chunk settings."))
 }
 
 pub async fn desired_indexing_provenance(
@@ -101,11 +103,17 @@ pub fn enqueue_requeued_documents(
                         }
                     }
                 });
-                return Err(AppError::QueueFull);
+                return Err(AppError::queue_full(
+                    "Enqueue requeued documents",
+                    "Document queue is full; remaining items are being drained in the background",
+                    "Wait for active document indexing jobs to complete before enqueuing additional work.",
+                ));
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                return Err(AppError::Internal(
-                    "document worker stopped before stale document reindex could be queued".into(),
+                return Err(AppError::internal(
+                    "Enqueue requeued documents",
+                    "Document worker stopped before stale document reindex could be queued",
+                    "Restart the application to restart background worker threads.",
                 ));
             }
         }
@@ -319,7 +327,7 @@ mod tests {
             vec!["first-stale".to_string(), "second-stale".to_string()],
         )
         .unwrap_err();
-        assert!(matches!(error, AppError::QueueFull));
+        assert_eq!(error.code, domain::ErrorCode::QueueFull);
         assert_eq!(
             receiver.recv().await.map(|job| job.document_id).as_deref(),
             Some("already-queued")

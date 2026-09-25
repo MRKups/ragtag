@@ -48,13 +48,30 @@
       aria-describedby="error-dialog-description"
     >
       <div class="error-dialog-header">
-        <h2 id="error-dialog-title">{errorDialog.active.title}</h2>
+        <div class="title-row">
+          <h2 id="error-dialog-title">{errorDialog.active.title}</h2>
+          {#if errorDialog.active.code || errorDialog.active.transient !== undefined}
+            <div class="badges">
+              {#if errorDialog.active.code}
+                <span class="error-badge code-badge">{errorDialog.active.code.toUpperCase()}</span>
+              {/if}
+              {#if errorDialog.active.transient !== undefined}
+                <span class="error-badge {errorDialog.active.transient ? 'transient-badge' : 'terminal-badge'}">
+                  {errorDialog.active.transient ? 'Retryable' : 'Terminal'}
+                </span>
+              {/if}
+            </div>
+          {/if}
+        </div>
       </div>
 
       <div id="error-dialog-description" class="error-dialog-description">
         <p class="error-dialog-message">{errorDialog.active.message}</p>
         {#if errorDialog.active.guidance}
-          <p class="error-dialog-guidance">{errorDialog.active.guidance}</p>
+          <div class="error-dialog-recovery">
+            <span class="recovery-label">Suggested Action:</span>
+            <p class="error-dialog-guidance">{errorDialog.active.guidance}</p>
+          </div>
         {/if}
       </div>
 
@@ -112,6 +129,48 @@
     gap: 1rem;
   }
 
+  .title-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    align-items: center;
+  }
+
+  .error-badge {
+    display: inline-block;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
+
+  .code-badge {
+    color: #94a3b8;
+    background: rgba(148, 163, 184, 0.12);
+    border: 1px solid #475569;
+  }
+
+  .transient-badge {
+    color: #fcd34d;
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .terminal-badge {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+
   h2 {
     margin: 0;
     color: #f9fafb;
@@ -120,25 +179,40 @@
     letter-spacing: -0.02em;
   }
 
-
   .error-dialog-description {
     margin-top: 1rem;
   }
 
-  .error-dialog-message,
-  .error-dialog-guidance {
+  .error-dialog-message {
     margin: 0;
     font-size: 0.9375rem;
     line-height: 1.55;
-  }
-
-  .error-dialog-message {
     color: #e2e8f0;
   }
 
+  .error-dialog-recovery {
+    margin-top: 0.875rem;
+    padding: 0.75rem 0.875rem;
+    background: rgba(15, 23, 42, 0.6);
+    border-left: 3px solid #38bdf8;
+    border-radius: 0 0.375rem 0.375rem 0;
+  }
+
+  .recovery-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #38bdf8;
+    margin-bottom: 0.25rem;
+  }
+
   .error-dialog-guidance {
-    margin-top: 0.75rem;
-    color: #94a3b8;
+    margin: 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: #cbd5e1;
   }
 
   .error-dialog-actions {

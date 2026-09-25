@@ -1,6 +1,7 @@
 use domain::AppError;
 use tokenizers::Tokenizer;
 
+#[derive(Debug, Clone)]
 pub struct Chunk {
     pub page: i32,
     pub chunk_index: i32,
@@ -36,7 +37,13 @@ pub fn chunk_pages_with_progress(
     let mut tokenizer = tokenizer;
     tokenizer
         .with_truncation(None)
-        .map_err(|e| AppError::Internal(format!("Failed to disable tokenizer truncation: {e}")))?;
+        .map_err(|e| {
+            AppError::internal(
+                "Configure tokenizer",
+                format!("Failed to disable tokenizer truncation: {e}"),
+                "Restart the application or verify the embedding model installation.",
+            )
+        })?;
     let max_tokens = max_tokens.max(1);
     let mut chunks = Vec::new();
 
@@ -71,7 +78,13 @@ fn append_page_chunks(
 ) -> Result<(), AppError> {
     let source_tokens = tokenizer
         .encode(text, false)
-        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize document text: {e}")))?;
+        .map_err(|e| {
+            AppError::invalid_input(
+                "Tokenize document text",
+                format!("Failed to tokenize document text: {e}"),
+                "Ensure document content contains valid text characters.",
+            )
+        })?;
     let offsets = source_tokens
         .get_offsets()
         .iter()
@@ -86,14 +99,18 @@ fn append_page_chunks(
 
     let prefix_tokens = token_count(tokenizer, PASSAGE_PREFIX)?;
     let content_token_budget = max_tokens.checked_sub(prefix_tokens).ok_or_else(|| {
-        AppError::InvalidInput(format!(
-            "Embedding token limit ({max_tokens}) is too small for the passage prefix"
-        ))
+        AppError::invalid_input(
+            "Chunk document page",
+            format!("Embedding token limit ({max_tokens}) is too small for the passage prefix"),
+            "Increase max_chunk_tokens in settings to exceed the embedding model prefix length.",
+        )
     })?;
     if content_token_budget == 0 {
-        return Err(AppError::InvalidInput(format!(
-            "Embedding token limit ({max_tokens}) leaves no room for document text"
-        )));
+        return Err(AppError::invalid_input(
+            "Chunk document page",
+            format!("Embedding token limit ({max_tokens}) leaves no room for document text"),
+            "Increase max_chunk_tokens in settings to allow sufficient tokens per chunk.",
+        ));
     }
 
     let overlap = overlap_tokens.min(content_token_budget / MAX_OVERLAP_FRACTION_DENOMINATOR);
@@ -130,9 +147,11 @@ fn append_page_chunks(
         }
 
         if !emitted {
-            return Err(AppError::InvalidInput(format!(
-                "Embedding token limit ({max_tokens}) is too small for text on page {page}"
-            )));
+            return Err(AppError::invalid_input(
+                "Chunk document page",
+                format!("Embedding token limit ({max_tokens}) is too small for text on page {page}"),
+                "Increase max_chunk_tokens in settings or inspect the page for unusually long indivisible tokens.",
+            ));
         }
     }
 
@@ -148,9 +167,11 @@ fn push_chunk(
 ) -> Result<(), AppError> {
     let embedding_text = format!("{PASSAGE_PREFIX}{text}");
     if token_count(tokenizer, &embedding_text)? > max_tokens {
-        return Err(AppError::InvalidInput(format!(
-            "Embedding token limit ({max_tokens}) is too small for text on page {page}"
-        )));
+        return Err(AppError::invalid_input(
+            "Chunk document page",
+            format!("Embedding token limit ({max_tokens}) is too small for text on page {page}"),
+            "Increase max_chunk_tokens in settings to accommodate single chunk text.",
+        ));
     }
 
     let trimmed = text.trim();
@@ -168,13 +189,19 @@ fn token_count(tokenizer: &Tokenizer, text: &str) -> Result<usize, AppError> {
     tokenizer
         .encode(text, true)
         .map(|encoding| encoding.len())
-        .map_err(|e| AppError::InvalidInput(format!("Failed to tokenize document text: {e}")))
+        .map_err(|e| {
+            AppError::invalid_input(
+                "Tokenize document text",
+                format!("Failed to tokenize document text: {e}"),
+                "Ensure document content contains valid text characters.",
+            )
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{chunk_pages, chunk_pages_with_progress};
-    use domain::AppError;
+    use domain::ErrorCode;
     use std::cell::RefCell;
     use tokenizers::Tokenizer;
 
@@ -271,9 +298,7 @@ mod tests {
 
     #[test]
     fn rejects_a_limit_that_cannot_fit_the_passage_prefix() {
-        assert!(matches!(
-            chunk_pages(vec![(1, "one".into())], 1, 0, tokenizer()),
-            Err(AppError::InvalidInput(_))
-        ));
+        let err = chunk_pages(vec![(1, "one".into())], 1, 0, tokenizer()).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 }

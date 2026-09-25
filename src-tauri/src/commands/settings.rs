@@ -60,8 +60,10 @@ pub async fn test_external_provider(
     };
     let models = external_model_ids(&fetch_external_models(&state.http_client, &config).await?);
     if models.is_empty() {
-        return Err(AppError::Inference(
-            "External provider returned no usable models".into(),
+        return Err(AppError::inference(
+            "Test external provider",
+            "External provider returned no usable models",
+            "Verify that the provider server has models installed and running (e.g. 'ollama pull <model>').",
         ));
     }
 

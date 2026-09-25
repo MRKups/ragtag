@@ -23,7 +23,11 @@ pub async fn finish_document_deletion(
     })
     .await
     .map_err(|error| {
-        AppError::Internal(format!("Document storage candidate task panicked: {error}"))
+        AppError::internal(
+            "Finalize document deletion",
+            format!("Document storage candidate task panicked: {error}"),
+            "Restart Ragtag to retry pending document deletion cleanup.",
+        )
     })??;
 
     if let Some(source_path) = source_candidate {
@@ -31,15 +35,29 @@ pub async fn finish_document_deletion(
             Ok(metadata) if metadata.file_type().is_file() => {
                 tokio::fs::remove_file(source_path)
                     .await
-                    .map_err(|error| AppError::Io(error.to_string()))?;
+                    .map_err(|error| {
+                        AppError::storage(
+                            "Delete document file",
+                            error.to_string(),
+                            "Verify filesystem permissions in the documents folder.",
+                        )
+                    })?;
             }
             Ok(_) => {
-                return Err(AppError::Io(
-                    "Managed document source must be a regular file, not a symlink".into(),
+                return Err(AppError::storage(
+                    "Delete document file",
+                    "Managed document source must be a regular file, not a symlink",
+                    "Verify file structure integrity in the documents folder.",
                 ));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(AppError::Io(error.to_string())),
+            Err(error) => {
+                return Err(AppError::storage(
+                    "Delete document file",
+                    error.to_string(),
+                    "Verify filesystem permissions in the documents folder.",
+                ));
+            }
         }
     }
 
@@ -89,7 +107,13 @@ pub async fn reconcile_orphan_document_sources(
     match tokio::fs::symlink_metadata(&untrusted_docs_dir).await {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(AppError::Io(error.to_string())),
+        Err(error) => {
+            return Err(AppError::storage(
+                "Inspect documents directory",
+                error.to_string(),
+                "Verify folder permissions in application local data.",
+            ));
+        }
     }
     let docs_dir = tokio::task::spawn_blocking({
         let app_local_data = app_local_data.to_path_buf();
@@ -97,11 +121,21 @@ pub async fn reconcile_orphan_document_sources(
     })
     .await
     .map_err(|error| {
-        AppError::Internal(format!("Managed document directory task panicked: {error}"))
+        AppError::internal(
+            "Reconcile document sources",
+            format!("Managed document directory task panicked: {error}"),
+            "Restart Ragtag to reconcile document files.",
+        )
     })??;
     let mut entries = tokio::fs::read_dir(&docs_dir)
         .await
-        .map_err(|error| AppError::Io(error.to_string()))?;
+        .map_err(|error| {
+            AppError::storage(
+                "Read documents directory",
+                error.to_string(),
+                "Verify folder permissions in application local data.",
+            )
+        })?;
     let mut removed = 0;
 
     while let Some(entry) = entries.next_entry().await? {

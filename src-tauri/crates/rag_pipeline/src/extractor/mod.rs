@@ -26,9 +26,11 @@ pub fn extract_pages(
         "pdf" => pdf::extract_pdf_pages(source_path, on_page_extracted),
         "docx" => docx::extract_docx_pages(source_path, on_page_extracted),
         "text" => text::extract_text_pages(source_path, on_page_extracted),
-        _ => Err(AppError::InvalidInput(format!(
-            "Unsupported document file type '{file_type}'"
-        ))),
+        _ => Err(AppError::invalid_input(
+            "Extract document pages",
+            format!("Unsupported document file type '{file_type}'"),
+            "Provide a supported document format (PDF, DOCX, TXT, or MD).",
+        )),
     }?;
     util::ensure_extracted_pages_within_limit(&extracted.pages)?;
     Ok(extracted)
@@ -52,8 +54,10 @@ pub fn document_preview(
             }
         }
         "docx" => docx::docx_preview(source_path),
-        _ => Err(AppError::InvalidInput(
-            "A preview is unavailable for this document type".into(),
+        _ => Err(AppError::invalid_input(
+            "Generate document preview",
+            "A preview is unavailable for this document type",
+            "Previews are supported for PDF, DOCX, TXT, and Markdown documents.",
         )),
     }
 }

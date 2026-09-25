@@ -61,20 +61,32 @@ pub fn sse_event_data(event: &str) -> Result<Option<String>, AppError> {
 
 pub fn external_sse_token(data: &str) -> Result<Option<String>, AppError> {
     let payload: serde_json::Value = serde_json::from_str(data).map_err(|_| {
-        AppError::Inference("External inference sent malformed SSE JSON payload.".into())
+        AppError::inference(
+            "Parse SSE stream event",
+            "External inference sent malformed SSE JSON payload",
+            "Verify that the external inference provider is OpenAI-compatible.",
+        )
     })?;
     if let Some(error) = payload.get("error") {
         let message = error
             .get("message")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("External provider returned an error.");
-        return Err(AppError::Inference(format!("External provider error: {message}")));
+        return Err(AppError::inference(
+            "Stream external inference",
+            format!("External provider error: {message}"),
+            "Verify external provider API keys, quota, and server logs.",
+        ));
     }
     let choices = payload
         .get("choices")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            AppError::Inference("External inference sent an SSE payload without choices.".into())
+            AppError::inference(
+                "Parse SSE stream event",
+                "External inference sent an SSE payload without choices",
+                "Verify that the external model supports chat streaming.",
+            )
         })?;
     let Some(choice) = choices.first().and_then(serde_json::Value::as_object) else {
         return Ok(None);
@@ -83,16 +95,20 @@ pub fn external_sse_token(data: &str) -> Result<Option<String>, AppError> {
         .get("delta")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| {
-            AppError::Inference(
-                "External inference sent an SSE payload with an invalid delta.".into(),
+            AppError::inference(
+                "Parse SSE stream event",
+                "External inference sent an SSE payload with an invalid delta",
+                "Verify that the external model supports OpenAI-compatible streaming.",
             )
         })?;
 
     match delta.get("content") {
         Some(serde_json::Value::String(token)) => Ok((!token.is_empty()).then(|| token.clone())),
         Some(serde_json::Value::Null) | None => Ok(None),
-        Some(_) => Err(AppError::Inference(
-            "External inference sent an SSE payload with a non-text token.".into(),
+        Some(_) => Err(AppError::inference(
+            "Parse SSE stream event",
+            "External inference sent an SSE payload with a non-text token",
+            "Ensure the external model generates standard text tokens.",
         )),
     }
 }

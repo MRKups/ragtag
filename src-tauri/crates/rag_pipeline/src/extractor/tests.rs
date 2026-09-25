@@ -45,14 +45,14 @@ fn rejects_documents_with_no_extractable_text() {
 fn bounds_plain_text_and_accumulated_extracted_text_before_growth() {
     let invalid_utf8 = bounded_utf8_text_reader(&mut Cursor::new(vec![0xFF]), 1)
         .expect_err("malformed text must return a typed error");
-    assert!(matches!(invalid_utf8, domain::AppError::InvalidInput(_)));
+    assert_eq!(invalid_utf8.code, domain::ErrorCode::InvalidInput);
 
     let oversized = bounded_utf8_text_reader(
         &mut Cursor::new(vec![b'x'; EXTRACTED_TEXT_MAX_BYTES + 1]),
         0,
     )
     .expect_err("plain text beyond the extraction cap must be rejected");
-    assert!(matches!(oversized, domain::AppError::InvalidInput(_)));
+    assert_eq!(oversized.code, domain::ErrorCode::InvalidInput);
 
     let mut text = "x".repeat(EXTRACTED_TEXT_MAX_BYTES - 1);
     append_extracted_text(&mut text, "x").expect("the exact cap is permitted");
@@ -73,7 +73,7 @@ fn rejects_partial_pdf_extraction() {
     let error = pages_from_page_texts(vec!["first".into()], 2, "PDF")
         .expect_err("a missing physical page must fail extraction");
 
-    assert!(matches!(error, domain::AppError::Io(_)));
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
 }
 
 #[test]
@@ -147,11 +147,11 @@ fn rejects_docx_xml_beyond_declared_or_actual_extraction_limit() {
         DOCX_XML_MAX_BYTES as u64 + 1,
     )
     .expect_err("an oversized declared XML entry must be rejected before allocation");
-    assert!(matches!(declared_error, domain::AppError::InvalidInput(_)));
+    assert_eq!(declared_error.code, domain::ErrorCode::InvalidInput);
 
     let actual_error = bounded_docx_xml(&mut Cursor::new(vec![0; DOCX_XML_MAX_BYTES + 1]), 0)
         .expect_err("an XML entry that expands past its declared size must be rejected");
-    assert!(matches!(actual_error, domain::AppError::InvalidInput(_)));
+    assert_eq!(actual_error.code, domain::ErrorCode::InvalidInput);
 }
 
 #[test]

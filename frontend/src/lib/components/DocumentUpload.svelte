@@ -3,7 +3,7 @@
   import { api } from '$lib/api';
   import { documentProgressState } from '$lib/stores/document-progress.svelte';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
-  import { errorMessage, isAppError } from '$lib/error';
+  import { errorMessage, isAppError, isTransientError } from '$lib/error';
 
   let { onUploadComplete }: { onUploadComplete?: () => void } = $props();
 
@@ -119,20 +119,22 @@
         updateUploadStatus(target.id, 'success', 'Queued');
         successCount++;
       } catch (error) {
-        const message = errorMessage(error);
-        const rejected = isAppError(error)
-          ? error.kind === 'InvalidInput' || error.kind === 'DuplicateDocument'
-          : message.startsWith('Invalid input:') || message.startsWith('A document with this content already exists:');
+        const appErr = isAppError(error) ? error : null;
+        const rejected = appErr
+          ? appErr.code === 'invalid_input' || appErr.code === 'duplicate_document'
+          : errorMessage(error).startsWith('Invalid input:') || errorMessage(error).startsWith('A document with this content already exists:');
         updateUploadStatus(target.id, rejected ? 'rejected' : 'error', rejected ? 'Upload rejected' : 'Upload did not start');
         errorDialog.report({
           dedupeKey: rejected ? 'document-upload-rejected' : `document-upload-${target.file.name}`,
-          title: rejected ? 'File cannot be uploaded' : 'Document upload failed',
-          message: rejected
+          title: appErr?.operation ?? (rejected ? 'File cannot be uploaded' : 'Document upload failed'),
+          message: appErr?.detail ?? (rejected
             ? 'Ragtag could not accept this file as a PDF, DOCX, or UTF-8 text document.'
-            : 'Ragtag could not add this document to the processing queue.',
-          guidance: rejected
+            : 'Ragtag could not add this document to the processing queue.'),
+          guidance: appErr?.recovery ?? (rejected
             ? 'Choose a valid PDF, DOCX, or UTF-8 text file and try again.'
-            : 'Check that Ragtag can access its local data directory, then try again.'
+            : 'Check that Ragtag can access its local data directory, then try again.'),
+          code: appErr?.code,
+          transient: isTransientError(error),
         });
       }
     }

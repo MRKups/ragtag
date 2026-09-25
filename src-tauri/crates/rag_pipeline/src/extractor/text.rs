@@ -19,11 +19,22 @@ pub fn extract_text_pages(
 }
 
 fn bounded_utf8_text(source_path: &Path) -> Result<String, AppError> {
-    let mut file = File::open(source_path)
-        .map_err(|e| AppError::Io(format!("Text extraction failed: {e}")))?;
+    let mut file = File::open(source_path).map_err(|e| {
+        AppError::storage(
+            "Open text file",
+            format!("Text extraction failed: {e}"),
+            "Verify file permissions and accessibility.",
+        )
+    })?;
     let source_size = file
         .metadata()
-        .map_err(|e| AppError::Io(format!("Text extraction failed: {e}")))?
+        .map_err(|e| {
+            AppError::storage(
+                "Inspect text metadata",
+                format!("Text extraction failed: {e}"),
+                "Verify file permissions and accessibility.",
+            )
+        })?
         .len();
     if source_size > EXTRACTED_TEXT_MAX_BYTES as u64 {
         return Err(extracted_text_limit_error());
@@ -40,7 +51,11 @@ pub fn bounded_utf8_text_reader(reader: &mut impl Read, capacity: usize) -> Resu
     bytes
         .try_reserve_exact(capacity.min(EXTRACTED_TEXT_MAX_BYTES))
         .map_err(|e| {
-            AppError::Internal(format!("Text extraction could not allocate buffer: {e}"))
+            AppError::internal(
+                "Allocate text buffer",
+                format!("Text extraction could not allocate buffer: {e}"),
+                "Ensure sufficient available system memory.",
+            )
         })?;
     if !read_bounded_bytes(
         reader,
@@ -51,7 +66,12 @@ pub fn bounded_utf8_text_reader(reader: &mut impl Read, capacity: usize) -> Resu
         return Err(extracted_text_limit_error());
     }
 
-    let text = String::from_utf8(bytes)
-        .map_err(|_| AppError::InvalidInput("Text extraction source is not valid UTF-8".into()))?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        AppError::invalid_input(
+            "Decode text file",
+            "Text extraction source is not valid UTF-8",
+            "Save the file with UTF-8 encoding before uploading.",
+        )
+    })?;
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_string())
 }

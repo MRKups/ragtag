@@ -28,7 +28,13 @@ pub fn init_embedder(cache_dir: &Path) -> Result<TextEmbedding, AppError> {
             .with_max_length(EMBEDDING_MAX_TOKENS)
             .with_cache_dir(cache_dir.to_path_buf()),
     )
-    .map_err(|e| AppError::Internal(format!("Failed to init embedder: {e}")))
+    .map_err(|e| {
+        AppError::internal(
+            "Initialize embedder",
+            format!("Failed to init embedder: {e}"),
+            "Verify available disk space and network access to download embedding weights.",
+        )
+    })
 }
 
 pub struct DocumentIngestion<'a> {
@@ -71,27 +77,55 @@ pub async fn process_document(
         )
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Extraction task panicked: {e}")))??;
+    .map_err(|e| {
+        AppError::internal(
+            "Extract document pages",
+            format!("Extraction task panicked: {e}"),
+            "Restart the application and try uploading the document again.",
+        )
+    })??;
     let (tokenizer, embedding_token_limit) = {
         let model = embedder
             .lock()
-            .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
+            .map_err(|e| {
+                AppError::internal(
+                    "Lock embedder",
+                    format!("Embedder lock poisoned: {e}"),
+                    "Restart the application to reset model state.",
+                )
+            })?;
         let embedding_token_limit = model
             .tokenizer
             .get_truncation()
             .map(|truncation| truncation.max_length)
             .ok_or_else(|| {
-                AppError::Internal("Embedder tokenizer has no truncation limit".into())
+                AppError::internal(
+                    "Read embedder tokenizer",
+                    "Embedder tokenizer has no truncation limit",
+                    "Verify that the embedding model configuration is valid.",
+                )
             })?;
         (model.tokenizer.clone(), embedding_token_limit)
     };
-    let chunk_size = usize::try_from(provenance.chunk_size)
-        .map_err(|_| AppError::InvalidInput("chunk_size must be positive".into()))?;
-    let chunk_overlap = usize::try_from(provenance.chunk_overlap)
-        .map_err(|_| AppError::InvalidInput("chunk_overlap must be non-negative".into()))?;
+    let chunk_size = usize::try_from(provenance.chunk_size).map_err(|_| {
+        AppError::invalid_input(
+            "Validate chunk size",
+            "chunk_size must be positive",
+            "Specify a positive chunk_size in settings.",
+        )
+    })?;
+    let chunk_overlap = usize::try_from(provenance.chunk_overlap).map_err(|_| {
+        AppError::invalid_input(
+            "Validate chunk overlap",
+            "chunk_overlap must be non-negative",
+            "Specify a non-negative chunk_overlap in settings.",
+        )
+    })?;
     if chunk_overlap >= chunk_size {
-        return Err(AppError::InvalidInput(
-            "chunk_overlap must be smaller than chunk_size".into(),
+        return Err(AppError::invalid_input(
+            "Validate chunk settings",
+            "chunk_overlap must be smaller than chunk_size",
+            "Set chunk_overlap to less than chunk_size in settings.",
         ));
     }
 
@@ -115,12 +149,22 @@ pub async fn process_document(
             },
         )?;
         if chunks.is_empty() {
-            return Err(AppError::Internal("No text chunks produced".into()));
+            return Err(AppError::invalid_input(
+                "Chunk document pages",
+                "No text chunks produced from document",
+                "Ensure the document contains extractable text before ingesting.",
+            ));
         }
         Ok(chunks)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Chunking task panicked: {e}")))??;
+    .map_err(|e| {
+        AppError::internal(
+            "Chunk document pages",
+            format!("Chunking task panicked: {e}"),
+            "Restart the application and retry ingestion.",
+        )
+    })??;
     ensure_chunk_budget(&chunks)?;
 
     let (chunks, embeddings) = {
@@ -132,7 +176,11 @@ pub async fn process_document(
             let total_batches = embedding_batch_count(total_chunks);
             let mut embeddings = Vec::new();
             embeddings.try_reserve_exact(total_chunks).map_err(|e| {
-                AppError::Internal(format!("Could not allocate embedding results: {e}"))
+                AppError::internal(
+                    "Allocate embeddings",
+                    format!("Could not allocate embedding results: {e}"),
+                    "Free up system memory and retry ingestion.",
+                )
             })?;
 
             for (batch_index, chunk_batch) in chunks.chunks(EMBEDDING_BATCH_SIZE).enumerate() {
@@ -141,12 +189,20 @@ pub async fn process_document(
                     .map(|chunk| format!("{PASSAGE_PREFIX}{}", chunk.content))
                     .collect::<Vec<_>>();
                 let batch_embeddings = {
-                    let mut model = embedder
-                        .lock()
-                        .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
-                    model
-                        .embed(texts, Some(EMBEDDING_BATCH_SIZE))
-                        .map_err(|e| AppError::Internal(format!("Embedding failed: {e}")))?
+                    let mut model = embedder.lock().map_err(|e| {
+                        AppError::internal(
+                            "Lock embedder",
+                            format!("Embedder lock poisoned: {e}"),
+                            "Restart the application to reset model state.",
+                        )
+                    })?;
+                    model.embed(texts, Some(EMBEDDING_BATCH_SIZE)).map_err(|e| {
+                        AppError::internal(
+                            "Generate chunk embeddings",
+                            format!("Embedding failed: {e}"),
+                            "Verify embedding model files or restart the application.",
+                        )
+                    })?
                 };
                 validate_embedding_shapes(chunk_batch, &batch_embeddings)?;
                 embeddings.extend(batch_embeddings);
@@ -162,7 +218,13 @@ pub async fn process_document(
             Ok::<_, AppError>((chunks, embeddings))
         })
         .await
-        .map_err(|e| AppError::Internal(format!("Embedding task panicked: {e}")))?
+        .map_err(|e| {
+            AppError::internal(
+                "Generate chunk embeddings",
+                format!("Embedding task panicked: {e}"),
+                "Restart the application and retry ingestion.",
+            )
+        })?
     }?;
 
     let batch = build_record_batch(document_id, &chunks, &embeddings)?;
@@ -190,9 +252,11 @@ fn embedding_batch_count(total_chunks: usize) -> usize {
 
 fn ensure_chunk_budget(chunks: &[Chunk]) -> Result<(), AppError> {
     if chunks.len() > MAX_DOCUMENT_CHUNKS {
-        return Err(AppError::InvalidInput(format!(
-            "Document produces more than the {MAX_DOCUMENT_CHUNKS}-chunk indexing limit"
-        )));
+        return Err(AppError::invalid_input(
+            "Validate chunk budget",
+            format!("Document produces more than the {MAX_DOCUMENT_CHUNKS}-chunk indexing limit"),
+            "Split the document into smaller files or increase chunk size.",
+        ));
     }
 
     bounded_embedding_input_bytes(chunks.iter().map(|chunk| chunk.content.len()))?;
@@ -220,13 +284,19 @@ fn bounded_embedding_input_bytes(
 }
 
 fn embedding_input_limit_error() -> AppError {
-    AppError::InvalidInput(format!(
-        "Document embedding input exceeds the {MAX_EMBEDDING_INPUT_BYTES}-byte indexing limit"
-    ))
+    AppError::invalid_input(
+        "Validate embedding input size",
+        format!("Document embedding input exceeds the {MAX_EMBEDDING_INPUT_BYTES}-byte indexing limit"),
+        "Split the document into smaller files before ingesting.",
+    )
 }
 
 fn embedding_shape_error(message: impl Into<String>) -> AppError {
-    AppError::Internal(format!("Invalid embedding shape: {}", message.into()))
+    AppError::internal(
+        "Validate embedding shape",
+        format!("Invalid embedding shape: {}", message.into()),
+        "Verify embedding model configuration and output dimensions.",
+    )
 }
 
 fn checked_embedding_value_count(num_chunks: usize) -> Result<usize, AppError> {
@@ -306,8 +376,10 @@ fn build_record_batch(
 
     let float_values = Float32Array::from(all_floats);
     let arrow_schema::DataType::FixedSizeList(inner_field, _) = schema.field(0).data_type() else {
-        return Err(AppError::Internal(
-            "Schema vector field must be FixedSizeList".into(),
+        return Err(AppError::internal(
+            "Build record batch",
+            "Schema vector field must be FixedSizeList",
+            "Verify vector database schema configuration.",
         ));
     };
     let vector_col = FixedSizeListArray::try_new(
@@ -316,7 +388,13 @@ fn build_record_batch(
         Arc::new(float_values),
         None,
     )
-    .map_err(|e| AppError::Internal(format!("Failed to build vector column: {e}")))?;
+    .map_err(|e| {
+        AppError::internal(
+            "Build record batch",
+            format!("Failed to build vector column: {e}"),
+            "Verify embedding vector dimensions match schema requirements.",
+        )
+    })?;
 
     RecordBatch::try_new(
         schema,
@@ -328,7 +406,13 @@ fn build_record_batch(
             Arc::new(StringArray::from(contents)),
         ],
     )
-    .map_err(|e| AppError::Internal(format!("Failed to build RecordBatch: {e}")))
+    .map_err(|e| {
+        AppError::internal(
+            "Build record batch",
+            format!("Failed to build RecordBatch: {e}"),
+            "Verify chunk metadata fields and schema compatibility.",
+        )
+    })
 }
 
 pub fn embed_query(
@@ -336,21 +420,39 @@ pub fn embed_query(
     query: &str,
 ) -> Result<Vec<f32>, AppError> {
     let query_text = format!("query: {}", query);
-    let mut model = embedder
-        .lock()
-        .map_err(|e| AppError::Internal(format!("Embedder lock poisoned: {e}")))?;
-    let embeddings = model
-        .embed(vec![query_text.as_str()], None)
-        .map_err(|e| AppError::Internal(format!("Query embedding failed: {e}")))?;
+    let mut model = embedder.lock().map_err(|e| {
+        AppError::internal(
+            "Lock embedder",
+            format!("Embedder lock poisoned: {e}"),
+            "Restart the application to reset model state.",
+        )
+    })?;
+    let embeddings = model.embed(vec![query_text.as_str()], None).map_err(|e| {
+        AppError::internal(
+            "Embed query",
+            format!("Query embedding failed: {e}"),
+            "Verify embedding model state or restart the application.",
+        )
+    })?;
     let embedding = embeddings
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::Internal("No embedding returned".into()))?;
+        .ok_or_else(|| {
+            AppError::internal(
+                "Embed query",
+                "No embedding returned",
+                "Verify embedding model output.",
+            )
+        })?;
     if embedding.len() != EMBEDDING_DIMENSION {
-        return Err(AppError::Internal(format!(
-            "Query embedding dimension {} != {EMBEDDING_DIMENSION}",
-            embedding.len()
-        )));
+        return Err(AppError::internal(
+            "Embed query",
+            format!(
+                "Query embedding dimension {} != {EMBEDDING_DIMENSION}",
+                embedding.len()
+            ),
+            "Verify embedding model output dimensions match expected 768.",
+        ));
     }
     Ok(embedding)
 }
@@ -474,13 +576,13 @@ mod tests {
             .collect::<Vec<_>>();
         let error = ensure_chunk_budget(&chunks)
             .expect_err("an unbounded chunk count must not reach embedding");
-        assert!(matches!(error, domain::AppError::InvalidInput(_)));
+        assert_eq!(error.code, domain::ErrorCode::InvalidInput);
 
         let input_error = bounded_embedding_input_bytes([{
             MAX_EMBEDDING_INPUT_BYTES - PASSAGE_PREFIX.len() + 1
         }])
         .expect_err("embedding input work beyond its byte budget must be rejected");
-        assert!(matches!(input_error, domain::AppError::InvalidInput(_)));
+        assert_eq!(input_error.code, domain::ErrorCode::InvalidInput);
     }
 
     #[test]
@@ -488,12 +590,12 @@ mod tests {
         let chunks = vec![chunk("first"), chunk("second")];
         let count_error = validate_embedding_shapes(&chunks, &[vec![0.0; EMBEDDING_DIMENSION]])
             .expect_err("a model result missing an embedding must be rejected");
-        assert!(matches!(count_error, domain::AppError::Internal(_)));
+        assert_eq!(count_error.code, domain::ErrorCode::Internal);
 
         let dimension_error =
             validate_embedding_shapes(&chunks[..1], &[vec![0.0; EMBEDDING_DIMENSION - 1]])
                 .expect_err("a non-768-dimensional vector must be rejected");
-        assert!(matches!(dimension_error, domain::AppError::Internal(_)));
+        assert_eq!(dimension_error.code, domain::ErrorCode::Internal);
 
         assert_eq!(
             validate_embedding_shapes(&chunks[..1], &[vec![0.0; EMBEDDING_DIMENSION]]).unwrap(),

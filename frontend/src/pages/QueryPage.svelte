@@ -5,9 +5,9 @@
   import { api } from '$lib/api';
   import { queryState } from '$lib/stores/query.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
-  import type { TokenEvent } from '$lib/types';
+  import type { AppErrorPayload, TokenEvent } from '$lib/types';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
-  import { errorMessage } from '$lib/error';
+  import { errorMessage, isAppError, isTransientError } from '$lib/error';
   import { router } from '$lib/router.svelte';
   import { settingsState } from '$lib/stores/settings.svelte';
 
@@ -17,15 +17,17 @@
   }
 
 
-  function reportQueryFailure(streamStarted: boolean, noEvidence = false, customMessage?: string) {
+  function reportQueryFailure(streamStarted: boolean, noEvidence = false, customMessage?: string, appErr?: AppErrorPayload | null) {
     if (!noEvidence && settingsState.inference_mode === 'external') {
       errorDialog.report({
         dedupeKey: 'external-inference-readiness',
-        title: streamStarted ? 'Remote answer interrupted' : 'Remote provider unavailable',
+        title: appErr?.operation ?? (streamStarted ? 'Remote answer interrupted' : 'Remote provider unavailable'),
         message: customMessage || (streamStarted
           ? 'The configured remote provider stopped responding before the answer finished.'
           : 'Ragtag could not start an answer with the configured remote provider.'),
-        guidance: 'Check that the provider is running and that its endpoint, model name, and API key are correct.',
+        guidance: appErr?.recovery ?? 'Check that the provider is running and that its endpoint, model name, and API key are correct.',
+        code: appErr?.code ?? 'inference',
+        transient: appErr ? isTransientError(appErr) : true,
         action: { label: 'Open remote settings', run: openRemoteSettings }
       });
       return;
@@ -33,13 +35,15 @@
 
     errorDialog.report({
       dedupeKey: streamStarted ? 'query-stream-failed' : 'query-request-failed',
-      title: streamStarted ? 'Answer interrupted' : 'Ragtag could not answer that question',
+      title: appErr?.operation ?? (streamStarted ? 'Answer interrupted' : 'Ragtag could not answer that question'),
       message: customMessage || (streamStarted
         ? 'The answer stopped before Ragtag finished generating it.'
         : 'Ragtag could not prepare an answer from your indexed documents.'),
-      guidance: streamStarted
+      guidance: appErr?.recovery ?? (streamStarted
         ? 'Any completed text and sources remain available. Try the question again if you need a complete answer.'
-        : 'Make sure at least one relevant document has finished indexing, then try again.',
+        : 'Make sure at least one relevant document has finished indexing, then try again.'),
+      code: appErr?.code,
+      transient: appErr ? isTransientError(appErr) : false,
       action: {
         label: 'Open documents',
         run: () => router.navigate('documents')
@@ -96,8 +100,12 @@
       });
     } catch (error) {
       if (queryState.currentRequestId !== requestId) return;
-      const message = errorMessage(error);
-      reportQueryFailure(false, message.includes('No usable document excerpts were retrieved'), message);
+      const appErr = isAppError(error) ? error : null;
+      const message = appErr?.detail ?? errorMessage(error);
+      const noEvidence = appErr
+        ? appErr.code === 'inference' && appErr.detail.includes('No usable document excerpts')
+        : message.includes('No usable document excerpts were retrieved');
+      reportQueryFailure(false, noEvidence, message, appErr);
       queryState.currentRequestId = null;
       queryState.isStreaming = false;
       queryState.isLoading = false;

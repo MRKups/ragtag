@@ -8,9 +8,14 @@ pub const TEXT_PREVIEW_MAX_BYTES: usize = 1024 * 1024;
 pub use domain::EXTRACTED_TEXT_MAX_BYTES;
 
 pub fn extracted_text_limit_error() -> AppError {
-    AppError::InvalidInput(format!(
-        "Extracted document text exceeds the {EXTRACTED_TEXT_MAX_BYTES}-byte extraction limit"
-    ))
+    AppError::invalid_input(
+        "Extract document text",
+        format!(
+            "Extracted document text exceeds the {} MiB extraction limit",
+            EXTRACTED_TEXT_MAX_BYTES / (1024 * 1024)
+        ),
+        "Upload a smaller document or split it into sections under 16 MiB.",
+    )
 }
 
 pub fn append_extracted_text(text: &mut String, suffix: &str) -> Result<(), AppError> {
@@ -46,7 +51,13 @@ pub fn read_bounded_bytes(
     loop {
         let read = reader
             .read(&mut buffer)
-            .map_err(|e| AppError::Io(format!("{operation} failed: {e}")))?;
+            .map_err(|e| {
+                AppError::storage(
+                    "Read document stream",
+                    format!("{operation} failed: {e}"),
+                    "Verify file readability and storage integrity.",
+                )
+            })?;
         if read == 0 {
             return Ok(true);
         }
@@ -57,18 +68,32 @@ pub fn read_bounded_bytes(
             return Ok(false);
         }
         bytes.try_reserve_exact(read).map_err(|e| {
-            AppError::Internal(format!("{operation} could not allocate buffer: {e}"))
+            AppError::internal(
+                "Allocate buffer",
+                format!("{operation} could not allocate buffer: {e}"),
+                "Ensure sufficient available system memory.",
+            )
         })?;
         bytes.extend_from_slice(&buffer[..read]);
     }
 }
 
 pub fn utf8_preview(source_path: &Path, operation: &str) -> Result<(String, bool), AppError> {
-    let mut file = File::open(source_path)
-        .map_err(|e| AppError::Io(format!("{operation} could not open source: {e}")))?;
+    let mut file = File::open(source_path).map_err(|e| {
+        AppError::storage(
+            "Open preview file",
+            format!("{operation} could not open source: {e}"),
+            "Verify file permissions and accessibility.",
+        )
+    })?;
     let (bytes, truncated) = preview_bytes(&mut file, operation)?;
-    let content = String::from_utf8(bytes)
-        .map_err(|_| AppError::InvalidInput(format!("{operation} source is not valid UTF-8")))?;
+    let content = String::from_utf8(bytes).map_err(|_| {
+        AppError::invalid_input(
+            "Decode preview text",
+            format!("{operation} source is not valid UTF-8"),
+            "Ensure the source file uses valid UTF-8 encoding.",
+        )
+    })?;
     let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
     Ok((content, truncated))
 }
@@ -82,7 +107,13 @@ pub fn preview_raw_bytes(
     reader
         .take((max_bytes + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|e| AppError::Io(format!("{operation} could not read source: {e}")))?;
+        .map_err(|e| {
+            AppError::storage(
+                "Read preview stream",
+                format!("{operation} could not read source: {e}"),
+                "Verify file readability and storage integrity.",
+            )
+        })?;
 
     let truncated = bytes.len() > max_bytes;
     if truncated {
@@ -97,9 +128,11 @@ pub fn preview_bytes(reader: &mut impl Read, operation: &str) -> Result<(Vec<u8>
     if truncated {
         while let Err(error) = std::str::from_utf8(&bytes) {
             if error.error_len().is_some() {
-                return Err(AppError::InvalidInput(format!(
-                    "{operation} source is not valid UTF-8"
-                )));
+                return Err(AppError::invalid_input(
+                    "Decode preview text",
+                    format!("{operation} source is not valid UTF-8"),
+                    "Ensure the source file uses valid UTF-8 encoding.",
+                ));
             }
             bytes.truncate(error.valid_up_to());
         }
@@ -114,10 +147,14 @@ pub fn pages_from_page_texts(
     format: &str,
 ) -> Result<Vec<(i32, String)>, AppError> {
     if page_texts.len() != expected_page_count {
-        return Err(AppError::Io(format!(
-            "{format} extraction stopped after {} of {expected_page_count} pages",
-            page_texts.len()
-        )));
+        return Err(AppError::invalid_input(
+            "Extract document pages",
+            format!(
+                "{format} extraction stopped after {} of {expected_page_count} pages",
+                page_texts.len()
+            ),
+            "Ensure the document is complete and not corrupted.",
+        ));
     }
 
     let pages = page_texts
@@ -130,7 +167,11 @@ pub fn pages_from_page_texts(
         .collect::<Vec<_>>();
 
     if pages.is_empty() {
-        return Err(AppError::Io(format!("No text extracted from {format}")));
+        return Err(AppError::invalid_input(
+            "Extract document pages",
+            format!("No text extracted from {format}"),
+            "Ensure the document contains extractable text, not only scanned images.",
+        ));
     }
 
     Ok(pages)
@@ -139,7 +180,11 @@ pub fn pages_from_page_texts(
 pub fn nonpaginated_page(text: String, format: &str) -> Result<String, AppError> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(AppError::Io(format!("No text extracted from {format}")));
+        return Err(AppError::invalid_input(
+            "Extract document text",
+            format!("No text extracted from {format}"),
+            "Ensure the document contains extractable text, not only scanned images.",
+        ));
     }
     Ok(text.to_string())
 }

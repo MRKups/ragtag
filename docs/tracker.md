@@ -19,16 +19,6 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 
 **References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).
 
-## B191 — Structured error contract with user recovery guidance
-
-**Problem:** Application errors serialize over IPC as `{ kind, message }`. The frontend error modal often lacks structured recovery context when operations fail (such as invalid document format, offline external endpoint, or full queue).
-
-**Outcome:** Upgrade `AppError` and the IPC error payload to provide `{ code, operation, detail, recovery }` following the AGN error standard. Frontend error dialogs display actionable recovery options directly.
-
-**Acceptance:** Backend commands return structured errors with machine-readable codes and non-empty recovery guidance. The frontend error dialog renders explicit recovery actions for transient and terminal failures.
-
-**References:** [DEV-04 and DEV-14](development.md), [data-schema.md](data-schema.md).
-
 ## B192 — Protected execution capacity for cancellations and lifecycle probes
 
 **Problem:** Saturated background ingestion queues or long-running embedding batches can create execution latency for interactive user commands, potentially delaying cancellation requests and status polling.

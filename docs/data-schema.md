@@ -139,4 +139,21 @@ Markdown uses blocks `heading`, `paragraph`, `block_quote`, `list`, `code_block`
 
 ## Error payload
 
-Command errors serialize as `{ kind, message }`. Current `kind` values are `NotFound`, `Database`, `Io`, `VectorDb`, `QueueFull`, `Internal`, `Inference`, `DuplicateDocument`, and `InvalidInput`. Consumers branch on `kind`; messages are display text, not stable identifiers.
+Command errors serialize as `{ code, operation, detail, recovery, message }`. `code` is a machine-readable snake_case identifier matching `ErrorCode`:
+
+| Code | Meaning | Classification |
+| --- | --- | --- |
+| `not_found` | Requested resource, document, or key does not exist. | Terminal |
+| `invalid_input` | Parameter validation, document schema, or extension error. | Terminal |
+| `queue_full` | Ingestion pipeline capacity exhausted. | Transient |
+| `duplicate_document` | Document content hash already indexed in registry. | Terminal |
+| `storage` | SQLite, filesystem, or permission failure. | Transient |
+| `vector_db` | LanceDB table creation, merge_insert, or index error. | Transient |
+| `inference` | Local engine or external model execution failure. | Transient |
+| `internal` | Unexpected system failure, panic, or unclassified defect. | Terminal |
+
+- `operation`: The high-level action being performed when failure occurred (e.g. `Document upload`, `Query execution`).
+- `detail`: The underlying technical cause or bounded diagnostic reason.
+- `recovery`: Actionable, user-facing remediation instruction (e.g. `Wait a moment for existing documents to finish indexing, then retry.`).
+- `message`: Formatted composite string (`"{operation}: {detail}. {recovery}"`) ensuring backward compatibility for consumers expecting a descriptive string message.
+

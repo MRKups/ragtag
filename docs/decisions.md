@@ -145,3 +145,12 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Clear single-responsibility boundaries, isolated headless unit tests for storage operations without requiring Tauri runtime handles, simplified maintenance, and zero IPC contract breaking changes. All blocking operations remain strictly dispatched to worker threads.
 
+## D017 — Structured error contract with user recovery guidance
+
+**Context:** Application errors previously serialized over IPC as `{ kind, message }`. When operations failed (e.g. queue saturation, missing documents, unconfigured or offline external endpoints, duplicate uploads), error dialogs often displayed raw technical strings without actionable recovery steps, and frontend code could not reliably distinguish transient/retryable failures from permanent user-actionable errors.
+
+**Decision:** Standardize `AppError` and the IPC error payload on `{ code, operation, detail, recovery, message }` following the AGN error standard. Use a typed `ErrorCode` enum serialized as snake_case (`not_found`, `invalid_input`, `queue_full`, `duplicate_document`, `storage`, `vector_db`, `inference`, `internal`). Enforce non-empty active-voice user recovery guidance on every error constructor (`DEV-04` and `DEV-14`). The frontend error dialog renders explicit transient status badges and dedicated suggested-action guidance panels while preserving backwards compatibility through the formatted `message` string field.
+
+**Consequences:** Users receive clear diagnostic feedback paired with direct instructions on how to recover from any error. Frontend code deterministically classifies retryable operations (`queue_full`, `inference`, `storage`) from terminal failures. Raw strings and untyped errors across backend and frontend are eliminated.
+
+

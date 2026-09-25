@@ -101,7 +101,13 @@ pub async fn download_model(
     let client = hf_hub::HFClient::builder()
         .cache_dir(cache_dir)
         .build()
-        .map_err(|e| AppError::Internal(format!("hf-hub client init: {e}")))?;
+        .map_err(|e| {
+            AppError::internal(
+                "Initialize model download client",
+                format!("Failed to initialize Hugging Face Hub client: {e}"),
+                "Verify network connectivity and cache directory permissions.",
+            )
+        })?;
     let (owner, name) = hf_hub::split_id(model_id);
     let repo = client.model(owner, name);
 
@@ -140,9 +146,13 @@ pub async fn download_model(
                 warn!("download attempt {attempts}/{max_attempts} failed — retrying ({e})");
             }
             Err(e) => {
-                return Err(AppError::Internal(format!(
-                    "Failed to download {filename} from {model_id} after {max_attempts} attempts: {e}"
-                )));
+                return Err(AppError::inference(
+                    "Download model file",
+                    format!(
+                        "Failed to download {filename} from {model_id} after {max_attempts} attempts: {e}"
+                    ),
+                    "Check network connectivity or verify the model repository and filename settings.",
+                ));
             }
         }
     };

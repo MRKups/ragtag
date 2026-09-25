@@ -54,25 +54,38 @@ impl std::io::Write for BoundedPdfText {
 }
 
 pub fn pdf_text_limit_error() -> AppError {
-    AppError::InvalidInput(format!(
-        "PDF extracted text exceeds the {PDF_MAX_PAGE_TEXT_BYTES}-byte per-page or {PDF_MAX_RETAINED_TEXT_BYTES}-byte total extraction limit"
-    ))
+    AppError::invalid_input(
+        "Extract PDF text",
+        format!(
+            "PDF extracted text exceeds the {} MiB per-page or {} MiB total extraction limit",
+            PDF_MAX_PAGE_TEXT_BYTES / (1024 * 1024),
+            PDF_MAX_RETAINED_TEXT_BYTES / (1024 * 1024)
+        ),
+        "Upload a smaller PDF or split the document into smaller chapters.",
+    )
 }
 
 pub fn ensure_pdf_source_within_limit(source_size: u64) -> Result<(), AppError> {
     if source_size > PDF_MAX_SOURCE_BYTES {
-        return Err(AppError::InvalidInput(format!(
-            "PDF source exceeds the {PDF_MAX_SOURCE_BYTES}-byte extraction limit"
-        )));
+        return Err(AppError::invalid_input(
+            "Extract PDF document",
+            format!(
+                "PDF source exceeds the {} MiB extraction limit",
+                PDF_MAX_SOURCE_BYTES / (1024 * 1024)
+            ),
+            "Upload a PDF file smaller than 50 MiB.",
+        ));
     }
     Ok(())
 }
 
 pub fn ensure_pdf_page_count_within_limit(page_count: usize) -> Result<(), AppError> {
     if page_count > PDF_MAX_PAGES {
-        return Err(AppError::InvalidInput(format!(
-            "PDF has more than the {PDF_MAX_PAGES}-page extraction limit"
-        )));
+        return Err(AppError::invalid_input(
+            "Extract PDF document",
+            format!("PDF has {page_count} pages, exceeding the {PDF_MAX_PAGES}-page extraction limit"),
+            "Split the document into sections containing at most 10,000 pages.",
+        ));
     }
     Ok(())
 }
@@ -90,16 +103,31 @@ pub fn extract_pdf_pages(
     on_page_extracted: impl Fn(usize, usize),
 ) -> Result<ExtractedPages, AppError> {
     let source_size = std::fs::metadata(pdf_path)
-        .map_err(|e| AppError::Io(format!("PDF extraction failed: {e}")))?
+        .map_err(|e| {
+            AppError::storage(
+                "Inspect PDF metadata",
+                format!("PDF extraction failed: {e}"),
+                "Check file permissions and accessibility.",
+            )
+        })?
         .len();
     ensure_pdf_source_within_limit(source_size)?;
 
-    let mut document = pdf_extract::Document::load(pdf_path)
-        .map_err(|e| AppError::Io(format!("PDF page enumeration failed: {e}")))?;
+    let mut document = pdf_extract::Document::load(pdf_path).map_err(|e| {
+        AppError::invalid_input(
+            "Load PDF document",
+            format!("PDF page enumeration failed: {e}"),
+            "Verify the file is a valid, uncorrupted PDF document.",
+        )
+    })?;
     if document.is_encrypted() {
-        document
-            .decrypt("")
-            .map_err(|e| AppError::Io(format!("PDF extraction failed: {e}")))?;
+        document.decrypt("").map_err(|e| {
+            AppError::invalid_input(
+                "Decrypt PDF document",
+                format!("PDF decryption failed: {e}"),
+                "Remove the password protection from the PDF before uploading.",
+            )
+        })?;
     }
 
     let total_pages = document.get_pages().len();
@@ -107,8 +135,13 @@ pub fn extract_pdf_pages(
     let mut page_texts = Vec::with_capacity(total_pages);
     let mut retained_text_bytes = 0;
     for page_index in 1..=total_pages {
-        let page_number = u32::try_from(page_index)
-            .map_err(|_| AppError::Io("PDF has more pages than this extractor supports".into()))?;
+        let page_number = u32::try_from(page_index).map_err(|_| {
+            AppError::invalid_input(
+                "Extract PDF page",
+                "PDF has more pages than this extractor supports",
+                "Split the PDF into smaller sections.",
+            )
+        })?;
         let mut page_text = BoundedPdfText::new(pdf_page_text_limit(retained_text_bytes)?);
         let extraction = {
             let mut output =

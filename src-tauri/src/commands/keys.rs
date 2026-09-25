@@ -14,7 +14,11 @@ pub async fn set_api_key(
 ) -> Result<ApiKeyStatus, AppError> {
     let key_to_save = key.trim().to_string();
     if key_to_save.is_empty() {
-        return Err(AppError::InvalidInput("API key cannot be empty".into()));
+        return Err(AppError::invalid_input(
+            "Set API key",
+            "API key cannot be empty",
+            "Enter a valid non-empty API key string.",
+        ));
     }
 
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;

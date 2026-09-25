@@ -10,6 +10,7 @@ const { ErrorDialogState } = await import('./error-dialog.svelte.ts');
 const dialog = new ErrorDialogState();
 const activeTitle = () => dialog.active?.title;
 const queuedCount = () => dialog.queue.length;
+const currentNotice = () => dialog.active;
 
 dialog.report({ dedupeKey: 'upload', title: 'Upload rejected', message: 'Invalid source' });
 dialog.report({ dedupeKey: 'upload', title: 'Duplicate', message: 'Must be ignored' });
@@ -25,6 +26,28 @@ if (activeTitle() !== 'Model unavailable' || queuedCount() !== 0) {
 }
 
 dialog.clear('lifecycle');
-if (dialog.active || queuedCount() !== 0) {
+if (currentNotice() || queuedCount() !== 0) {
   throw new Error('Clear must remove the active and queued notices for a recovered source.');
 }
+
+// Test reportError with structured AppErrorPayload
+dialog.reportError({
+  code: 'vector_db',
+  operation: 'Index compaction',
+  detail: 'Disk full',
+  recovery: 'Free up disk space and retry.',
+  message: 'Index compaction: Disk full. Free up disk space and retry.'
+}, 'Compaction Failed');
+
+if (currentNotice()?.code !== 'vector_db' || currentNotice()?.title !== 'Index compaction' || currentNotice()?.guidance !== 'Free up disk space and retry.') {
+  throw new Error('reportError did not correctly map structured AppError properties.');
+}
+
+dialog.dismiss();
+
+// Test reportError with native Error fallback
+dialog.reportError(new Error('Unexpected network glitch'), 'Network Request');
+if (currentNotice()?.code !== 'internal' || currentNotice()?.title !== 'Network Request' || !currentNotice()?.message.includes('Unexpected network glitch')) {
+  throw new Error('reportError did not correctly map fallback error properties.');
+}
+

@@ -43,15 +43,27 @@ pub struct VectorDb {
     vector_index_built: AtomicBool,
 }
 
+fn vector_err(operation: impl Into<String>, error: impl std::fmt::Display) -> AppError {
+    AppError::vector_db(
+        operation,
+        error.to_string(),
+        "Verify that vector database files in .lancedb are intact and not locked by another process.",
+    )
+}
+
 impl VectorDb {
     pub async fn init(path: &std::path::Path) -> Result<Self, AppError> {
-        let uri = path
-            .to_str()
-            .ok_or_else(|| AppError::Internal("Invalid vector DB path".into()))?;
+        let uri = path.to_str().ok_or_else(|| {
+            AppError::internal(
+                "Initialize vector database",
+                "Invalid vector DB path: path is not valid UTF-8",
+                "Ensure the application data directory path contains valid UTF-8 characters.",
+            )
+        })?;
         let conn = lancedb::connect(uri)
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("Connect to vector database", e))?;
 
         Ok(Self {
             conn,
@@ -66,7 +78,7 @@ impl VectorDb {
             .table_names()
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("Check chunks table existence", e))?;
         Ok(table_names.iter().any(|name| name == "chunks"))
     }
 
@@ -100,7 +112,7 @@ impl VectorDb {
             .table_names()
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("List table names", e))?;
 
         let table = if table_names.iter().any(|name| name == "chunks") {
             self.open_table().await?
@@ -109,7 +121,7 @@ impl VectorDb {
                 .create_empty_table("chunks", Self::schema())
                 .execute()
                 .await
-                .map_err(|e| AppError::VectorDb(e.to_string()))?
+                .map_err(|e| vector_err("Create chunks table", e))?
         };
 
         self.table_exists.store(true, Ordering::Release);
@@ -122,21 +134,27 @@ impl VectorDb {
             .open_table("chunks")
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))
+            .map_err(|e| vector_err("Open chunks table", e))
     }
 
     pub async fn delete_chunks(&self, document_id: &str) -> Result<(), AppError> {
         let _permit = VECTOR_WRITE_LOCK
             .acquire()
             .await
-            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
+            .map_err(|_| {
+                AppError::internal(
+                    "Delete vector chunks",
+                    "Failed to acquire vector write lock",
+                    "Wait for active vector operations to complete and retry.",
+                )
+            })?;
 
         let table_names = self
             .conn
             .table_names()
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("List table names for deletion", e))?;
 
         if table_names.iter().any(|name| name == "chunks") {
             let table = self
@@ -144,12 +162,12 @@ impl VectorDb {
                 .open_table("chunks")
                 .execute()
                 .await
-                .map_err(|e| AppError::VectorDb(e.to_string()))?;
+                .map_err(|e| vector_err("Open chunks table for deletion", e))?;
 
             table
                 .delete(&delete_document_filter(document_id))
                 .await
-                .map_err(|e| AppError::VectorDb(e.to_string()))?;
+                .map_err(|e| vector_err("Delete document chunks", e))?;
         }
 
         Ok(())
@@ -169,7 +187,13 @@ impl VectorDb {
         let _permit = VECTOR_WRITE_LOCK
             .acquire()
             .await
-            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
+            .map_err(|_| {
+                AppError::internal(
+                    "Insert vector chunks",
+                    "Failed to acquire vector write lock",
+                    "Wait for ongoing vector writes to finish and retry.",
+                )
+            })?;
 
         let schema = Self::schema();
 
@@ -182,7 +206,7 @@ impl VectorDb {
                 batch_vec, schema,
             )))
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("Upsert chunks into vector table", e))?;
 
         self.ensure_indexes(&table).await?;
 
@@ -200,7 +224,7 @@ impl VectorDb {
                 table
                     .list_indices()
                     .await
-                    .map_err(|e| AppError::VectorDb(format!("Failed to list indexes: {e}")))?,
+                    .map_err(|e| vector_err("List vector table indexes", e))?,
             )
         };
 
@@ -216,7 +240,7 @@ impl VectorDb {
                     .create_index(&["content"], fts_params)
                     .execute()
                     .await
-                    .map_err(|e| AppError::VectorDb(format!("FTS index creation failed: {e}")))?;
+                    .map_err(|e| vector_err("Create FTS index on chunks table", e))?;
                 wait_for_index(table, &lancedb::index::IndexType::FTS, "content").await?;
                 self.fts_index_built.store(true, Ordering::SeqCst);
             }
@@ -237,7 +261,7 @@ impl VectorDb {
         let vector_count = table
             .count_rows(None)
             .await
-            .map_err(|e| AppError::VectorDb(format!("Failed to count vectors: {e}")))?;
+            .map_err(|e| vector_err("Count vectors in chunks table", e))?;
         if !should_build_ivf_pq(vector_count) {
             return Ok(());
         }
@@ -249,7 +273,7 @@ impl VectorDb {
             )
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(format!("Vector index creation failed: {e}")))?;
+            .map_err(|e| vector_err("Create vector index on chunks table", e))?;
         wait_for_index(table, &lancedb::index::IndexType::IvfPq, "vector").await?;
         self.vector_index_built.store(true, Ordering::SeqCst);
 
@@ -260,7 +284,13 @@ impl VectorDb {
         let _permit = VECTOR_WRITE_LOCK
             .acquire()
             .await
-            .map_err(|_| AppError::Internal("Failed to acquire vector write lock".into()))?;
+            .map_err(|_| {
+                AppError::internal(
+                    "Compact vector store",
+                    "Failed to acquire vector write lock",
+                    "Wait for active queries to complete and retry.",
+                )
+            })?;
 
         if !self.chunks_table_exists().await? {
             return Ok(());
@@ -270,7 +300,7 @@ impl VectorDb {
         table
             .optimize(lancedb::table::OptimizeAction::default())
             .await
-            .map_err(|e| AppError::VectorDb(format!("Compact failed: {e}")))?;
+            .map_err(|e| vector_err("Compact chunks table", e))?;
         Ok(())
     }
 
@@ -306,7 +336,7 @@ impl VectorDb {
             .query()
             .full_text_search(fts_query)
             .nearest_to(query_vector_f32.clone())
-            .map_err(|e| AppError::VectorDb(e.to_string()))?
+            .map_err(|e| vector_err("Execute hybrid full-text search", e))?
             .only_if(&document_filter)
             .limit(limit)
             .execute()
@@ -323,12 +353,12 @@ impl VectorDb {
                 let stream = table
                     .query()
                     .nearest_to(query_vector_f32)
-                    .map_err(|e| AppError::VectorDb(e.to_string()))?
+                    .map_err(|e| vector_err("Execute vector search query", e))?
                     .only_if(&document_filter)
                     .limit(limit)
                     .execute()
                     .await
-                    .map_err(|e| AppError::VectorDb(e.to_string()))?;
+                    .map_err(|e| vector_err("Fetch vector search stream", e))?;
                 (stream, RetrievalMode::VectorOnly)
             }
         };
@@ -336,20 +366,38 @@ impl VectorDb {
         let mut out = Vec::new();
 
         while let Some(batch) = stream.next().await {
-            let batch = batch.map_err(|e| AppError::VectorDb(e.to_string()))?;
+            let batch = batch.map_err(|e| vector_err("Read search record batch", e))?;
 
             let docs_array = batch
                 .column_by_name("document_id")
                 .and_then(|a| a.as_any().downcast_ref::<StringArray>())
-                .ok_or_else(|| AppError::Internal("Missing document_id".into()))?;
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "Process search results",
+                        "Missing document_id column in chunks batch",
+                        "Re-index documents to regenerate the chunks table.",
+                    )
+                })?;
             let content_array = batch
                 .column_by_name("content")
                 .and_then(|a| a.as_any().downcast_ref::<StringArray>())
-                .ok_or_else(|| AppError::Internal("Missing content".into()))?;
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "Process search results",
+                        "Missing content column in chunks batch",
+                        "Re-index documents to regenerate the chunks table.",
+                    )
+                })?;
             let page_array = batch
                 .column_by_name("page")
                 .and_then(|a| a.as_any().downcast_ref::<Int32Array>())
-                .ok_or_else(|| AppError::Internal("Missing page".into()))?;
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "Process search results",
+                        "Missing page column in chunks batch",
+                        "Re-index documents to regenerate the chunks table.",
+                    )
+                })?;
             let distance_array = batch
                 .column_by_name("_distance")
                 .and_then(|a| a.as_any().downcast_ref::<Float32Array>());
@@ -386,15 +434,21 @@ impl VectorDb {
             .select(lancedb::query::Select::columns(&["document_id"]))
             .execute()
             .await
-            .map_err(|e| AppError::VectorDb(e.to_string()))?;
+            .map_err(|e| vector_err("Select document_id from chunks", e))?;
         let mut counts = HashMap::new();
 
         while let Some(batch) = stream.next().await {
-            let batch = batch.map_err(|e| AppError::VectorDb(e.to_string()))?;
+            let batch = batch.map_err(|e| vector_err("Read chunk count batch", e))?;
             let document_ids = batch
                 .column_by_name("document_id")
                 .and_then(|array| array.as_any().downcast_ref::<StringArray>())
-                .ok_or_else(|| AppError::Internal("Missing document_id".into()))?;
+                .ok_or_else(|| {
+                    AppError::internal(
+                        "Count indexed chunks",
+                        "Missing document_id column in chunks batch",
+                        "Re-index documents to regenerate the chunks table.",
+                    )
+                })?;
 
             for index in 0..batch.num_rows() {
                 *counts
@@ -429,7 +483,7 @@ async fn wait_for_index(
     let indexes = table
         .list_indices()
         .await
-        .map_err(|e| AppError::VectorDb(format!("Failed to list created indexes: {e}")))?;
+        .map_err(|e| vector_err("List created indexes", e))?;
     let index_names: Vec<_> = indexes
         .iter()
         .filter(|index| {
@@ -439,15 +493,17 @@ async fn wait_for_index(
         .collect();
 
     if index_names.is_empty() {
-        return Err(AppError::VectorDb(format!(
-            "Created {index_type} index for {column} was not found in LanceDB"
-        )));
+        return Err(AppError::vector_db(
+            "Verify vector index readiness",
+            format!("Created {index_type} index for {column} was not found in LanceDB"),
+            "Re-run index creation after documents have been indexed.",
+        ));
     }
 
     table
         .wait_for_index(&index_names, std::time::Duration::from_secs(2 * 60 * 60))
         .await
-        .map_err(|e| AppError::VectorDb(format!("Index readiness check failed: {e}")))
+        .map_err(|e| vector_err("Wait for vector index creation", e))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

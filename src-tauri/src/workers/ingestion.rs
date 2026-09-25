@@ -101,9 +101,11 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                             })
                             .await
                             .map_err(|error| {
-                                AppError::Internal(format!(
-                                    "Document integrity task panicked: {error}"
-                                ))
+                                AppError::internal(
+                                    "Verify document integrity",
+                                    format!("Document integrity task panicked: {error}"),
+                                    "Restart the application and retry document ingestion.",
+                                )
                             });
                             match integrity {
                                 Ok(Ok(source_path)) => {

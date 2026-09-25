@@ -29,14 +29,20 @@ impl ExternalInferenceConfig {
         let mut url = self.base_url.clone();
         while url.path().ends_with("//") {
             let mut path = url.path_segments_mut().map_err(|_| {
-                AppError::InvalidInput(
-                    "External base URL cannot be used as an HTTP endpoint".into(),
+                AppError::invalid_input(
+                    "Format external URL",
+                    "External base URL cannot be used as an HTTP endpoint",
+                    "Verify the base URL is a valid HTTP or HTTPS endpoint without trailing slashes.",
                 )
             })?;
             path.pop_if_empty();
         }
         let mut path = url.path_segments_mut().map_err(|_| {
-            AppError::InvalidInput("External base URL cannot be used as an HTTP endpoint".into())
+            AppError::invalid_input(
+                "Format external URL",
+                "External base URL cannot be used as an HTTP endpoint",
+                "Verify the base URL is a valid HTTP or HTTPS endpoint.",
+            )
         })?;
         path.pop_if_empty();
         for segment in segments {
@@ -67,23 +73,35 @@ pub struct ExternalModel {
 
 pub fn parse_external_models_response(bytes: &[u8]) -> Result<ExternalModelsResponse, AppError> {
     let models = serde_json::from_slice::<ExternalModelsResponse>(bytes).map_err(|error| {
-        AppError::Inference(format!(
-            "External inference readiness check received an invalid /models response: {error}"
-        ))
+        AppError::inference(
+            "Parse external models response",
+            format!(
+                "External inference readiness check received an invalid /models response: {error}"
+            ),
+            "Verify the external server returns an OpenAI-compatible /models JSON response.",
+        )
     })?;
     if models.data.len() > MAX_EXTERNAL_MODELS {
-        return Err(AppError::Inference(format!(
-            "External inference /models response exceeds the {MAX_EXTERNAL_MODELS} model limit"
-        )));
+        return Err(AppError::inference(
+            "Validate external models response",
+            format!(
+                "External inference /models response exceeds the {MAX_EXTERNAL_MODELS} model limit"
+            ),
+            "Configure a provider endpoint with fewer exposed models or filter models server-side.",
+        ));
     }
     if models
         .data
         .iter()
         .any(|model| model.id.len() > MAX_EXTERNAL_MODEL_ID_BYTES)
     {
-        return Err(AppError::Inference(format!(
-            "External inference /models response contains a model ID longer than {MAX_EXTERNAL_MODEL_ID_BYTES} bytes"
-        )));
+        return Err(AppError::inference(
+            "Validate external models response",
+            format!(
+                "External inference /models response contains a model ID longer than {MAX_EXTERNAL_MODEL_ID_BYTES} bytes"
+            ),
+            "Ensure external model IDs conform to standard length limits.",
+        ));
     }
 
     Ok(models)
@@ -101,28 +119,46 @@ pub async fn read_external_models_response(
     use futures_util::StreamExt;
 
     if external_models_response_too_large(&response) {
-        return Err(AppError::Inference(format!(
-            "External inference /models response exceeds the {} byte limit",
-            MAX_EXTERNAL_MODELS_RESPONSE_BYTES
-        )));
+        return Err(AppError::inference(
+            "Read external models response",
+            format!(
+                "External inference /models response exceeds the {} byte limit",
+                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+            ),
+            "Configure a provider endpoint with a smaller models catalogue.",
+        ));
     }
 
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next())
         .await
-        .map_err(|_| AppError::Inference("External inference /models response timed out".into()))?
+        .map_err(|_| {
+            AppError::inference(
+                "Read external models response",
+                "External inference /models response timed out",
+                "Check server responsiveness and network connection to the external provider.",
+            )
+        })?
     {
         let chunk = chunk.map_err(|error| {
-            AppError::Inference(format!(
-                "External inference readiness check received an invalid /models response: {error}"
-            ))
+            AppError::inference(
+                "Read external models response",
+                format!(
+                    "External inference readiness check received an invalid /models response: {error}"
+                ),
+                "Verify the external provider endpoint is functioning correctly.",
+            )
         })?;
         if bytes.len().saturating_add(chunk.len()) > MAX_EXTERNAL_MODELS_RESPONSE_BYTES {
-            return Err(AppError::Inference(format!(
-                "External inference /models response exceeds the {} byte limit",
-                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
-            )));
+            return Err(AppError::inference(
+                "Read external models response",
+                format!(
+                    "External inference /models response exceeds the {} byte limit",
+                    MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+                ),
+                "Configure a provider endpoint with a smaller models catalogue.",
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -137,10 +173,14 @@ pub async fn read_external_models_response_cancellable(
     use futures_util::StreamExt;
 
     if external_models_response_too_large(&response) {
-        return Err(AppError::Inference(format!(
-            "External inference /models response exceeds the {} byte limit",
-            MAX_EXTERNAL_MODELS_RESPONSE_BYTES
-        )));
+        return Err(AppError::inference(
+            "Read external models response",
+            format!(
+                "External inference /models response exceeds the {} byte limit",
+                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+            ),
+            "Configure a provider endpoint with a smaller models catalogue.",
+        ));
     }
 
     let mut stream = response.bytes_stream();
@@ -150,20 +190,34 @@ pub async fn read_external_models_response_cancellable(
             _ = cancellation.changed() => return Ok(None),
             result = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next()) => result,
         }
-        .map_err(|_| AppError::Inference("External inference /models response timed out".into()))?;
+        .map_err(|_| {
+            AppError::inference(
+                "Read external models response",
+                "External inference /models response timed out",
+                "Check server responsiveness and network connection to the external provider.",
+            )
+        })?;
         let Some(chunk) = chunk else {
             return parse_external_models_response(&bytes).map(Some);
         };
         let chunk = chunk.map_err(|error| {
-            AppError::Inference(format!(
-                "External inference readiness check received an invalid /models response: {error}"
-            ))
+            AppError::inference(
+                "Read external models response",
+                format!(
+                    "External inference readiness check received an invalid /models response: {error}"
+                ),
+                "Verify the external provider endpoint is functioning correctly.",
+            )
         })?;
         if bytes.len().saturating_add(chunk.len()) > MAX_EXTERNAL_MODELS_RESPONSE_BYTES {
-            return Err(AppError::Inference(format!(
-                "External inference /models response exceeds the {} byte limit",
-                MAX_EXTERNAL_MODELS_RESPONSE_BYTES
-            )));
+            return Err(AppError::inference(
+                "Read external models response",
+                format!(
+                    "External inference /models response exceeds the {} byte limit",
+                    MAX_EXTERNAL_MODELS_RESPONSE_BYTES
+                ),
+                "Configure a provider endpoint with a smaller models catalogue.",
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -171,7 +225,11 @@ pub async fn read_external_models_response_cancellable(
 
 pub fn normalize_external_base_url(value: &str) -> Result<reqwest::Url, AppError> {
     let url = reqwest::Url::parse(value.trim()).map_err(|_| {
-        AppError::InvalidInput("External base URL must be a valid HTTP(S) URL".into())
+        AppError::invalid_input(
+            "Normalize external base URL",
+            "External base URL must be a valid HTTP(S) URL",
+            "Enter a valid URL starting with http:// or https://.",
+        )
     })?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -180,9 +238,10 @@ pub fn normalize_external_base_url(value: &str) -> Result<reqwest::Url, AppError
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(AppError::InvalidInput(
-            "External base URL must be an HTTP(S) URL without credentials, query, or fragment"
-                .into(),
+        return Err(AppError::invalid_input(
+            "Normalize external base URL",
+            "External base URL must be an HTTP(S) URL without credentials, query, or fragment",
+            "Provide a clean host and port URL, e.g. http://localhost:11434/v1.",
         ));
     }
 
@@ -284,25 +343,41 @@ pub async fn fetch_external_models(
     let request = apply_external_auth(client.get(models_url), config.api_key.as_deref());
     let response = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send())
         .await
-        .map_err(|_| AppError::Inference("External inference readiness check timed out".into()))?
+        .map_err(|_| {
+            AppError::inference(
+                "Probe external inference",
+                "External inference readiness check timed out",
+                "Verify the external provider server is running and accessible.",
+            )
+        })?
         .map_err(|error| {
-            AppError::Inference(format!(
-                "External inference readiness check failed: {error}"
-            ))
+            AppError::inference(
+                "Probe external inference",
+                format!("External inference readiness check failed: {error}"),
+                "Verify that the external server URL is reachable.",
+            )
         })?;
 
     if response.status() == reqwest::StatusCode::UNAUTHORIZED
         || response.status() == reqwest::StatusCode::FORBIDDEN
     {
-        return Err(AppError::Inference(format!(
-            "Authentication required: endpoint returned HTTP {}",
-            response.status()
-        )));
+        return Err(AppError::inference(
+            "Authenticate external inference",
+            format!(
+                "Authentication required: endpoint returned HTTP {}",
+                response.status()
+            ),
+            "Provide a valid API key in settings.",
+        ));
     } else if !response.status().is_success() {
-        return Err(AppError::Inference(format!(
-            "External inference readiness check failed: endpoint returned HTTP {}",
-            response.status()
-        )));
+        return Err(AppError::inference(
+            "Probe external inference",
+            format!(
+                "External inference readiness check failed: endpoint returned HTTP {}",
+                response.status()
+            ),
+            "Check provider server logs and ensure the endpoint supports OpenAI-compatible /v1/models.",
+        ));
     }
 
     read_external_models_response(response).await
@@ -314,10 +389,14 @@ pub async fn probe_external_inference_readiness(
 ) -> Result<(), AppError> {
     let models = fetch_external_models(client, config).await?;
     if !external_model_is_available(&models, &config.model) {
-        return Err(AppError::Inference(format!(
-            "External inference model '{}' is not available from the configured endpoint",
-            config.model
-        )));
+        return Err(AppError::inference(
+            "Validate external model",
+            format!(
+                "External inference model '{}' is not available from the configured endpoint",
+                config.model
+            ),
+            "Select an available model from the external provider's model list.",
+        ));
     }
 
     Ok(())
@@ -334,18 +413,30 @@ pub async fn probe_external_inference_readiness_cancellable(
         _ = cancellation.changed() => return Ok(false),
         result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
-    .map_err(|_| AppError::Inference("External inference readiness check timed out".into()))?
+    .map_err(|_| {
+        AppError::inference(
+            "Probe external inference",
+            "External inference readiness check timed out",
+            "Verify the external provider server is running and accessible.",
+        )
+    })?
     .map_err(|error| {
-        AppError::Inference(format!(
-            "External inference readiness check failed: {error}"
-        ))
+        AppError::inference(
+            "Probe external inference",
+            format!("External inference readiness check failed: {error}"),
+            "Verify that the external server URL is reachable.",
+        )
     })?;
 
     if !response.status().is_success() {
-        return Err(AppError::Inference(format!(
-            "External inference readiness check failed: endpoint returned HTTP {}",
-            response.status()
-        )));
+        return Err(AppError::inference(
+            "Probe external inference",
+            format!(
+                "External inference readiness check failed: endpoint returned HTTP {}",
+                response.status()
+            ),
+            "Check provider server logs and ensure the endpoint supports OpenAI-compatible /v1/models.",
+        ));
     }
 
     let Some(models) = read_external_models_response_cancellable(response, cancellation).await?
@@ -353,10 +444,14 @@ pub async fn probe_external_inference_readiness_cancellable(
         return Ok(false);
     };
     if !external_model_is_available(&models, &config.model) {
-        return Err(AppError::Inference(format!(
-            "External inference model '{}' is not available from the configured endpoint",
-            config.model
-        )));
+        return Err(AppError::inference(
+            "Validate external model",
+            format!(
+                "External inference model '{}' is not available from the configured endpoint",
+                config.model
+            ),
+            "Select an available model from the external provider's model list.",
+        ));
     }
 
     Ok(true)
@@ -382,10 +477,28 @@ pub async fn stream_external_inference(
         _ = cancellation.changed() => return Ok(()),
         result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
-    .map_err(|_| AppError::Inference("External inference request timed out before the response started.".into()))?
-    .map_err(|e| AppError::Inference(format!("External inference request failed: {e}")))?
+    .map_err(|_| {
+        AppError::inference(
+            "Stream external inference",
+            "External inference request timed out before the response started.",
+            "Verify that the external inference server is running and responsive.",
+        )
+    })?
+    .map_err(|e| {
+        AppError::inference(
+            "Stream external inference",
+            format!("External inference request failed: {e}"),
+            "Check network connectivity or external provider server status.",
+        )
+    })?
     .error_for_status()
-    .map_err(|e| AppError::Inference(format!("External inference request failed: {e}")))?;
+    .map_err(|e| {
+        AppError::inference(
+            "Stream external inference",
+            format!("External inference request returned error status: {e}"),
+            "Check provider server logs and verify your model settings.",
+        )
+    })?;
 
     let mut stream = response.bytes_stream();
     let mut total_output_bytes = 0;

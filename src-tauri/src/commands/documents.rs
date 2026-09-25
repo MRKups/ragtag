@@ -13,13 +13,17 @@ use persistence::storage::{
 
 pub fn validate_document_preview_document(document: &Document) -> Result<(), AppError> {
     if document.status != DocumentStatus::Indexed {
-        return Err(AppError::NotFound(
-            "Document is not available for preview".into(),
+        return Err(AppError::not_found(
+            "Validate document preview",
+            "Document is not available for preview",
+            "Wait for the document to complete indexing before opening preview.",
         ));
     }
     if !matches!(document.file_type.as_str(), "text" | "docx") {
-        return Err(AppError::InvalidInput(
-            "A preview is unavailable for this document type".into(),
+        return Err(AppError::invalid_input(
+            "Validate document preview",
+            "A preview is unavailable for this document type",
+            "Previews are supported for text, markdown, and docx documents.",
         ));
     }
 
@@ -36,8 +40,10 @@ pub async fn upload_document(
     let file_type = validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
     if state.embedder.read().await.is_none() {
-        return Err(AppError::Internal(
-            "Embedding model not yet loaded. Please wait before uploading documents.".into(),
+        return Err(AppError::internal(
+            "Upload document",
+            "Embedding model not yet loaded. Please wait before uploading documents.",
+            "Wait for the embedding model to finish initializing before uploading files.",
         ));
     }
     let repo = DocumentRepository::new(state.db_pool.clone());
@@ -45,31 +51,56 @@ pub async fn upload_document(
     let app_local_data = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?;
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve storage path",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Verify application local storage permissions.",
+            )
+        })?;
     let docs_dir = tokio::task::spawn_blocking({
         let app_local_data = app_local_data.clone();
         move || managed_documents_directory(&app_local_data, true)
     })
     .await
     .map_err(|error| {
-        AppError::Internal(format!("Managed document directory task panicked: {error}"))
+        AppError::internal(
+            "Access documents directory",
+            format!("Managed document directory task panicked: {error}"),
+            "Restart the application and retry uploading.",
+        )
     })??;
 
-    let file_size_bytes = i64::try_from(file_bytes.len())
-        .map_err(|_| AppError::InvalidInput("Document is too large to store".into()))?;
+    let file_size_bytes = i64::try_from(file_bytes.len()).map_err(|_| {
+        AppError::invalid_input(
+            "Store document",
+            "Document is too large to store",
+            "Upload a smaller file within supported platform limits.",
+        )
+    })?;
     let (hash, file_bytes) = tokio::task::spawn_blocking(move || {
         let mut hasher = Sha512::new();
         hasher.update(&file_bytes);
         (hasher.finalize().to_vec(), file_bytes)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Hashing failed: {e}")))?;
+    .map_err(|e| {
+        AppError::internal(
+            "Hash document",
+            format!("Hashing failed: {e}"),
+            "Retry uploading the document.",
+        )
+    })?;
 
     if let Some(existing) = repo.find_by_hash(&hash).await? {
-        return Err(AppError::DuplicateDocument(format!(
-            "This file was already uploaded as '{}' (status: {:?})",
-            existing.filename, existing.status
-        )));
+        return Err(AppError::duplicate_document(
+            "Upload document",
+            format!(
+                "This file was already uploaded as '{}' (status: {:?})",
+                existing.filename, existing.status
+            ),
+            "Delete or rename the existing document if you wish to re-upload it.",
+        ));
     }
 
     let doc_id = uuid::Uuid::now_v7().to_string();
@@ -82,7 +113,13 @@ pub async fn upload_document(
         move || write_document_source_atomically(&storage_path, &file_bytes)
     })
     .await
-    .map_err(|error| AppError::Internal(format!("Document write task panicked: {error}")))??;
+    .map_err(|error| {
+        AppError::internal(
+            "Write document source",
+            format!("Document write task panicked: {error}"),
+            "Restart the application and retry uploading.",
+        )
+    })??;
 
     let created_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -132,10 +169,18 @@ pub async fn upload_document(
                     log::error!("queue-full upload recovery producer stopped: {send_error}");
                 }
             });
-            return Err(AppError::QueueFull);
+            return Err(AppError::queue_full(
+                "Queue document ingestion",
+                "Document queue is full; scheduling durable background ingestion",
+                "Wait for active document indexing jobs to complete before enqueuing additional work.",
+            ));
         }
         let _ = tokio::fs::remove_file(&storage_path).await;
-        return Err(AppError::QueueFull);
+        return Err(AppError::queue_full(
+            "Queue document ingestion",
+            "Document queue is full",
+            "Wait for active document indexing jobs to complete before enqueuing additional work.",
+        ));
     }
 
     Ok(doc_id)
@@ -157,13 +202,25 @@ pub async fn get_document_preview(
     let document = repo
         .get_by_id(&document_id)
         .await?
-        .ok_or_else(|| AppError::NotFound("Document is not available for preview".into()))?;
+        .ok_or_else(|| {
+            AppError::not_found(
+                "Get document preview",
+                "Document is not available for preview",
+                "Ensure the document exists and has completed indexing.",
+            )
+        })?;
     validate_document_preview_document(&document)?;
 
     let app_local_data = app
         .path()
         .app_local_data_dir()
-        .map_err(|e| AppError::Io(e.to_string()))?;
+        .map_err(|e| {
+            AppError::storage(
+                "Resolve storage path",
+                format!("Failed to resolve app local data directory: {e}"),
+                "Verify application local storage permissions.",
+            )
+        })?;
     let storage_path = document.storage_path;
     let file_type = document.file_type;
     let filename = document.filename;
@@ -173,7 +230,13 @@ pub async fn get_document_preview(
         rag_pipeline::extractor::document_preview(&source_path, &file_type, &filename)
     })
     .await
-    .map_err(|e| AppError::Internal(format!("Document preview task panicked: {e}")))?
+    .map_err(|e| {
+        AppError::internal(
+            "Generate document preview",
+            format!("Document preview task panicked: {e}"),
+            "Restart the application and retry previewing the document.",
+        )
+    })?
 }
 
 #[tauri::command]
@@ -183,7 +246,13 @@ pub async fn delete_document(
     id: String,
 ) -> Result<(), AppError> {
     let id = uuid::Uuid::parse_str(&id)
-        .map_err(|_| AppError::InvalidInput("Document ID must be a UUID".into()))?
+        .map_err(|_| {
+            AppError::invalid_input(
+                "Delete document",
+                "Document ID must be a UUID",
+                "Provide a valid UUID document identifier.",
+            )
+        })?
         .to_string();
     let _document_operation = state.document_operations.write().await;
     let repo = DocumentRepository::new(state.db_pool.clone());
@@ -192,7 +261,13 @@ pub async fn delete_document(
         let app_local_data = app
             .path()
             .app_local_data_dir()
-            .map_err(|error| AppError::Io(error.to_string()))?;
+            .map_err(|error| {
+                AppError::storage(
+                    "Resolve storage path",
+                    format!("Failed to resolve app local data directory: {error}"),
+                    "Verify application local storage permissions.",
+                )
+            })?;
         let check_data = app_local_data.clone();
         let check_storage_path = document.storage_path.clone();
         tokio::task::spawn_blocking(move || {
@@ -200,7 +275,11 @@ pub async fn delete_document(
         })
         .await
         .map_err(|error| {
-            AppError::Internal(format!("Document storage check task panicked: {error}"))
+            AppError::internal(
+                "Delete document",
+                format!("Document storage check task panicked: {error}"),
+                "Restart the application and retry document deletion.",
+            )
         })??;
         repo.mark_deleting(&id).await?;
         finish_document_deletion(&repo, &state.vector_db, &app_local_data, &document).await?;
@@ -254,15 +333,11 @@ mod tests {
         assert!(validate_document_preview_document(&document).is_ok());
 
         document.file_type = "pdf".into();
-        assert!(matches!(
-            validate_document_preview_document(&document),
-            Err(AppError::InvalidInput(_))
-        ));
+        let err1 = validate_document_preview_document(&document).unwrap_err();
+        assert_eq!(err1.code, domain::ErrorCode::InvalidInput);
 
         document.status = DocumentStatus::Embedding;
-        assert!(matches!(
-            validate_document_preview_document(&document),
-            Err(AppError::NotFound(_))
-        ));
+        let err2 = validate_document_preview_document(&document).unwrap_err();
+        assert_eq!(err2.code, domain::ErrorCode::NotFound);
     }
 }

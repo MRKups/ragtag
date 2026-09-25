@@ -65,17 +65,21 @@ export type TokenEvent =
   | { type: "done"; citations: Citation[] }
   | { type: "error"; message: string; citations: Citation[] };
 
+export type ErrorCode =
+  | 'not_found'
+  | 'invalid_input'
+  | 'queue_full'
+  | 'duplicate_document'
+  | 'storage'
+  | 'vector_db'
+  | 'inference'
+  | 'internal';
+
 export interface AppErrorPayload {
-  kind:
-    | 'NotFound'
-    | 'Database'
-    | 'Io'
-    | 'VectorDb'
-    | 'QueueFull'
-    | 'Internal'
-    | 'Inference'
-    | 'DuplicateDocument'
-    | 'InvalidInput';
+  code: ErrorCode;
+  operation: string;
+  detail: string;
+  recovery: string;
   message: string;
 }
 

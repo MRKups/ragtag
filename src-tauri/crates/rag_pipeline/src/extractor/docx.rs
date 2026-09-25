@@ -23,13 +23,27 @@ pub fn extract_docx_pages(
     source_path: &Path,
     on_page_extracted: impl Fn(usize, usize),
 ) -> Result<ExtractedPages, AppError> {
-    let file = File::open(source_path)
-        .map_err(|e| AppError::Io(format!("DOCX extraction failed: {e}")))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| AppError::Io(format!("DOCX archive is invalid: {e}")))?;
-    let mut document_xml = archive
-        .by_name("word/document.xml")
-        .map_err(|_| AppError::Io("DOCX archive does not contain document text".into()))?;
+    let file = File::open(source_path).map_err(|e| {
+        AppError::storage(
+            "Open DOCX document",
+            format!("DOCX extraction failed: {e}"),
+            "Verify file permissions and accessibility.",
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        AppError::invalid_input(
+            "Read DOCX archive",
+            format!("DOCX archive is invalid: {e}"),
+            "Ensure the file is a valid Microsoft Word .docx document.",
+        )
+    })?;
+    let mut document_xml = archive.by_name("word/document.xml").map_err(|_| {
+        AppError::invalid_input(
+            "Extract DOCX text",
+            "DOCX archive does not contain document text (word/document.xml missing)",
+            "Ensure the file is a standard DOCX document containing body text.",
+        )
+    })?;
     let declared_xml_size = document_xml.size();
     let xml = bounded_docx_xml(&mut document_xml, declared_xml_size)?;
 
@@ -42,13 +56,27 @@ pub fn extract_docx_pages(
 }
 
 pub fn docx_preview(source_path: &Path) -> Result<DocumentPreview, AppError> {
-    let file = File::open(source_path)
-        .map_err(|e| AppError::Io(format!("DOCX preview could not open source: {e}")))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| AppError::Io(format!("DOCX preview archive is invalid: {e}")))?;
-    let mut document_xml = archive
-        .by_name("word/document.xml")
-        .map_err(|_| AppError::Io("DOCX preview archive does not contain document text".into()))?;
+    let file = File::open(source_path).map_err(|e| {
+        AppError::storage(
+            "Open DOCX preview",
+            format!("DOCX preview could not open source: {e}"),
+            "Verify file permissions.",
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        AppError::invalid_input(
+            "Read DOCX preview archive",
+            format!("DOCX preview archive is invalid: {e}"),
+            "Ensure the file is a valid Microsoft Word .docx document.",
+        )
+    })?;
+    let mut document_xml = archive.by_name("word/document.xml").map_err(|_| {
+        AppError::invalid_input(
+            "Extract DOCX preview",
+            "DOCX preview archive does not contain document text",
+            "Ensure the file is a standard DOCX document containing body text.",
+        )
+    })?;
     let (mut xml, xml_truncated) =
         preview_raw_bytes(&mut document_xml, TEXT_PREVIEW_MAX_BYTES, "DOCX preview")?;
     if xml_truncated
@@ -120,30 +148,53 @@ pub fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, A
                 }
             }
             Ok((_, Event::Text(event))) if in_text => {
-                let decoded = event
-                    .decode()
-                    .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
+                let decoded = event.decode().map_err(|e| {
+                    AppError::invalid_input(
+                        "Decode DOCX text",
+                        format!("DOCX text decoding failed: {e}"),
+                        "Ensure the DOCX document contains valid text encoding.",
+                    )
+                })?;
                 append_extracted_text(&mut text, &decoded)?;
             }
             Ok((_, Event::CData(event))) if in_text => {
-                let decoded = event
-                    .decode()
-                    .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
+                let decoded = event.decode().map_err(|e| {
+                    AppError::invalid_input(
+                        "Decode DOCX CDATA",
+                        format!("DOCX CDATA decoding failed: {e}"),
+                        "Ensure the DOCX document contains valid character data.",
+                    )
+                })?;
                 append_extracted_text(&mut text, &decoded)?;
             }
             Ok((_, Event::GeneralRef(event))) if in_text => {
-                let reference = event
-                    .decode()
-                    .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
+                let reference = event.decode().map_err(|e| {
+                    AppError::invalid_input(
+                        "Decode DOCX entity reference",
+                        format!("DOCX text entity decoding failed: {e}"),
+                        "Ensure the DOCX document contains valid XML entity references.",
+                    )
+                })?;
                 let encoded = format!("&{reference};");
-                let resolved = unescape(&encoded)
-                    .map_err(|e| AppError::Io(format!("DOCX text decoding failed: {e}")))?;
+                let resolved = unescape(&encoded).map_err(|e| {
+                    AppError::invalid_input(
+                        "Unescape DOCX entity reference",
+                        format!("DOCX XML entity unescaping failed: {e}"),
+                        "Ensure the DOCX document contains valid XML entity references.",
+                    )
+                })?;
                 append_extracted_text(&mut text, &resolved)?;
             }
             Ok((_, Event::Eof)) => break,
             Ok(_) => {}
             Err(_) if allow_truncated_eof => break,
-            Err(error) => return Err(AppError::Io(format!("DOCX XML parsing failed: {error}"))),
+            Err(error) => {
+                return Err(AppError::invalid_input(
+                    "Parse DOCX XML",
+                    format!("DOCX XML parsing failed: {error}"),
+                    "Ensure the DOCX document is uncorrupted and valid WordProcessingML.",
+                ));
+            }
         }
         buffer.clear();
     }
@@ -184,8 +235,10 @@ fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
     };
     let (chunks, remainder) = xml.as_chunks::<2>();
     if !remainder.is_empty() {
-        return Err(AppError::InvalidInput(
-            "DOCX document XML has an incomplete UTF-16 code unit".into(),
+        return Err(AppError::invalid_input(
+            "Normalize DOCX XML",
+            "DOCX document XML has an incomplete UTF-16 code unit",
+            "Ensure the DOCX document contains valid XML encoding.",
         ));
     }
 
@@ -199,8 +252,13 @@ fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
             }
         })
         .collect::<Vec<_>>();
-    let text = String::from_utf16(&code_units)
-        .map_err(|_| AppError::InvalidInput("DOCX document XML is not valid UTF-16".into()))?;
+    let text = String::from_utf16(&code_units).map_err(|_| {
+        AppError::invalid_input(
+            "Normalize DOCX XML",
+            "DOCX document XML is not valid UTF-16",
+            "Ensure the DOCX document contains valid XML encoding.",
+        )
+    })?;
     Ok(Cow::Owned(text.into_bytes()))
 }
 
@@ -211,7 +269,11 @@ pub fn bounded_docx_xml(reader: &mut impl Read, declared_size: u64) -> Result<Ve
 
     let mut xml = Vec::new();
     xml.try_reserve_exact(declared_size as usize).map_err(|e| {
-        AppError::Internal(format!("DOCX extraction could not allocate buffer: {e}"))
+        AppError::internal(
+            "Allocate DOCX buffer",
+            format!("DOCX extraction could not allocate buffer: {e}"),
+            "Ensure sufficient available system memory.",
+        )
     })?;
     if !read_bounded_bytes(reader, &mut xml, DOCX_XML_MAX_BYTES, "DOCX extraction")? {
         return Err(docx_xml_limit_error());
@@ -221,7 +283,12 @@ pub fn bounded_docx_xml(reader: &mut impl Read, declared_size: u64) -> Result<Ve
 }
 
 pub fn docx_xml_limit_error() -> AppError {
-    AppError::InvalidInput(format!(
-        "DOCX document XML exceeds the {DOCX_XML_MAX_BYTES}-byte extraction limit"
-    ))
+    AppError::invalid_input(
+        "Extract DOCX document",
+        format!(
+            "DOCX document XML exceeds the {} MiB extraction limit",
+            DOCX_XML_MAX_BYTES / (1024 * 1024)
+        ),
+        "Upload a DOCX document with less than 16 MiB of body text or split it into sections.",
+    )
 }

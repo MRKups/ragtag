@@ -1,3 +1,6 @@
+import type { ErrorCode } from '../types';
+import { isTransientError, toAppErrorPayload } from '../error.ts';
+
 export interface ErrorDialogAction {
   label: string;
   run(): void | Promise<void>;
@@ -8,6 +11,8 @@ export interface ErrorDialogNotice {
   title: string;
   message: string;
   guidance?: string;
+  code?: ErrorCode;
+  transient?: boolean;
   action?: ErrorDialogAction;
 }
 
@@ -23,6 +28,24 @@ export class ErrorDialogState {
     } else {
       this.active = notice;
     }
+  }
+
+  reportError(
+    error: unknown,
+    fallbackTitle = 'Operation Failed',
+    action?: ErrorDialogAction,
+    dedupeKey?: string,
+  ) {
+    const payload = toAppErrorPayload(error, fallbackTitle);
+    this.report({
+      dedupeKey,
+      title: payload.operation || fallbackTitle,
+      message: payload.detail,
+      guidance: payload.recovery,
+      code: payload.code,
+      transient: isTransientError(error),
+      action,
+    });
   }
 
   dismiss() {
