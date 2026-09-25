@@ -1,7 +1,7 @@
 ---
 title: Application architecture
 normative-for: [system boundaries, document lifecycle, query lifecycle]
-depends: [data-schema.md, decisions.md]
+depends: [data-schema.md, decisions.md, system-map.md, development.md]
 status: current reference. Source code and migrations override conflicting statements.
 ---
 
@@ -13,15 +13,18 @@ Ragtag answers questions about user-provided documents. The interface runs in a 
 
 | Subsystem | Responsibility | Authority boundary |
 | --- | --- | --- |
-| Svelte interface | Collects user input, renders results, and presents progress and recovery actions. | It uses the typed IPC boundary. |
-| Tauri application | Validates requests, coordinates work, and exposes typed IPC commands. | It does not make the frontend a filesystem or database client. |
-| Document pipeline | Extracts supported source formats, produces page-aware chunks, embeds text, and prepares previews. | It creates derived data, not canonical documents. |
-| SQLite | Stores the document registry, lifecycle state, indexing provenance, and non-secret settings. | It decides whether a document is eligible for retrieval. |
-| LanceDB | Stores derived chunks and vectors for local search. | It is recoverable from retained sources and the SQLite registry. |
-| OS keychain | Stores the optional external-provider API key (falling back to SQLite if keychain is unavailable). | The key does not enter frontend storage, logs, or IPC payloads. |
-| Inference providers | Generate an answer from a query and retrieved excerpts. | Local inference is the default. External inference is a user-selected trust boundary. |
+| Svelte interface | Collects user input, renders streaming results, and presents progress and recovery actions. | Interacts exclusively through the typed IPC boundary in `src/lib/api.ts`. |
+| Tauri application shell | Validates requests, coordinates lifecycle, and exposes typed IPC commands. | Composes native state and adapts IPC. Does not expose the filesystem or databases directly to the WebView. |
+| Background ingestion worker | Consumes document ingestion jobs from a bounded queue with exponential backoff. | Pulls work asynchronously and emits progress events across request-scoped channels. |
+| Document processing pipeline | Extracts supported source formats (PDF, DOCX, text, markdown), produces page-aware chunks, embeds text, and prepares previews. | Generates derived data, never rewriting canonical source documents. |
+| Inference subsystem | Multiplexes between local in-process generation (`mistralrs`) and external OpenAI-compatible streaming endpoints with DoS safeguards. | Local inference is the default. External inference is a user-selected trust boundary. |
+| Model lifecycle coordinator | Coalesces concurrent model download and initialization requests, and verifies vector store readiness. | Manages model state transitions and startup vector table recovery. |
+| Storage & reconciliation | Sandboxes source uploads, validates magic bytes, and cleans up orphaned files and interrupted deletions. | Enforces filesystem boundaries and atomic writes. |
+| SQLite | Stores the document registry, lifecycle state, indexing provenance, and non-secret settings. | Source of truth for document identity and retrieval eligibility. |
+| LanceDB | Stores derived chunks, 768-d vectors, and FTS lexical indexes for local hybrid search. | Derived storage recoverable from retained sources and the SQLite registry. |
+| OS keychain | Stores the optional external-provider API key (falling back to unencrypted SQLite only when keychain is unavailable). | API keys never enter frontend storage, logs, events, or diagnostics. |
 
-[Data schema](data-schema.md) owns persisted fields, settings, and IPC vocabulary. [Design rationale](decisions.md) owns the rationale for durable choices.
+[Data schema](data-schema.md) owns persisted fields, settings, and IPC vocabulary. [System map](system-map.md) owns granular capability-to-file mappings and data flow diagrams. [Design rationale](decisions.md) owns the rationale for durable choices. [Development rules](development.md) owns non-negotiable engineering rules.
 
 ## Data authority
 
