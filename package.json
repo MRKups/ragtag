@@ -16,14 +16,20 @@
     "test:state": "npm run test:state --prefix frontend",
     "test": "npm run test:errors --prefix frontend && npm run test:state --prefix frontend && task test-native"
   },
-  "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MRKups/mrk-ragtag.git"
   },
-  "keywords": [],
+  "keywords": [
+    "rag",
+    "desktop",
+    "tauri",
+    "svelte",
+    "local-ai",
+    "lancedb"
+  ],
   "author": "Michal Kups",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/MRKups/mrk-ragtag/issues"
   },

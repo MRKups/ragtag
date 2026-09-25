@@ -1,3 +1,4 @@
+// Coordinates Tauri IPC commands and event listeners across the native desktop boundary (DEV-06).
 import { invoke, Channel, convertFileSrc } from '@tauri-apps/api/core';
 import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import type {

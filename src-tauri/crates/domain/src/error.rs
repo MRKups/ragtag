@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize, ser::SerializeMap};
 
+/// Machine-readable category classification for structured application errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -32,6 +33,10 @@ impl ErrorCode {
     }
 }
 
+/// Structured application error contract serialized over the Tauri IPC bridge (DEV-14).
+///
+/// Encapsulates error classification (`code`), the executing context (`operation`),
+/// human-readable diagnostics (`detail`), and actionable remediation guidance (`recovery`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, thiserror::Error)]
 #[error("{operation}: {detail}. {recovery}")]
 pub struct AppError {

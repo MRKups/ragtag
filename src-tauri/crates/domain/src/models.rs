@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub const EXTRACTED_TEXT_MAX_BYTES: usize = 16 * 1024 * 1024;
 
+/// Lifecycle state of a user-uploaded document in the SQLite registry (DEV-10).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentStatus {
@@ -14,6 +15,7 @@ pub enum DocumentStatus {
     Failed,
 }
 
+/// Ingestion settings used to index document chunks into vector storage.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndexProvenance {
     pub extraction_version: String,
@@ -21,6 +23,10 @@ pub struct IndexProvenance {
     pub chunk_overlap: i32,
 }
 
+/// Durable document registry entity stored in SQLite (DEV-10).
+///
+/// Acts as the single source of truth for document identity, storage path,
+/// processing lifecycle status, and indexing provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
@@ -126,6 +132,7 @@ pub struct ExternalProviderConnection {
     pub models: Vec<String>,
 }
 
+/// Snapshot of command execution capacity across priority tiers (D018).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapacityState {
     pub ordinary_available: usize,
@@ -134,6 +141,7 @@ pub struct CapacityState {
     pub protected_capacity: usize,
 }
 
+/// Atomic, memory-only probe of application readiness and concurrency metrics (D018).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppLifecycleState {
     pub embedder_ready: bool,

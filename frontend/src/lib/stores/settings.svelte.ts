@@ -1,6 +1,7 @@
+// Synchronizes inference settings and chunk configuration with persistent backend storage.
 import { api } from '../api.ts';
 import { errorDialog } from './error-dialog.svelte.ts';
-import type { AppErrorPayload } from '../types.ts';
+import { isAppError } from '../error.ts';
 
 export const DEFAULT_LOCAL_INFERENCE = {
   generation_model: 'unsloth/Qwen3-1.7B-GGUF',
@@ -10,17 +11,17 @@ export const DEFAULT_LOCAL_INFERENCE = {
 
 export type InferenceConfiguration = 'local' | 'external';
 
-function isQueueFull(error: unknown): error is AppErrorPayload {
+function isQueueFull(error: unknown): boolean {
+  if (isAppError(error) && error.code === 'queue_full') return true;
   if (
-    typeof error !== 'object'
-    || error === null
-    || !('kind' in error)
-    || !('message' in error)
+    typeof error === 'object'
+    && error !== null
+    && 'kind' in error
+    && (error as { kind: string }).kind === 'QueueFull'
   ) {
-    return false;
+    return true;
   }
-
-  return error.kind === 'QueueFull' && typeof error.message === 'string';
+  return false;
 }
 
 export class SettingsState {

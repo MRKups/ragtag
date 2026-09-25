@@ -10,6 +10,10 @@ resolver = "2"
 name = "mrk-ragtag-app"
 version = "0.1.0"
 edition = "2024"
+description = "Local desktop RAG application for technical manuals and documents"
+authors = ["Michal Kups"]
+license = "MIT"
+repository = "https://github.com/MRKups/mrk-ragtag"
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }

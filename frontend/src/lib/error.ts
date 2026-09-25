@@ -1,3 +1,4 @@
+// Normalizes typed IPC errors and classifies transient failures for user guidance.
 import type { AppErrorPayload, ErrorCode } from './types.ts';
 
 const TRANSIENT_CODES: ReadonlySet<ErrorCode> = new Set([

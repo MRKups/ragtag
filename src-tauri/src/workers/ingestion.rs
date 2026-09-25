@@ -1,3 +1,9 @@
+//! Background document ingestion worker.
+//!
+//! Consumes document ingestion jobs from the queue, coordinates text extraction,
+//! chunking, and embedding generation, upserts vector embeddings into LanceDB,
+//! updates SQLite document records, and streams progress updates over IPC channels.
+
 use domain::{AppError, DocumentStatus, IngestionProgress};
 use log::{debug, error, info, warn};
 use persistence::{AppSettingsRepository, DocumentRepository, VectorDb};

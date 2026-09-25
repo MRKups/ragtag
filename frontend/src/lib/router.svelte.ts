@@ -1,3 +1,4 @@
+// Hash router mapping hash fragments to views with document.startViewTransition coordination.
 export type Route = 'query' | 'documents' | 'settings';
 
 class HashRouter {

@@ -1,3 +1,4 @@
+// Shared TypeScript interfaces and payload types mirroring the Rust domain model contracts.
 export type Platform = "macos" | "windows" | "linux";
 
 export type DocumentStatus = "queued" | "embedding" | "indexed" | "failed" | "deleting";

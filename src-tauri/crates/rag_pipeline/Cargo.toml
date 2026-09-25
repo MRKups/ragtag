@@ -2,6 +2,10 @@
 name = "rag_pipeline"
 version = "0.1.0"
 edition = "2024"
+description = "Document extraction, chunking, and embedding pipeline for Ragtag"
+authors = ["Michal Kups"]
+license = "MIT"
+repository = "https://github.com/MRKups/mrk-ragtag"
 
 [dependencies]
 domain = { path = "../domain" }

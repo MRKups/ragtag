@@ -1,3 +1,9 @@
+//! Model lifecycle coordination and settings reconciliation.
+//!
+//! Manages model downloading, background initialization, external provider validation,
+//! and generation-tracked settings updates. Rapid setting changes coalesce via monotonic
+//! generation counters so only the latest configuration triggers active model reload.
+
 use domain::AppError;
 use log::{error, info, warn};
 use persistence::AppSettingsRepository;

@@ -1,3 +1,4 @@
+// Manages interactive query state, streamed token accumulation, and retrieval citations.
 import type { Citation } from '../types';
 
 export class QueryState {

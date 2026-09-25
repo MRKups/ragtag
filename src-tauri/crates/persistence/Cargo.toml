@@ -2,6 +2,10 @@
 name = "persistence"
 version = "0.1.0"
 edition = "2024"
+description = "SQLite registry and embedded LanceDB vector storage for Ragtag"
+authors = ["Michal Kups"]
+license = "MIT"
+repository = "https://github.com/MRKups/mrk-ragtag"
 
 [dependencies]
 domain = { path = "../domain" }

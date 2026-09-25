@@ -2,7 +2,6 @@
 
 Ragtag is a local-first macOS desktop application for querying user-provided PDFs, DOCX files, and UTF-8 text documents with retrieved-page citations. Default document processing, embeddings, vector search, and generation run on the device. External OpenAI-compatible inference is optional.
 
-> **Project status:** Ragtag is private and not ready for public source publication or public binary release. See the [open-source readiness audit](docs/open-source-readiness.md).
 
 ## Prerequisites
 
@@ -95,7 +94,7 @@ task bundle
 
 `task build-frontend` creates `frontend/dist`. `task build` creates `src-tauri/target/release/mrk-ragtag-app`. `task bundle` creates `src-tauri/target/release/bundle/macos/Ragtag.app`.
 
-These commands do not create a signed or publicly releasable distribution. See the [open-source readiness audit](docs/open-source-readiness.md).
+These commands build local unsigned developer distributions. For production release packaging, see [Open-source readiness](docs/open-source-readiness.md).
 
 ## Cleanup
 
@@ -115,3 +114,13 @@ These tasks remove build output, not application-local documents, databases, vec
 - [Design rationale](docs/decisions.md)
 - [File structure](docs/file-structure.md)
 - [Implementation tracker](docs/tracker.md)
+
+## License
+
+Ragtag is licensed under the [MIT License](LICENSE).
+
+### Third-Party Models & Dependencies
+- The application source code is distributed under the MIT License.
+- AI models downloaded or executed by the application (such as EmbeddingGemma or community GGUF models) are subject to their respective upstream licenses and acceptable use policies.
+- For third-party dependency license inventory, see [`docs/third-party-license-inventory.json`](docs/third-party-license-inventory.json).
+

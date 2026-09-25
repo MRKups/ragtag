@@ -2,20 +2,18 @@
 title: Open-source readiness audit
 normative-for: [public-source and public-binary release gate]
 depends: [tracker.md, third-party-license-inventory.json, app-architecture.md, data-schema.md]
-status: current release gate. Not ready for public source publication or public binary release.
+status: current release gate. First-party source code released under MIT.
 ---
 
 # Open-source readiness audit
 
-**Assessment date:** 2026-09-16
+**Assessment date:** 2026-09-25
 
 This is the current release gate, not legal advice or a license selection.
 
-## Current blocker
+## Licensing resolution
 
-The root `LICENSE` reserves all rights and grants no permission to use, copy, modify, or distribute. Root `package.json` declares `UNLICENSED`. The frontend and Rust workspace package manifests do not declare a first-party license.
-
-Public source publication and public binary distribution remain blocked until the rights holder confirms ownership of all first-party material, selects a license, replaces the pending license text, and aligns first-party package metadata.
+First-party source code is released under the [MIT License](../LICENSE) by copyright holder Michal Kups. Package manifests (`package.json`, `frontend/package.json`, `src-tauri/Cargo.toml`, and crate manifests) declare `MIT` licensing and repository metadata.
 
 The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package metadata. Treat this local-path dependency as third-party material when assembling provenance and notices; [D007](decisions.md) records Ragtag's source patch.
 
@@ -23,7 +21,7 @@ The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package met
 
 | Gate | Current state | Required evidence |
 | --- | --- | --- |
-| First-party rights and license | Open | Ownership review, selected license, aligned repository and package metadata, and contribution terms. |
+| First-party rights and license | Resolved: [LICENSE](../LICENSE) | Selected MIT license, aligned repository and package metadata. |
 | PDF parser allocation limit | Resolved: [D008](decisions.md) | Streaming parser bounds without artificial decompression budget. |
 | External inference transport | Resolved: [D015](decisions.md) | Keyless probing, credential fallback, and HTTP/HTTPS provider support. |
 | Default model artifact integrity | Resolved: [D011](decisions.md) | Configurable Hugging Face repositories and GGUF filenames with lightweight defaults. |
@@ -54,6 +52,6 @@ Public releases retain:
 5. macOS signing, notarization, and stapling evidence where applicable.
 6. The release version, source revision, and provenance attestation.
 
-## Unresolved legal and provenance questions
+## Legal and provenance status
 
-The repository does not establish final rights ownership, license selection, contribution terms, branding ownership, or model and platform term sufficiency. Resolve them with owner and legal review before presenting Ragtag as open-source ready.
+First-party copyright ownership and MIT licensing are established. Model weights retrieved by users remain subject to their respective upstream licenses. Full third-party dependency licensing is inventoried in `third-party-license-inventory.json`.

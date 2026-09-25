@@ -1,6 +1,10 @@
 use domain::AppError;
 use tokenizers::Tokenizer;
 
+/// A bounded passage chunk derived from an extracted document page (DEV-12).
+///
+/// `chunk_index` is 0-indexed per page. `content` contains the chunk text
+/// without the model-specific `passage:` embedding prefix.
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub page: i32,

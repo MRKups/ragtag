@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+/// Request-scoped streaming event sent to the frontend over a Tauri Channel during query generation.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TokenEvent {
@@ -18,6 +19,7 @@ pub enum TokenEvent {
     },
 }
 
+/// Progress callback payload streamed during document text extraction, chunking, and embedding.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IngestionProgress {
@@ -50,6 +52,7 @@ pub enum IngestionProgress {
     },
 }
 
+/// Retrieval-grounded citation linked to a physical page and source document (DEV-11).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Citation {
     pub document_id: String,

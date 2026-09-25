@@ -1,3 +1,4 @@
+// Manages global application lifecycle state, model download progress, and external inference readiness.
 import { api } from '$lib/api';
 import { errorDialog } from '$lib/stores/error-dialog.svelte';
 import { router } from '$lib/router.svelte';
@@ -133,7 +134,6 @@ export class AppState {
     try {
       this.#unlistenFns.push(
         await api.listen('embedder_ready', () => {
-          console.log('[AppState] embedder ready');
           this.embedderAvailable = true;
           this.#tryBecomeReady();
         })
@@ -165,15 +165,12 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen<ModelDownloadProgress>('model_download_progress', (event) => {
-          const p = event.payload;
-          console.log('[AppState] download progress:', p);
-          this.#applyDownloadProgress(p);
+          this.#applyDownloadProgress(event.payload);
         })
       );
 
       this.#unlistenFns.push(
         await api.listen('model_download_cancelled', () => {
-          console.log('[AppState] model download cancelled');
           this.isDownloadingModel = false;
           this.downloadMessage = '';
           this.downloadProgress = 0;
@@ -184,7 +181,6 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen('llm_ready', () => {
-          console.log('[AppState] LLM ready');
           this.#localModelRetrying = false;
           this.llmReady = true;
           this.isDownloadingModel = false;
@@ -196,7 +192,6 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen('llm_unready', () => {
-          console.log('[AppState] inference initialization requested');
           this.#localModelRetrying = false;
           this.llmReady = false;
           errorDialog.clear('local-model-initialization');
@@ -229,7 +224,6 @@ export class AppState {
       await this.reconcile();
 
       // Trigger first-run init if needed
-      console.log('[AppState] Listeners ready, triggering first-run init');
       api.beginFirstRunInit().catch(() => {
         console.error('[AppState] begin_first_run_init failed');
         this.phase = 'error';

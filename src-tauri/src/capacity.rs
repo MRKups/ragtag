@@ -1,3 +1,10 @@
+//! Command concurrency management and execution capacity limits.
+//!
+//! Provides isolated capacity pools for Ordinary (workload-heavy) commands
+//! and Protected (cancellation, status, and health-check) commands to guarantee
+//! that UI responsiveness and cancellation mechanisms remain operational even under
+//! heavy ingestion or inference loads.
+
 use domain::{AppError, CapacityState};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
