@@ -229,6 +229,14 @@ pub async fn process_document(
 
     let batch = build_record_batch(document_id, &chunks, &embeddings)?;
 
+    if let Some(current_doc) = repo.get_by_id(document_id).await? {
+        if current_doc.status != domain::DocumentStatus::Embedding {
+            return Ok(());
+        }
+    } else {
+        return Ok(());
+    }
+
     vector_db.delete_chunks(document_id).await?;
     vector_db.upsert_chunks(std::iter::once(batch)).await?;
 

@@ -136,12 +136,24 @@ pub fn remove_non_fastembed_models(models_dir: &std::path::Path) -> std::io::Res
         Err(error) => return Err(error),
     }
     let entries = std::fs::read_dir(models_dir)?;
+    let mut last_error = None;
 
     for entry in entries {
-        let entry = entry?;
-        if !entry.file_name().to_string_lossy().contains("fastembed") {
-            remove_path_if_present(&entry.path())?;
+        match entry {
+            Ok(entry) => {
+                if !entry.file_name().to_string_lossy().contains("fastembed")
+                    && let Err(error) = remove_path_if_present(&entry.path())
+                {
+                    last_error = Some(error);
+                }
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
         }
+    }
+    if let Some(error) = last_error {
+        return Err(error);
     }
     Ok(())
 }

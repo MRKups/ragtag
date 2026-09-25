@@ -148,24 +148,38 @@ pub fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, A
                 }
             }
             Ok((_, Event::Text(event))) if in_text => {
-                let decoded = event.decode().map_err(|e| {
-                    AppError::invalid_input(
-                        "Decode DOCX text",
-                        format!("DOCX text decoding failed: {e}"),
-                        "Ensure the DOCX document contains valid text encoding.",
-                    )
-                })?;
-                append_extracted_text(&mut text, &decoded)?;
+                match event.decode() {
+                    Ok(decoded) => append_extracted_text(&mut text, &decoded)?,
+                    Err(_) if allow_truncated_eof => {
+                        let lossy = String::from_utf8_lossy(event.as_ref());
+                        let _ = append_extracted_text(&mut text, &lossy);
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(AppError::invalid_input(
+                            "Decode DOCX text",
+                            format!("DOCX text decoding failed: {e}"),
+                            "Ensure the DOCX document contains valid text encoding.",
+                        ));
+                    }
+                }
             }
             Ok((_, Event::CData(event))) if in_text => {
-                let decoded = event.decode().map_err(|e| {
-                    AppError::invalid_input(
-                        "Decode DOCX CDATA",
-                        format!("DOCX CDATA decoding failed: {e}"),
-                        "Ensure the DOCX document contains valid character data.",
-                    )
-                })?;
-                append_extracted_text(&mut text, &decoded)?;
+                match event.decode() {
+                    Ok(decoded) => append_extracted_text(&mut text, &decoded)?,
+                    Err(_) if allow_truncated_eof => {
+                        let lossy = String::from_utf8_lossy(event.as_ref());
+                        let _ = append_extracted_text(&mut text, &lossy);
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(AppError::invalid_input(
+                            "Decode DOCX CDATA",
+                            format!("DOCX CDATA decoding failed: {e}"),
+                            "Ensure the DOCX document contains valid character data.",
+                        ));
+                    }
+                }
             }
             Ok((_, Event::GeneralRef(event))) if in_text => {
                 let reference = event.decode().map_err(|e| {

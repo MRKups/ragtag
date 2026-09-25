@@ -59,6 +59,17 @@ if (isTransientError(invalidInputError)) {
   throw new Error('isTransientError must identify invalid_input as non-transient.');
 }
 
+const storageError: AppErrorPayload = {
+  code: 'storage',
+  operation: 'Document persistence',
+  detail: 'File permission denied',
+  recovery: 'Verify storage directory permissions.',
+  message: 'Document persistence: File permission denied. Verify storage directory permissions.',
+};
+if (isTransientError(storageError)) {
+  throw new Error('isTransientError must identify storage as non-transient.');
+}
+
 const converted = toAppErrorPayload(new Error('Connection dropped'), 'Network test');
 if (converted.code !== 'internal' || converted.operation !== 'Network test' || !converted.detail.includes('Connection dropped')) {
   throw new Error('toAppErrorPayload failed to convert native error.');

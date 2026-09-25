@@ -25,6 +25,7 @@ export class AppState {
   llmReady = $state(false);
   isDownloadingModel = $state(false);
   #localModelRetrying = false;
+  #isCancellingModelDownload = false;
   #unlistenFns: (() => void)[] = [];
 
   #cleanupListeners() {
@@ -39,6 +40,9 @@ export class AppState {
   }
 
   #applyDownloadProgress(p: ModelDownloadProgress) {
+    if (this.#isCancellingModelDownload) {
+      return;
+    }
     if (p.type === 'error') {
       this.isDownloadingModel = false;
       this.#localModelRetrying = false;
@@ -117,6 +121,7 @@ export class AppState {
 
   async cancelModelDownload() {
     try {
+      this.#isCancellingModelDownload = true;
       await api.cancelModelDownload();
       this.isDownloadingModel = false;
       this.downloadMessage = '';
@@ -124,6 +129,7 @@ export class AppState {
       this.#localModelRetrying = false;
       this.#tryBecomeReady();
     } catch (err) {
+      this.#isCancellingModelDownload = false;
       console.error('[AppState] cancelModelDownload failed:', err);
       errorDialog.reportError(err, 'Cancel model download');
     }
@@ -171,6 +177,7 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen('model_download_cancelled', () => {
+          this.#isCancellingModelDownload = false;
           this.isDownloadingModel = false;
           this.downloadMessage = '';
           this.downloadProgress = 0;
@@ -181,6 +188,7 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen('llm_ready', () => {
+          this.#isCancellingModelDownload = false;
           this.#localModelRetrying = false;
           this.llmReady = true;
           this.isDownloadingModel = false;

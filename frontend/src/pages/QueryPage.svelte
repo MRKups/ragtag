@@ -72,7 +72,7 @@
   async function handleQuery(text: string) {
     userScrolledUp = false;
     if (queryState.currentRequestId) {
-      void api.cancelQuery(queryState.currentRequestId);
+      void api.cancelQuery(queryState.currentRequestId).catch(() => {});
     }
     queryState.reset();
     const requestId = crypto.randomUUID();
@@ -114,7 +114,7 @@
 
   function handleCancel() {
     if (queryState.currentRequestId) {
-      void api.cancelQuery(queryState.currentRequestId);
+      void api.cancelQuery(queryState.currentRequestId).catch(() => {});
     }
     queryState.cancel();
   }
@@ -122,7 +122,7 @@
   $effect(() => {
     return () => {
       if (queryState.currentRequestId) {
-        void api.cancelQuery(queryState.currentRequestId);
+        void api.cancelQuery(queryState.currentRequestId).catch(() => {});
         queryState.stopGenerating();
       }
     };

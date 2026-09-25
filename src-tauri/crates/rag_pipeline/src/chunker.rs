@@ -128,7 +128,10 @@ fn append_page_chunks(
         while end_token > start_token {
             let start = offsets[start_token].0;
             let end = offsets[end_token - 1].1;
-            let content = &text[start..end];
+            let Some(content) = text.get(start..end) else {
+                end_token -= 1;
+                continue;
+            };
             let embedding_text = format!("{PASSAGE_PREFIX}{content}");
 
             if token_count(tokenizer, &embedding_text)? <= max_tokens {

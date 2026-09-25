@@ -141,6 +141,20 @@ fn preserves_accumulated_text_when_a_bounded_docx_ends_mid_markup() {
 }
 
 #[test]
+fn preserves_accumulated_text_when_docx_preview_ends_with_truncated_multibyte_utf8() {
+    let mut truncated = Vec::from(
+        br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Price: "#
+            .as_slice(),
+    );
+    truncated.extend_from_slice(&[0xE2, 0x82]);
+    assert_eq!(
+        docx_body_text(&truncated, true).unwrap(),
+        "Price: \u{FFFD}"
+    );
+    assert!(docx_body_text(&truncated, false).is_err());
+}
+
+#[test]
 fn rejects_docx_xml_beyond_declared_or_actual_extraction_limit() {
     let declared_error = bounded_docx_xml(
         &mut Cursor::new(Vec::<u8>::new()),

@@ -20,6 +20,7 @@ use persistence::storage::documents::verify_document_source_integrity;
 
 pub const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 pub const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+pub const MAX_REGISTRY_READ_RETRIES: u32 = 5;
 
 pub fn registry_read_retry_delay(attempt: u32) -> Duration {
     let multiplier = 1_u32 << attempt.saturating_sub(1).min(7);
@@ -72,7 +73,7 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
         pool,
         vector_db,
         embedder: embedder_worker,
-        document_operations: document_operations_worker,
+        document_operations: _document_operations_worker,
         app_local_data,
         mut rx,
         tx,
@@ -113,8 +114,6 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                 warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
                 continue;
             };
-
-            let _document_operation = document_operations_worker.read().await;
 
             let result = match repo.get_by_id(&doc_id).await {
                 Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
@@ -176,9 +175,16 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                         *attempt = attempt.saturating_add(1);
                         *attempt
                     };
+                    if attempt > MAX_REGISTRY_READ_RETRIES {
+                        registry_read_retries.remove(&doc_id);
+                        error!(
+                            "database error while fetching document {doc_id} exceeded maximum retries ({MAX_REGISTRY_READ_RETRIES}): {error}; dropping job"
+                        );
+                        continue;
+                    }
                     let delay = registry_read_retry_delay(attempt);
                     warn!(
-                        "database error while fetching document {doc_id}: {error}; retrying in {delay:?}"
+                        "database error while fetching document {doc_id}: {error}; retrying in {delay:?} (attempt {attempt}/{MAX_REGISTRY_READ_RETRIES})"
                     );
                     let queue = job_queue_worker.clone();
                     let retry_document_id = doc_id.clone();
@@ -233,5 +239,10 @@ mod tests {
         assert_eq!(registry_read_retry_delay(1), Duration::from_millis(250));
         assert_eq!(registry_read_retry_delay(3), Duration::from_secs(1));
         assert_eq!(registry_read_retry_delay(u32::MAX), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn declares_finite_registry_read_retries() {
+        const { assert!(MAX_REGISTRY_READ_RETRIES >= 3 && MAX_REGISTRY_READ_RETRIES <= 10) };
     }
 }

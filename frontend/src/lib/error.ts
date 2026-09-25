@@ -4,7 +4,6 @@ import type { AppErrorPayload, ErrorCode } from './types.ts';
 const TRANSIENT_CODES: ReadonlySet<ErrorCode> = new Set([
   'queue_full',
   'inference',
-  'storage',
 ]);
 
 export function errorMessage(error: unknown): string {
