@@ -19,7 +19,6 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 
 **References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).
 
-
 ## B191 — Structured error contract with user recovery guidance
 
 **Problem:** Application errors serialize over IPC as `{ kind, message }`. The frontend error modal often lacks structured recovery context when operations fail (such as invalid document format, offline external endpoint, or full queue).
