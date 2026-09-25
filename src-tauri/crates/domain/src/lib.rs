@@ -7,4 +7,5 @@ pub use events::{Citation, DownloadStage, IngestionProgress, ModelDownloadProgre
 pub use models::{
     ApiKeyStatus, ApiKeyStorage, Document, DocumentPreview, DocumentStatus,
     ExternalProviderConnection, IndexProvenance, MarkdownBlock, MarkdownInline,
+    EXTRACTED_TEXT_MAX_BYTES, MAX_UPLOAD_BYTES,
 };

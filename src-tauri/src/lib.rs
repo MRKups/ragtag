@@ -3,13 +3,12 @@ mod inference;
 mod model_download;
 mod model_lifecycle;
 mod state;
-mod storage;
 mod workers;
 
 use commands::*;
 use model_lifecycle::*;
 pub use state::{AppState, IngestionJob};
-use storage::*;
+use persistence::storage::*;
 use workers::*;
 
 use log::{error, info};

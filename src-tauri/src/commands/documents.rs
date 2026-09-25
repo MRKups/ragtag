@@ -5,7 +5,7 @@ use sha2::{Digest, Sha512};
 use tauri::{Emitter, Manager};
 
 use crate::state::{AppState, IngestionJob};
-use crate::storage::{
+use persistence::storage::{
     document_storage_candidate_for_deletion, document_storage_path, finish_document_deletion,
     managed_documents_directory, storage_extension, validate_upload,
     write_document_source_atomically,

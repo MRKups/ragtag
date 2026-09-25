@@ -18,7 +18,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 | **Desktop Shell & Bootstrap** | Application Lifecycle & Composition | `frontend/src/main.ts`<br>`frontend/src/App.svelte`<br>`frontend/src/lib/components/AppInitializer.svelte`<br>`src-tauri/src/main.rs`<br>`src-tauri/src/lib.rs`<br>`src-tauri/src/state.rs` |
 | **Typed Desktop Communication** | IPC Boundary & Data Contracts | `frontend/src/lib/api.ts`<br>`frontend/src/lib/types.ts`<br>`frontend/src/lib/error.ts`<br>`src-tauri/crates/domain/src/lib.rs`<br>`src-tauri/crates/domain/src/models.rs`<br>`src-tauri/crates/domain/src/error.rs`<br>`src-tauri/crates/domain/src/events.rs`<br>`src-tauri/src/commands/mod.rs` |
 | **Client Routing & Navigation** | UI Navigation & Router | `frontend/src/lib/router.svelte.ts`<br>`frontend/src/App.svelte` |
-| **Document Upload & Source Validation** | Ingestion Entry & Sandboxed Source Storage | `frontend/src/pages/DocumentsPage.svelte`<br>`frontend/src/lib/components/DocumentUpload.svelte`<br>`src-tauri/src/commands/documents.rs`<br>`src-tauri/src/storage/documents.rs` |
+| **Document Upload & Source Validation** | Ingestion Entry & Sandboxed Source Storage | `frontend/src/pages/DocumentsPage.svelte`<br>`frontend/src/lib/components/DocumentUpload.svelte`<br>`src-tauri/src/commands/documents.rs`<br>`src-tauri/crates/persistence/src/storage/documents.rs` |
 | **Document Content Extraction** | Format-Specific Text Extraction | `src-tauri/crates/rag_pipeline/src/extractor/mod.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/pdf.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/docx.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/text.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/markdown.rs` |
 | **Token Chunking & Instruction Prefixing** | Document Chunking Pipeline | `src-tauri/crates/rag_pipeline/src/chunker.rs` |
 | **Text Embedding & Model Execution** | Embedding Engine | `src-tauri/crates/rag_pipeline/src/lib.rs` |
@@ -26,7 +26,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 | **Vector Storage, Indexing & Hybrid Search** | Vector & Lexical Persistence | `src-tauri/crates/persistence/src/lancedb.rs`<br>`src-tauri/src/model_lifecycle/recovery.rs` |
 | **Document Registry & Metadata Management** | Relational Persistence (SQLite) | `src-tauri/crates/persistence/src/sqlite.rs`<br>`src-tauri/crates/domain/src/models.rs` |
 | **Document Management & Inventory UI** | Document Management | `frontend/src/pages/DocumentsPage.svelte`<br>`frontend/src/lib/components/DocumentList.svelte`<br>`src-tauri/src/commands/documents.rs` |
-| **Document Deletion & Garbage Collection** | Storage Reconciliation | `src-tauri/src/storage/reconciliation.rs`<br>`src-tauri/src/commands/documents.rs` |
+| **Document Deletion & Garbage Collection** | Storage Reconciliation | `src-tauri/crates/persistence/src/storage/reconciliation.rs`<br>`src-tauri/src/commands/documents.rs` |
 | **Document Inspection & Preview** | Document Viewer & Rendering | `frontend/src/lib/components/DocumentViewer.svelte`<br>`frontend/src/lib/components/PdfViewer.svelte`<br>`frontend/src/lib/components/PdfPage.svelte`<br>`frontend/src/lib/components/MarkdownPreview.svelte`<br>`frontend/src/lib/pdf-init.ts`<br>`src-tauri/crates/rag_pipeline/src/extractor/preview.rs`<br>`src-tauri/src/commands/documents.rs` |
 | **RAG Query Execution & Coordination** | Query Orchestration | `frontend/src/pages/QueryPage.svelte`<br>`frontend/src/lib/stores/query.svelte.ts`<br>`frontend/src/lib/components/QueryInput.svelte`<br>`src-tauri/src/commands/query.rs` |
 | **Local Model Inference** | Local In-Process Generation | `src-tauri/src/inference/local.rs`<br>`src-tauri/src/inference/mod.rs` |
@@ -36,8 +36,8 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 | **Model Download & Readiness Coordination** | Model Lifecycle Coordination | `frontend/src/lib/stores/app-state.svelte.ts`<br>`src-tauri/src/model_lifecycle/coordinator.rs`<br>`src-tauri/src/model_download.rs`<br>`src-tauri/src/commands/models.rs` |
 | **Application & Provider Settings Management** | Configuration & Preferences | `frontend/src/pages/SettingsPage.svelte`<br>`frontend/src/lib/stores/settings.svelte.ts`<br>`frontend/src/lib/components/SettingsTab.svelte`<br>`frontend/src/lib/components/Toggle.svelte`<br>`frontend/src/lib/components/AppSelect.svelte`<br>`src-tauri/src/commands/settings.rs`<br>`src-tauri/crates/persistence/src/sqlite.rs` |
 | **Secure API Key Management** | OS Keychain & Fallback Security | `src-tauri/src/commands/keys.rs`<br>`src-tauri/crates/persistence/src/sqlite.rs` |
-| **Database Diagnostics & Maintenance** | Storage Maintenance | `src-tauri/src/commands/maintenance.rs`<br>`src-tauri/src/storage/maintenance.rs` |
-| **Application Data Factory Reset** | Disaster Recovery & Reset | `src-tauri/src/commands/maintenance.rs`<br>`src-tauri/src/storage/maintenance.rs`<br>`src-tauri/src/lib.rs` |
+| **Database Diagnostics & Maintenance** | Storage Maintenance | `src-tauri/src/commands/maintenance.rs`<br>`src-tauri/crates/persistence/src/storage/maintenance.rs` |
+| **Application Data Factory Reset** | Disaster Recovery & Reset | `src-tauri/src/commands/maintenance.rs`<br>`src-tauri/crates/persistence/src/storage/maintenance.rs`<br>`src-tauri/src/lib.rs` |
 | **User Error Reporting & Modal Feedback** | UI Error Presentation | `frontend/src/lib/stores/error-dialog.svelte.ts`<br>`frontend/src/lib/components/ErrorDialog.svelte` |
 
 ---
@@ -91,10 +91,15 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `src/events.rs`: Streaming channel event contracts (`TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`).
   - `src/models.rs`: Primary entity structs (`Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`).
 - **Persistence Crate (`crates/persistence/`):**
-  - `Cargo.toml`: SQLite (`sqlx`) and LanceDB (`lancedb`, `arrow`) dependencies.
-  - `src/lib.rs`: Crate facade exposing repositories and vector store.
+  - `Cargo.toml`: SQLite (`sqlx`), LanceDB (`lancedb`, `arrow`), and storage dependencies (`sha2`, `uuid`, `keyring`, `serde_json`).
+  - `src/lib.rs`: Crate facade exposing repositories, vector store, and storage engine.
   - `src/sqlite.rs`: SQLite WAL pool, migration runner, document registry, settings repository, and fallback API key storage.
   - `src/lancedb.rs`: LanceDB embedded vector store, Arrow schema builder (768-d Float32), serialized `merge_insert` upserts, FTS index creation, and hybrid search.
+  - `src/storage/`: Managed source storage, validation, and maintenance:
+    - `mod.rs`: Module exports and facade re-exports.
+    - `documents.rs`: Sandboxed managed file storage, path traversal protection, magic byte validation, and atomic writes.
+    - `reconciliation.rs`: Orphan file cleanup and deletion finalization.
+    - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
 - **RAG Pipeline Crate (`crates/rag_pipeline/`):**
   - `Cargo.toml`: Document extraction, tokenization, and FastEmbed dependencies.
   - `src/lib.rs`: `TextEmbedder` initializing EmbeddingGemma and computing embeddings with `passage: ` and `query: ` prefixes.
@@ -130,11 +135,6 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `mod.rs`: Module exports.
   - `coordinator.rs`: Generational state coordinator coalescing download and initialization requests.
   - `recovery.rs`: Startup database validator reconciling LanceDB tables and stale indexing records.
-- **Storage & Maintenance (`storage/`):**
-  - `mod.rs`: Module exports.
-  - `documents.rs`: Sandboxed managed file storage, path traversal protection, magic byte validation, and atomic writes.
-  - `reconciliation.rs`: Orphan file cleanup and deletion finalization.
-  - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
 - **Background Workers (`workers/`):**
   - `mod.rs`: Module exports.
   - `ingestion.rs`: Background worker processing document extraction, chunking, embedding, and indexing with exponential backoff retries.

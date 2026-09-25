@@ -3,7 +3,7 @@ use log::info;
 use tauri::Manager;
 
 use crate::state::AppState;
-use crate::storage::storage_sizes;
+use persistence::storage::storage_sizes;
 
 #[tauri::command]
 pub async fn get_storage_info(

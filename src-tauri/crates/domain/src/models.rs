@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+pub const EXTRACTED_TEXT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentStatus {

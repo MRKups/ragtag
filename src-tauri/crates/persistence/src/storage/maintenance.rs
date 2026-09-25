@@ -209,7 +209,7 @@ pub fn complete_pending_reset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::documents::{document_storage_path, managed_storage_filename};
+    use super::super::documents::{document_storage_path, managed_storage_filename};
 
     #[test]
     fn removes_non_fastembed_model_entries() {

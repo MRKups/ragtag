@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::model_lifecycle::recovery::desired_indexing_provenance;
 use crate::state::IngestionJob;
-use crate::storage::documents::verify_document_source_integrity;
+use persistence::storage::documents::verify_document_source_integrity;
 
 pub const REGISTRY_READ_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 pub const REGISTRY_READ_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);

@@ -8062,10 +8062,14 @@ dependencies = [
  "arrow-schema",
  "domain",
  "futures",
+ "keyring",
  "lancedb",
  "log",
+ "serde_json",
+ "sha2 0.11.0",
  "sqlx",
  "tokio",
+ "uuid 1.26.1",
 ]
 
 [[package]]

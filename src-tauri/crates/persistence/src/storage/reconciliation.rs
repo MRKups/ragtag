@@ -1,12 +1,12 @@
 use domain::{AppError, Document};
 use log::{error, info, warn};
-use persistence::{DocumentRepository, VectorDb};
 use std::collections::HashSet;
 
 use super::documents::{
     document_storage_candidate_for_deletion, is_managed_document_source_filename,
     is_managed_document_temporary_filename, managed_documents_directory, managed_storage_filename,
 };
+use crate::{DocumentRepository, VectorDb};
 
 pub async fn finish_document_deletion(
     repo: &DocumentRepository,
@@ -172,8 +172,8 @@ mod tests {
         ));
         let docs_dir = app_local_data.join("documents");
         tokio::fs::create_dir_all(&docs_dir).await.unwrap();
-        let pool = persistence::init_pool(&app_local_data).await.unwrap();
-        let repo = persistence::DocumentRepository::new(pool.clone());
+        let pool = crate::init_pool(&app_local_data).await.unwrap();
+        let repo = crate::DocumentRepository::new(pool.clone());
         let registered_filename = format!("{}.txt", uuid::Uuid::now_v7());
         let orphan_filename = format!("{}.txt", uuid::Uuid::now_v7());
         let managed_directory_name = format!("{}.txt", uuid::Uuid::now_v7());

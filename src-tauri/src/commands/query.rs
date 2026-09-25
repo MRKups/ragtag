@@ -10,7 +10,7 @@ use crate::inference::{
     probe_external_inference_readiness_cancellable, InferenceProvider,
 };
 use crate::state::AppState;
-use crate::storage::document_storage_path;
+use persistence::storage::document_storage_path;
 
 pub const MAX_EXTERNAL_QUERY_BYTES: usize = 32 * 1024;
 pub const MAX_EXTERNAL_REQUEST_ID_BYTES: usize = 64;

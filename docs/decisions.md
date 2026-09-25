@@ -139,9 +139,9 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 ## D016 — Modular desktop application architecture
 
-**Context:** As Ragtag grew, `src-tauri/src/lib.rs` expanded into an unwieldy single file (~4,400 LOC) containing IPC command registration, storage operations, inference streaming, model coordinator lifecycle state machines, and ingestion workers.
+**Context:** As Ragtag grew, `src-tauri/src/lib.rs` expanded into an unwieldy single file (~4,400 LOC) containing IPC command registration, storage operations, inference streaming, model coordinator lifecycle state machines, and ingestion workers. Furthermore, keeping storage validation and reconciliation inside the application shell coupled headless persistence operations to the desktop wrapper.
 
-**Decision:** Decompose `lib.rs` into five cohesive internal modules (`commands`, `inference`, `model_lifecycle`, `storage`, and `workers`), promote shared IPC contracts to `crates/domain`, and keep `lib.rs` strictly as a lightweight composition and setup root (<200 LOC).
+**Decision:** Decompose `lib.rs` into focused modules (`commands`, `inference`, `model_lifecycle`, `workers`), decouple managed document sandboxing, orphan reconciliation, and maintenance calculations into `crates/persistence::storage`, promote shared limits (`MAX_UPLOAD_BYTES`, `EXTRACTED_TEXT_MAX_BYTES`) to `crates/domain`, and keep `lib.rs` strictly as a lightweight composition and setup root (<180 LOC).
 
-**Consequences:** Clear single-responsibility boundaries, isolated co-located unit tests, simplified maintenance, and zero IPC contract breaking changes. All blocking operations remain strictly dispatched to worker threads.
+**Consequences:** Clear single-responsibility boundaries, isolated headless unit tests for storage operations without requiring Tauri runtime handles, simplified maintenance, and zero IPC contract breaking changes. All blocking operations remain strictly dispatched to worker threads.
 

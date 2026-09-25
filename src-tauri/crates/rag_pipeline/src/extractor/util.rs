@@ -5,7 +5,7 @@ pub const TEXT_PREVIEW_MAX_BYTES: usize = 1024 * 1024;
 /// Indexed text is capped well below the 50 MiB upload envelope. This matches
 /// the existing retained-PDF-text limit and keeps extraction, chunking, and
 /// embedding memory proportional to a single document.
-pub const EXTRACTED_TEXT_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub use domain::EXTRACTED_TEXT_MAX_BYTES;
 
 pub fn extracted_text_limit_error() -> AppError {
     AppError::InvalidInput(format!(

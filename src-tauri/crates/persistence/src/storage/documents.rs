@@ -1,7 +1,5 @@
-use domain::{AppError, Document};
+use domain::{AppError, Document, EXTRACTED_TEXT_MAX_BYTES, MAX_UPLOAD_BYTES};
 use sha2::{Digest, Sha512};
-
-pub const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
 
 pub fn validate_upload(filename: &str, bytes: &[u8]) -> Result<&'static str, AppError> {
     let name = std::path::Path::new(filename);
@@ -41,10 +39,10 @@ pub fn validate_upload(filename: &str, bytes: &[u8]) -> Result<&'static str, App
             Ok("docx")
         }
         _ => {
-            if bytes.len() > rag_pipeline::extractor::EXTRACTED_TEXT_MAX_BYTES {
+            if bytes.len() > EXTRACTED_TEXT_MAX_BYTES {
                 return Err(AppError::InvalidInput(format!(
                     "Text document exceeds the {} MiB indexing limit",
-                    rag_pipeline::extractor::EXTRACTED_TEXT_MAX_BYTES / (1024 * 1024)
+                    EXTRACTED_TEXT_MAX_BYTES / (1024 * 1024)
                 )));
             }
             if bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {

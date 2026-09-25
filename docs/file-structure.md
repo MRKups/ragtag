@@ -100,11 +100,6 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `mod.rs`: Module exports.
   - `coordinator.rs`: Generational state coordinator coalescing download and initialization requests.
   - `recovery.rs`: Startup database validator reconciling LanceDB tables and stale indexing records.
-- `src/storage/`: Managed source storage and maintenance:
-  - `mod.rs`: Module exports.
-  - `documents.rs`: Sandboxed managed file storage, path traversal protection, magic byte validation, and atomic writes.
-  - `reconciliation.rs`: Orphan file cleanup and deletion finalization.
-  - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
 - `src/workers/`: Background workers:
   - `mod.rs`: Module exports.
   - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries.
@@ -115,11 +110,17 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 
 ### `src-tauri/crates/domain/`
 
-Zero-dependency shared contracts (`serde`, `thiserror`). Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, and `ApiKeyStorage`.
+Zero-dependency shared contracts (`serde`, `thiserror`). Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`, `MAX_UPLOAD_BYTES`, and `EXTRACTED_TEXT_MAX_BYTES`.
 
 ### `src-tauri/crates/persistence/`
 
-Relational and vector persistence. Contains SQLite connection pool configuration, migrations (`0001_initial_schema.sql`), `DocumentRepository`, `AppSettingsRepository`, and embedded `LanceDbVectorStore` with 768-d Float32 Arrow record batches and hybrid FTS search.
+Relational, vector, and managed source storage:
+- `sqlite.rs`: SQLite connection pool configuration, migrations (`0001_initial_schema.sql`), `DocumentRepository`, and `AppSettingsRepository`.
+- `lancedb.rs`: Embedded `LanceDbVectorStore` with 768-d Float32 Arrow record batches and hybrid FTS search.
+- `storage/`: Managed source storage, validation, and maintenance:
+  - `documents.rs`: Sandboxed source validation, magic-byte checking, atomic writes, and integrity hashing.
+  - `reconciliation.rs`: Deletion finalization and orphan source file cleanup.
+  - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
 
 ### `src-tauri/crates/rag_pipeline/`
 

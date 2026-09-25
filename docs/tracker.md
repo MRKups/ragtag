@@ -1,7 +1,7 @@
 ---
 title: Ragtag implementation tracker
 normative-for: [unresolved implementation work]
-depends: [app-architecture.md, data-schema.md, decisions.md, open-source-readiness.md]
+depends: [app-architecture.md, data-schema.md, decisions.md, open-source-readiness.md, system-map.md, development.md]
 status: current work only. Completed and superseded items are removed.
 ---
 
@@ -18,3 +18,34 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 **Acceptance:** Launch the packaged app and verify actual Metal model loading, streamed completion with citations, cancellation and subsequent queries, concurrent queries, cached offline restart, and provider switching. Record startup, first-token latency, generation performance, and peak memory against a same-model baseline; review material regressions before accepting them.
 
 **References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).
+
+
+## B191 — Structured error contract with user recovery guidance
+
+**Problem:** Application errors serialize over IPC as `{ kind, message }`. The frontend error modal often lacks structured recovery context when operations fail (such as invalid document format, offline external endpoint, or full queue).
+
+**Outcome:** Upgrade `AppError` and the IPC error payload to provide `{ code, operation, detail, recovery }` following the AGN error standard. Frontend error dialogs display actionable recovery options directly.
+
+**Acceptance:** Backend commands return structured errors with machine-readable codes and non-empty recovery guidance. The frontend error dialog renders explicit recovery actions for transient and terminal failures.
+
+**References:** [DEV-04 and DEV-14](development.md), [data-schema.md](data-schema.md).
+
+## B192 — Protected execution capacity for cancellations and lifecycle probes
+
+**Problem:** Saturated background ingestion queues or long-running embedding batches can create execution latency for interactive user commands, potentially delaying cancellation requests and status polling.
+
+**Outcome:** Implement protected command capacity separating high-priority interactive operations (`cancel_query`, `cancel_model_download`, `get_app_state`) from batch background processing.
+
+**Acceptance:** A saturated document ingestion queue or active inference generation does not delay execution of cancellation requests or status queries beyond bounded scheduling limits.
+
+**References:** [DEV-07](development.md), [app-architecture.md](app-architecture.md).
+
+## B193 — Hybrid retrieval relevance and BM25 re-ranking fine-tuning
+
+**Problem:** Candidate chunk retrieval relevance varies across dense technical manuals containing tables, code, and abbreviations when relying on standard BM25 and vector score blending without domain tuning.
+
+**Outcome:** Benchmark LanceDB hybrid retrieval with tuned lexical/vector weighting, score filtering thresholds, and acronym expansions to maximize citation precision.
+
+**Acceptance:** Measured retrieval precision and recall on technical evaluation documents improves over the baseline without exceeding chunk retrieval latency budgets.
+
+**References:** [DEV-11](development.md), [decisions.md](decisions.md).
