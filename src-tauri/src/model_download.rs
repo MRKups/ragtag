@@ -1,34 +1,13 @@
 use domain::AppError;
 use hf_hub::progress::{DownloadEvent, ProgressEvent, ProgressHandler};
 use log::warn;
-use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-#[derive(Clone, Serialize, Debug)]
-pub struct ModelDownloadProgress {
-    pub model_id: String,
-    pub current_file: String,
-    pub file_downloaded: u64,
-    pub file_total: u64,
-    pub files_completed: usize,
-    pub total_files: usize,
-    #[serde(flatten)]
-    pub stage: DownloadStage,
-}
-
-#[derive(Clone, Serialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum DownloadStage {
-    FetchingInfo,
-    Downloading,
-    Complete,
-    LoadingModel,
-    Error { message: String },
-}
+pub use domain::{DownloadStage, ModelDownloadProgress};
 
 pub type ProgressEmitter = Arc<dyn Fn(ModelDownloadProgress) + Send + Sync>;
 

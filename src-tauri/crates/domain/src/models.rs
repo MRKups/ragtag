@@ -103,3 +103,22 @@ pub enum MarkdownInline {
     },
     Break,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyStorage {
+    Keychain,
+    Database,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiKeyStatus {
+    pub has_key: bool,
+    pub storage: ApiKeyStorage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalProviderConnection {
+    pub models: Vec<String>,
+}

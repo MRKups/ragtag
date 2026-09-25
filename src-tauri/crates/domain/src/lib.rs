@@ -3,7 +3,8 @@ pub mod events;
 pub mod models;
 
 pub use error::AppError;
-pub use events::{Citation, IngestionProgress, TokenEvent};
+pub use events::{Citation, DownloadStage, IngestionProgress, ModelDownloadProgress, TokenEvent};
 pub use models::{
-    Document, DocumentPreview, DocumentStatus, IndexProvenance, MarkdownBlock, MarkdownInline,
+    ApiKeyStatus, ApiKeyStorage, Document, DocumentPreview, DocumentStatus,
+    ExternalProviderConnection, IndexProvenance, MarkdownBlock, MarkdownInline,
 };

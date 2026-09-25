@@ -60,3 +60,25 @@ pub struct Citation {
     pub score: f32,
     pub is_hybrid: bool,
 }
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DownloadStage {
+    FetchingInfo,
+    Downloading,
+    Complete,
+    LoadingModel,
+    Error { message: String },
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct ModelDownloadProgress {
+    pub model_id: String,
+    pub current_file: String,
+    pub file_downloaded: u64,
+    pub file_total: u64,
+    pub files_completed: usize,
+    pub total_files: usize,
+    #[serde(flatten)]
+    pub stage: DownloadStage,
+}

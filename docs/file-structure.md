@@ -40,9 +40,14 @@ The frontend is a client-only hash-routed SPA with Tauri access only through `sr
 - `capabilities/`: Tauri capability declarations.
 - `icons/`: Application icons.
 - `src/main.rs`: Native binary entry point.
-- `src/lib.rs`: Application composition, IPC commands, lifecycle coordination, and background-work setup.
+- `src/lib.rs`: Application composition, builder setup, plugin registration, and background worker initialization.
 - `src/state.rs`: Shared application state types.
 - `src/model_download.rs`: Local model-download reporting.
+- `src/commands/`: Tauri IPC command entry points (`models`, `documents`, `query`, `settings`, `keys`, `maintenance`).
+- `src/inference/`: Model inference execution (`local` via mistral.rs, `external` via OpenAI-compatible HTTP streaming, and `sse` decoding).
+- `src/model_lifecycle/`: Model download coordination, generation coalescing, and startup vector recovery.
+- `src/storage/`: Managed source file validation, atomic writes, orphan reconciliation, and app data resets.
+- `src/workers/`: Document ingestion queue worker, retry loops, and progress forwarders.
 - `crates/`: Domain, persistence, and document-processing libraries.
 - `.sqlx/`: Committed SQLx offline query metadata.
 - `vendor/mistralrs-core/`: Licensed upstream v0.9.3 core with Ragtag's explicit tensor-selection repair. Cargo patches this package into the Git-pinned SDK; it is excluded from the first-party workspace. Native test tasks run its focused regression separately. [D007](decisions.md) owns the deviation and retirement policy.
