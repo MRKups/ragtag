@@ -45,6 +45,19 @@ pub struct DocumentWorkerConfig {
     pub app_local_data: PathBuf,
     pub rx: mpsc::Receiver<IngestionJob>,
     pub tx: mpsc::Sender<IngestionJob>,
+    pub active_document_id: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+struct ActiveDocGuard {
+    active_id: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl Drop for ActiveDocGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_id.lock() {
+            *active = None;
+        }
+    }
 }
 
 pub fn start_document_worker(config: DocumentWorkerConfig) {
@@ -57,6 +70,7 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
         app_local_data,
         mut rx,
         tx,
+        active_document_id: active_document_id_worker,
     } = config;
     let job_queue_worker = tx;
     tauri::async_runtime::spawn(async move {
@@ -67,6 +81,14 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                 document_id: doc_id,
                 progress_channel,
             } = job;
+            {
+                if let Ok(mut active) = active_document_id_worker.lock() {
+                    *active = Some(doc_id.clone());
+                }
+            }
+            let _active_guard = ActiveDocGuard {
+                active_id: active_document_id_worker.clone(),
+            };
             let retry_progress_channel = progress_channel.clone();
             let progress_callback: Arc<dyn Fn(IngestionProgress) + Send + Sync> =
                 match progress_channel.map(start_ingestion_progress_forwarder) {

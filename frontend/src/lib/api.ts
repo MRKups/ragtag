@@ -3,6 +3,7 @@ import { listen, type Event, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AppErrorPayload,
   ApiKeyStatus,
+  AppLifecycleState,
   Document,
   DocumentPreview,
   ExternalProviderConnection,
@@ -14,6 +15,8 @@ import type {
 export const api = {
   beginFirstRunInit: () => invoke<void>('begin_first_run_init'),
   retryLocalModelInitialization: () => invoke<void>('retry_local_model_initialization'),
+  getAppState: () => invoke<AppLifecycleState>('get_app_state'),
+  cancelModelDownload: () => invoke<void>('cancel_model_download'),
   
   uploadDocument: (file: File, onProgress: (progress: IngestionProgress) => void): Promise<string> => {
     const channel = new Channel<IngestionProgress>();

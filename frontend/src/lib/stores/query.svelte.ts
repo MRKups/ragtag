@@ -10,6 +10,16 @@ export class QueryState {
   isStreaming = $state(false);
   currentRequestId = $state<string | null>(null);
 
+  stopGenerating() {
+    this.currentRequestId = null;
+    this.isLoading = false;
+    this.isStreaming = false;
+  }
+
+  cancel() {
+    this.stopGenerating();
+  }
+
   reset() {
     this.isLoading = false;
     this.text = '';
@@ -18,11 +28,7 @@ export class QueryState {
     this.queryText = '';
     this.selectedDocument = null;
     this.isStreaming = false;
-  }
-
-  cancel() {
     this.currentRequestId = null;
-    this.reset();
   }
 
   complete(citations: Citation[]) {

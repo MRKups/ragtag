@@ -2,19 +2,9 @@ import { api } from '$lib/api';
 import { errorDialog } from '$lib/stores/error-dialog.svelte';
 import { router } from '$lib/router.svelte';
 import { settingsState } from '$lib/stores/settings.svelte';
+import type { ModelDownloadProgress } from '$lib/types';
 
 type AppPhase = 'starting' | 'downloading_model' | 'ready' | 'error';
-
-interface DownloadProgress {
-  model_id: string;
-  current_file: string;
-  file_downloaded: number;
-  file_total: number;
-  files_completed: number;
-  total_files: number;
-  type: string;
-  message?: string;
-}
 
 function formatBytes(bytes: number) {
   const megabyte = 1024 * 1024;
@@ -32,8 +22,99 @@ export class AppState {
   errorMessage = $state('');
   embedderAvailable = $state(false);
   llmReady = $state(false);
+  isDownloadingModel = $state(false);
   #localModelRetrying = false;
 
+  #applyDownloadProgress(p: ModelDownloadProgress) {
+    if (p.type === 'error') {
+      this.isDownloadingModel = false;
+      this.#localModelRetrying = false;
+      errorDialog.report({
+        dedupeKey: 'local-model-initialization',
+        title: 'Local model unavailable',
+        message: 'Ragtag could not start the local model.',
+        guidance: 'Check your internet connection and model settings, then retry initialization.',
+        action: {
+          label: 'Retry local model',
+          run: () => void this.retryLocalModel()
+        }
+      });
+      return;
+    }
+
+    if (p.type === 'fetching_info') {
+      this.isDownloadingModel = true;
+      if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
+      this.downloadProgress = 0;
+      this.downloadIsIndeterminate = true;
+      this.downloadMessage = `Fetching model info for ${p.model_id}...`;
+      return;
+    }
+
+    if (p.type === 'downloading') {
+      this.isDownloadingModel = true;
+      if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
+      if (p.file_total > 0) {
+        this.downloadProgress = Math.min(100, Math.round((p.file_downloaded / p.file_total) * 100));
+        this.downloadIsIndeterminate = false;
+      } else {
+        this.downloadIsIndeterminate = true;
+      }
+      const transferred = formatBytes(p.file_downloaded);
+      const total = p.file_total > 0 ? ` of ${formatBytes(p.file_total)}` : '';
+      const percentage = p.file_total > 0 ? ` (${this.downloadProgress}%)` : '';
+      this.downloadMessage = `Downloading ${p.current_file} (${transferred}${total}${percentage})`;
+      return;
+    }
+
+    if (p.type === 'complete') {
+      this.isDownloadingModel = false;
+      return;
+    }
+
+    if (p.type === 'loading_model') {
+      this.isDownloadingModel = true;
+      if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
+      this.downloadProgress = 100;
+      this.downloadIsIndeterminate = true;
+      this.downloadMessage = 'Loading the local model...';
+      return;
+    }
+  }
+
+  async reconcile() {
+    try {
+      const state = await api.getAppState();
+      this.embedderAvailable = state.embedder_ready;
+      this.llmReady = state.llm_ready;
+      this.isDownloadingModel = state.model_download_active;
+
+      if (state.model_download_progress) {
+        this.#applyDownloadProgress(state.model_download_progress);
+      } else if (!state.model_download_active && this.phase === 'downloading_model') {
+        this.downloadMessage = '';
+        this.downloadProgress = 0;
+      }
+
+      this.#tryBecomeReady();
+    } catch (err) {
+      console.warn('[AppState] Reconcile probe failed:', err);
+    }
+  }
+
+  async cancelModelDownload() {
+    try {
+      await api.cancelModelDownload();
+      this.isDownloadingModel = false;
+      this.downloadMessage = '';
+      this.downloadProgress = 0;
+      this.#localModelRetrying = false;
+      this.#tryBecomeReady();
+    } catch (err) {
+      console.error('[AppState] cancelModelDownload failed:', err);
+      errorDialog.reportError(err, 'Cancel model download');
+    }
+  }
 
   async init() {
     try {
@@ -63,69 +144,31 @@ export class AppState {
         });
       });
 
-      await api.listen<DownloadProgress>('model_download_progress', (event) => {
+      await api.listen<ModelDownloadProgress>('model_download_progress', (event) => {
         const p = event.payload;
         console.log('[AppState] download progress:', p);
+        this.#applyDownloadProgress(p);
+      });
 
-        if (p.type === 'error') {
-          this.#localModelRetrying = false;
-          errorDialog.report({
-            dedupeKey: 'local-model-initialization',
-            title: 'Local model unavailable',
-            message: 'Ragtag could not start the local model.',
-            guidance: 'Check your internet connection and model settings, then retry initialization.',
-            action: {
-              label: 'Retry local model',
-              run: () => void this.retryLocalModel()
-            }
-          });
-          return;
-        }
-
-        if (p.type === 'fetching_info') {
-          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
-          this.downloadProgress = 0;
-          this.downloadIsIndeterminate = true;
-          this.downloadMessage = `Fetching model info for ${p.model_id}...`;
-          return;
-        }
-
-        if (p.type === 'downloading') {
-          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
-          if (p.file_total > 0) {
-            this.downloadProgress = Math.min(100, Math.round((p.file_downloaded / p.file_total) * 100));
-            this.downloadIsIndeterminate = false;
-          } else {
-            this.downloadIsIndeterminate = true;
-          }
-          const transferred = formatBytes(p.file_downloaded);
-          const total = p.file_total > 0 ? ` of ${formatBytes(p.file_total)}` : '';
-          const percentage = p.file_total > 0 ? ` (${this.downloadProgress}%)` : '';
-          this.downloadMessage = `Downloading ${p.current_file} (${transferred}${total}${percentage})`;
-          return;
-        }
-
-        if (p.type === 'complete') {
-          return;
-        }
-
-        if (p.type === 'loading_model') {
-          if (this.phase !== 'error' && !this.ingestionAvailable) this.phase = 'downloading_model';
-          this.downloadProgress = 100;
-          this.downloadIsIndeterminate = true;
-          this.downloadMessage = 'Loading the local model...';
-          return;
-        }
+      await api.listen('model_download_cancelled', () => {
+        console.log('[AppState] model download cancelled');
+        this.isDownloadingModel = false;
+        this.downloadMessage = '';
+        this.downloadProgress = 0;
+        this.#localModelRetrying = false;
+        this.#tryBecomeReady();
       });
 
       await api.listen('llm_ready', () => {
         console.log('[AppState] LLM ready');
         this.#localModelRetrying = false;
         this.llmReady = true;
+        this.isDownloadingModel = false;
         errorDialog.clear('local-model-initialization');
         errorDialog.clear('external-inference-readiness');
         this.#tryBecomeReady();
       });
+
       await api.listen('llm_unready', () => {
         console.log('[AppState] inference initialization requested');
         this.#localModelRetrying = false;
@@ -133,9 +176,11 @@ export class AppState {
         errorDialog.clear('local-model-initialization');
         errorDialog.clear('external-inference-readiness');
       });
+
       await api.listenExternalInferenceFailed(() => {
         console.warn('[AppState] external inference unavailable');
         this.llmReady = false;
+        this.isDownloadingModel = false;
         errorDialog.report({
           dedupeKey: 'external-inference-readiness',
           title: 'Remote provider unavailable',
@@ -151,11 +196,10 @@ export class AppState {
         });
       });
 
+      // Synchronously reconcile initial state from lifecycle probe
+      await this.reconcile();
 
-      // If both were already ready (e.g. BYO mode with cached embedder), check now
-      this.#tryBecomeReady();
-
-      // All listeners are set up — kick off first-run init (embedder + LLM download)
+      // Trigger first-run init if needed
       console.log('[AppState] Listeners ready, triggering first-run init');
       api.beginFirstRunInit().catch(() => {
         console.error('[AppState] begin_first_run_init failed');

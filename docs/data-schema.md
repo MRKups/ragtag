@@ -80,6 +80,8 @@ The frontend uses the typed IPC API.
 | --- | --- | --- |
 | `begin_first_run_init` | none | Starts staged local initialization. |
 | `retry_local_model_initialization` | none | Retries local generation-model initialization. |
+| `cancel_model_download` | none | Aborts an active local model download and resets lifecycle state. |
+| `get_app_state` | none | Memory-only probe returning `AppLifecycleState` with embedder, LLM, ingestion, and capacity snapshots. |
 | `upload_document` | `filename`, `fileBytes`, `channel: Channel<IngestionProgress>` | Managed document identifier. |
 | `list_documents` | none | Registry documents. |
 | `get_document_preview` | `documentId` | Typed text or Markdown preview. |
@@ -98,6 +100,41 @@ The frontend uses the typed IPC API.
 | `vacuum_database` | none | Completion status. |
 | `reset_all_data` | `deleteModels` | Whether restart was requested. |
 | `get_platform` | none | Host operating system identifier: `macos`, `windows`, or `linux`. |
+
+## Execution capacity and lifecycle state
+
+`get_app_state` returns an atomic, memory-only snapshot of current system readiness and execution permits without acquiring SQLite transaction or storage locks:
+
+```json
+{
+  "embedder_ready": true,
+  "llm_ready": false,
+  "inference_mode": "local",
+  "model_download_active": true,
+  "model_download_progress": {
+    "model_id": "unsloth/Qwen3-1.7B-GGUF",
+    "current_file": "Qwen3-1.7B-Q4_K_M.gguf",
+    "file_downloaded": 104857600,
+    "file_total": 1258291200,
+    "files_completed": 0,
+    "total_files": 1,
+    "type": "downloading"
+  },
+  "active_queries_count": 0,
+  "ingestion_active": false,
+  "active_document_id": null,
+  "capacity": {
+    "ordinary_available": 16,
+    "ordinary_capacity": 16,
+    "protected_available": 4,
+    "protected_capacity": 4
+  }
+}
+```
+
+Command execution capacity is strictly partitioned by priority via dual semaphores:
+- **Ordinary capacity (16 permits):** Allocated to bulk commands (`upload_document`, `execute_query`, `delete_document`, `list_documents`, `get_document_preview`, settings, maintenance). Saturated capacity returns `ErrorCode::QueueFull`.
+- **Protected capacity (4 permits):** Reserved strictly for interactive cancellations and probes (`cancel_query`, `cancel_model_download`, `get_app_state`). Background saturation or active inference loops cannot starve user cancellations or lifecycle polling.
 
 ## Request-scoped events
 

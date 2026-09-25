@@ -42,6 +42,13 @@
             {/if}
           </div>
           <p class="progress-text">{appState.downloadMessage || 'Downloading model...'}</p>
+          <button
+            type="button"
+            class="cancel-download-btn"
+            onclick={() => void appState.cancelModelDownload()}
+          >
+            Cancel Download
+          </button>
         </div>
       {:else}
         <div class="init-spinner">
@@ -177,5 +184,25 @@
 
   .retry-btn:hover {
     background-color: #2563eb;
+  }
+
+  .cancel-download-btn {
+    align-self: center;
+    margin-top: 0.5rem;
+    padding: 0.375rem 1rem;
+    background-color: transparent;
+    color: #9ca3af;
+    border: 1px solid #374151;
+    border-radius: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .cancel-download-btn:hover {
+    color: #f3f4f6;
+    border-color: #6b7280;
+    background-color: #1e293b;
   }
 </style>

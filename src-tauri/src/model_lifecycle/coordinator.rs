@@ -86,6 +86,7 @@ pub async fn finish_llm_initialization(
 
     current.in_progress = false;
     current.in_progress_generation = None;
+    current.download_cancellation = None;
     if current.generation == generation {
         current.restart_requested = false;
         return false;
@@ -110,11 +111,12 @@ pub async fn emit_model_download_progress_if_current(
     generation: u64,
     progress: ModelDownloadProgress,
 ) -> bool {
-    let current = initialization.lock().await;
+    let mut current = initialization.lock().await;
     if current.generation != generation || current.in_progress_generation != Some(generation) {
         return false;
     }
 
+    current.last_download_progress = Some(progress.clone());
     let _ = app.emit("model_download_progress", progress);
     true
 }
@@ -132,6 +134,7 @@ pub async fn finish_llm_initialization_with_progress(
 
     current.in_progress = false;
     current.in_progress_generation = None;
+    current.download_cancellation = None;
     if current.generation != generation {
         let restart = current.restart_requested;
         current.restart_requested = false;
@@ -139,6 +142,7 @@ pub async fn finish_llm_initialization_with_progress(
     }
 
     current.restart_requested = false;
+    current.last_download_progress = Some(progress.clone());
     let _ = app.emit("model_download_progress", progress);
     false
 }
@@ -156,6 +160,7 @@ pub async fn finish_external_readiness_probe(
 
     current.in_progress = false;
     current.in_progress_generation = None;
+    current.download_cancellation = None;
     if current.generation != generation {
         let restart = current.restart_requested;
         current.restart_requested = false;
@@ -165,10 +170,12 @@ pub async fn finish_external_readiness_probe(
     current.restart_requested = false;
     match readiness {
         Ok(()) => {
+            current.external_ready = true;
             info!("external inference endpoint and model are ready");
             let _ = app.emit("llm_ready", ());
         }
         Err(error) => {
+            current.external_ready = false;
             warn!("external inference readiness check failed: {error}");
             let _ = app.emit("external_inference_failed", error);
         }
@@ -191,6 +198,7 @@ pub async fn finish_local_model_initialization(
     if current.generation != generation {
         current.in_progress = false;
         current.in_progress_generation = None;
+        current.download_cancellation = None;
         let restart = current.restart_requested;
         current.restart_requested = false;
         return restart;
@@ -199,6 +207,7 @@ pub async fn finish_local_model_initialization(
     *llm_state.write().await = Some(Arc::new(model));
     current.in_progress = false;
     current.in_progress_generation = None;
+    current.download_cancellation = None;
     current.restart_requested = false;
     info!("mistral.rs pipeline built and ready");
     let _ = app.emit("llm_ready", ());
@@ -212,6 +221,10 @@ pub async fn invalidate_llm_readiness(
 ) -> bool {
     let mut initialization = state.llm_initialization.lock().await;
     invalidate_llm_initialization(&mut initialization);
+    if let Some(cancel) = initialization.download_cancellation.take() {
+        let _ = cancel.send(true);
+    }
+    initialization.external_ready = false;
     let should_start = !initialization.in_progress;
     if should_start {
         initialization.in_progress_generation = None;
@@ -223,6 +236,26 @@ pub async fn invalidate_llm_readiness(
     }
     let _ = app.emit("llm_unready", ());
     should_start
+}
+
+pub async fn cancel_active_model_download(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), AppError> {
+    let mut current = state.llm_initialization.lock().await;
+    if current.in_progress {
+        if let Some(cancel) = current.download_cancellation.take() {
+            let _ = cancel.send(true);
+        }
+        invalidate_llm_initialization(&mut current);
+        current.in_progress = false;
+        current.in_progress_generation = None;
+        current.restart_requested = false;
+        current.last_download_progress = None;
+        let _ = app.emit("model_download_cancelled", ());
+        let _ = app.emit("llm_unready", ());
+    }
+    Ok(())
 }
 
 pub async fn invalidate_external_readiness_before_change(
@@ -329,20 +362,30 @@ pub async fn request_llm_initialization_with_resources(
     http_client: reqwest::Client,
     models_dir: PathBuf,
 ) {
-    let generation = {
+    let (generation, cancel_rx) = {
         let mut current = initialization.lock().await;
         if current.in_progress {
             return;
         }
         current.in_progress = true;
         current.in_progress_generation = Some(current.generation);
-        current.generation
+        current.restart_requested = false;
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        current.download_cancellation = Some(cancel_tx);
+        current.last_download_progress = None;
+        (current.generation, cancel_rx)
     };
 
     tauri::async_runtime::spawn(async move {
         let app_settings = AppSettingsRepository::new(pool.clone());
         let mode = match app_settings.get("inference_mode").await {
-            Ok(mode) => mode.unwrap_or_else(|| "local".to_string()),
+            Ok(mode) => {
+                let mode = mode.unwrap_or_else(|| "local".to_string());
+                if let Ok(mut current) = initialization.try_lock() {
+                    current.inference_mode = mode.clone();
+                }
+                mode
+            }
             Err(error) => {
                 let message = format!("Failed to read inference mode: {error}");
                 error!("{message}");
@@ -475,12 +518,13 @@ pub async fn request_llm_initialization_with_resources(
         let progress_initialization = initialization.clone();
         let progress_app = app.clone();
         let progress_emitter: ProgressEmitter = Arc::new(move |progress| {
-            let Ok(current) = progress_initialization.try_lock() else {
+            let Ok(mut current) = progress_initialization.try_lock() else {
                 return;
             };
             if current.generation == generation
                 && current.in_progress_generation == Some(generation)
             {
+                current.last_download_progress = Some(progress.clone());
                 let _ = progress_app.emit("model_download_progress", progress);
             }
         });
@@ -489,11 +533,15 @@ pub async fn request_llm_initialization_with_resources(
             &gguf_filename,
             &models_dir,
             progress_emitter,
+            cancel_rx,
         )
         .await
         {
             Ok(path) => path,
             Err(error) => {
+                if !llm_initialization_is_current(&initialization, generation).await {
+                    return;
+                }
                 error!("model download failed after all retries: {error}");
                 let restart = finish_llm_initialization_with_progress(
                     &app,
@@ -775,5 +823,35 @@ mod tests {
         };
         assert!(llm_initialization_is_current(&initialization, latest_generation).await);
         assert!(!finish_llm_initialization(&initialization, latest_generation).await);
+    }
+
+    #[tokio::test]
+    async fn cancel_active_model_download_signals_receiver_and_resets_state() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let mut state = LlmInitializationState {
+            generation: 1,
+            in_progress: true,
+            in_progress_generation: Some(1),
+            restart_requested: true,
+            download_cancellation: Some(tx),
+            last_download_progress: None,
+            external_ready: false,
+            inference_mode: "local".to_string(),
+        };
+
+        invalidate_llm_initialization(&mut state);
+        if let Some(cancel) = state.download_cancellation.take() {
+            let _ = cancel.send(true);
+        }
+        state.in_progress = false;
+        state.in_progress_generation = None;
+        state.restart_requested = false;
+
+        assert!(*rx.borrow());
+        assert_eq!(state.generation, 2);
+        assert!(!state.in_progress);
+        assert_eq!(state.in_progress_generation, None);
+        assert!(!state.restart_requested);
+        assert!(state.download_cancellation.is_none());
     }
 }

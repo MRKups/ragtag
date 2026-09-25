@@ -26,7 +26,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `development-process.md`: How documentation is authored and maintained.
 - `documentation-style.md`: Writing rules and the sentence test.
 - `data-schema.md`: SQLite schemas, LanceDB record batches, settings, and IPC wire contracts.
-- `decisions.md`: Durable architecture and technology decisions (`D001` to `D016`).
+- `decisions.md`: Durable architecture and technology decisions (`D001` to `D018`).
 - `file-structure.md`: Repository layout and package boundaries.
 - `glossary.md`: Repository-specific technical vocabulary.
 - `tracker.md`: Active, unresolved implementation work items only.
@@ -81,13 +81,14 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `icons/`: Native application icons.
 - `src/main.rs`: Native binary entry point delegating to `mrk_ragtag_app::run()`.
 - `src/lib.rs`: Application composition, builder setup, pending data resets, and background worker initialization.
-- `src/state.rs`: Central `AppState` holding pools, stores, embedders, and worker channels.
-- `src/model_download.rs`: Model download listener emitting progress events over Tauri channels.
+- `src/capacity.rs`: Dual-semaphore command capacity manager prioritizing interactive cancellations and probes over ordinary operations.
+- `src/state.rs`: Central `AppState` holding pools, stores, embedders, capacity semaphores, active tracking, and worker channels.
+- `src/model_download.rs`: Model download streamer supporting real-time progress emissions and Tokio watch cancellation.
 - `src/commands/`: Focused Tauri IPC command modules:
   - `mod.rs`: Module exports and command handler registration.
   - `documents.rs`: Document uploads, library queries, preview fetching, asset path resolution, and deletion.
   - `query.rs`: RAG query orchestration and query cancellation.
-  - `models.rs`: Model status inspection, local model downloads, download cancellation, and external provider probing.
+  - `models.rs`: Model status inspection, atomic lifecycle state probe, local model downloads, download cancellation, and external provider probing.
   - `settings.rs`: Settings retrieval and updates.
   - `keys.rs`: Keychain and fallback API key operations.
   - `maintenance.rs`: Storage diagnostics, database compaction, and factory reset coordination.
@@ -98,11 +99,11 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `sse.rs`: Server-Sent Events parser handling chunk boundaries and multi-line events.
 - `src/model_lifecycle/`: Model lifecycle management:
   - `mod.rs`: Module exports.
-  - `coordinator.rs`: Generational state coordinator coalescing download and initialization requests.
+  - `coordinator.rs`: Generational state coordinator coalescing download, cancellation, and initialization requests.
   - `recovery.rs`: Startup database validator reconciling LanceDB tables and stale indexing records.
 - `src/workers/`: Background workers:
   - `mod.rs`: Module exports.
-  - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries.
+  - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries and active job tracking.
 - `crates/`: Domain, persistence, and document-processing libraries.
 - `.sqlx/`: Committed SQLx offline query metadata.
 - `vendor/mistralrs-core/`: Licensed upstream v0.9.3 core with Ragtag's explicit tensor-selection repair ([D007](decisions.md)).
@@ -110,7 +111,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 
 ### `src-tauri/crates/domain/`
 
-Zero-dependency shared contracts (`serde`, `thiserror`). Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`, `MAX_UPLOAD_BYTES`, and `EXTRACTED_TEXT_MAX_BYTES`.
+Zero-dependency shared contracts (`serde`, `thiserror`). Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`, `AppLifecycleState`, `CapacityState`, `MAX_UPLOAD_BYTES`, and `EXTRACTED_TEXT_MAX_BYTES`.
 
 ### `src-tauri/crates/persistence/`
 

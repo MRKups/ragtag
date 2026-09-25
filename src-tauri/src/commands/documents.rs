@@ -39,6 +39,7 @@ pub async fn upload_document(
 ) -> Result<String, AppError> {
     let file_type = validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     if state.embedder.read().await.is_none() {
         return Err(AppError::internal(
             "Upload document",
@@ -188,6 +189,7 @@ pub async fn upload_document(
 
 #[tauri::command]
 pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Document>, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
     repo.list_all().await
 }
@@ -198,6 +200,7 @@ pub async fn get_document_preview(
     state: tauri::State<'_, AppState>,
     document_id: String,
 ) -> Result<DocumentPreview, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
     let document = repo
         .get_by_id(&document_id)
@@ -245,6 +248,7 @@ pub async fn delete_document(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let id = uuid::Uuid::parse_str(&id)
         .map_err(|_| {
             AppError::invalid_input(

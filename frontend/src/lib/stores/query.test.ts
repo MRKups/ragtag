@@ -34,3 +34,39 @@ if (
 ) {
   throw new Error('A completed answer must clear the composer and preserve its citations.');
 }
+
+const queryToCancel = new QueryState();
+queryToCancel.currentRequestId = 'request-2';
+queryToCancel.isLoading = true;
+queryToCancel.isStreaming = true;
+queryToCancel.text = 'Partial generated tokens';
+queryToCancel.citations = [
+  {
+    document_id: 'document-2',
+    filename: 'manual.pdf',
+    storage_path: 'documents/document-2.pdf',
+    page: 2,
+    chunk_content: 'Excerpt',
+    score: 0.8,
+    is_hybrid: false
+  }
+];
+
+queryToCancel.cancel();
+
+if (
+  queryToCancel.currentRequestId !== null
+  || queryToCancel.isLoading
+  || queryToCancel.isStreaming
+  || queryToCancel.text !== 'Partial generated tokens'
+  || queryToCancel.citations.length !== 1
+) {
+  throw new Error('Cancelling an in-flight query must stop generation but retain partial text and citations.');
+}
+
+queryToCancel.reset();
+const resetQuery = queryToCancel as { text: string; citations: unknown[] };
+if (resetQuery.text !== '' || resetQuery.citations.length !== 0) {
+  throw new Error('Reset must clear text and citations.');
+}
+

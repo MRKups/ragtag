@@ -12,6 +12,7 @@ pub async fn set_api_key(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<ApiKeyStatus, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let key_to_save = key.trim().to_string();
     if key_to_save.is_empty() {
         return Err(AppError::invalid_input(
@@ -60,6 +61,7 @@ pub async fn set_api_key(
 pub async fn get_api_key_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<ApiKeyStatus, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let has_keychain_key = tokio::task::spawn_blocking(|| {
         let entry = match keyring::v1::Entry::new("ragtag", "external_api_key") {
@@ -101,6 +103,7 @@ pub async fn delete_api_key(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
 

@@ -1,3 +1,4 @@
+mod capacity;
 mod commands;
 mod inference;
 mod model_download;
@@ -111,11 +112,23 @@ pub fn run() {
             }
 
             let local_llm = Arc::new(tokio::sync::RwLock::new(None));
+            let initial_inference_mode = tauri::async_runtime::block_on(async {
+                persistence::AppSettingsRepository::new(pool.clone())
+                    .get("inference_mode")
+                    .await
+                    .unwrap_or(None)
+                    .unwrap_or_else(|| "local".to_string())
+            });
             let llm_initialization = Arc::new(tokio::sync::Mutex::new(
-                state::LlmInitializationState::default(),
+                state::LlmInitializationState {
+                    inference_mode: initial_inference_mode,
+                    ..Default::default()
+                },
             ));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
             let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let active_document_id = Arc::new(std::sync::Mutex::new(None));
+            let capacity = capacity::ExecutionCapacity::new();
 
             app.manage(AppState {
                 db_pool: pool.clone(),
@@ -126,6 +139,8 @@ pub fn run() {
                 llm_initialization,
                 document_operations: document_operations.clone(),
                 active_queries: active_queries.clone(),
+                active_document_id: active_document_id.clone(),
+                capacity,
                 http_client: reqwest::Client::builder()
                     .use_rustls_tls()
                     .redirect(reqwest::redirect::Policy::none())
@@ -143,6 +158,7 @@ pub fn run() {
                 app_local_data,
                 rx,
                 tx,
+                active_document_id,
             });
 
             Ok(())
@@ -150,6 +166,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             begin_first_run_init,
             retry_local_model_initialization,
+            cancel_model_download,
+            get_app_state,
             upload_document,
             execute_query,
             cancel_query,

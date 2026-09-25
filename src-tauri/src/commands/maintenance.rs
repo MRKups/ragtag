@@ -8,8 +8,9 @@ use persistence::storage::storage_sizes;
 #[tauri::command]
 pub async fn get_storage_info(
     app: tauri::AppHandle,
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let app_local_data = app
         .path()
         .app_local_data_dir()
@@ -44,12 +45,14 @@ pub async fn get_storage_info(
 pub async fn compact_vector_store(
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     state.vector_db.compact().await?;
     Ok(serde_json::json!({"status": "compacted"}))
 }
 
 #[tauri::command]
 pub async fn vacuum_database(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     persistence::vacuum(&state.db_pool).await?;
     Ok(serde_json::json!({"status": "vacuumed"}))
 }
@@ -59,6 +62,8 @@ pub async fn reset_all_data(
     app: tauri::AppHandle,
     delete_models: bool,
 ) -> Result<serde_json::Value, AppError> {
+    let state = app.state::<AppState>();
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let app_local_data = app
         .path()
         .app_local_data_dir()

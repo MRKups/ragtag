@@ -22,6 +22,7 @@ pub fn inference_mode_is_unchanged(current_mode: Option<&str>, requested_mode: &
 pub async fn get_settings(
     state: tauri::State<'_, AppState>,
 ) -> Result<HashMap<String, String>, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let mut all = repo.get_all().await?;
     const KEYS: &[&str] = &[
@@ -45,6 +46,7 @@ pub async fn test_external_provider(
     base_url: String,
     api_key: Option<String>,
 ) -> Result<ExternalProviderConnection, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let candidate_api_key = api_key
         .map(|key| key.trim().to_string())
@@ -77,6 +79,7 @@ pub async fn set_external_provider_config(
     base_url: String,
     model: String,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let normalized_base_url = normalize_external_base_url(&base_url)?;
     validate_setting("external_model", &model)?;
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
@@ -97,6 +100,7 @@ pub async fn set_setting(
     key: String,
     value: String,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     validate_setting(&key, &value)?;
     if matches!(
         key.as_str(),

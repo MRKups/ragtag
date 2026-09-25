@@ -108,6 +108,7 @@ pub async fn execute_query(
     request_id: String,
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     validate_query_request(&query, &request_id)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
     let cancel_receiver = register_active_query(&state.active_queries, &request_id)?;
@@ -283,6 +284,7 @@ pub async fn cancel_query(
     state: tauri::State<'_, AppState>,
     request_id: String,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
     validate_query_request_id(&request_id)?;
     let queries = state
         .active_queries

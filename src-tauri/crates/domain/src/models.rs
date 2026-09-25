@@ -125,3 +125,24 @@ pub struct ApiKeyStatus {
 pub struct ExternalProviderConnection {
     pub models: Vec<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapacityState {
+    pub ordinary_available: usize,
+    pub ordinary_capacity: usize,
+    pub protected_available: usize,
+    pub protected_capacity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppLifecycleState {
+    pub embedder_ready: bool,
+    pub llm_ready: bool,
+    pub inference_mode: String,
+    pub model_download_active: bool,
+    pub model_download_progress: Option<crate::events::ModelDownloadProgress>,
+    pub active_queries_count: usize,
+    pub ingestion_active: bool,
+    pub active_document_id: Option<String>,
+    pub capacity: CapacityState,
+}

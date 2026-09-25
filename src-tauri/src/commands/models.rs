@@ -17,6 +17,7 @@ pub async fn begin_first_run_init(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let settings = AppSettingsRepository::new(state.db_pool.clone());
     let mode = settings
         .get("inference_mode")
@@ -113,6 +114,7 @@ pub async fn retry_local_model_initialization(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let settings = AppSettingsRepository::new(state.db_pool.clone());
     let mode = settings
         .get("inference_mode")
@@ -143,6 +145,63 @@ pub async fn retry_local_model_initialization(
         .join("models");
     request_llm_initialization(&app, &state, models_dir).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_model_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
+    crate::model_lifecycle::cancel_active_model_download(&app, &state).await
+}
+
+#[tauri::command]
+pub async fn get_app_state(
+    state: tauri::State<'_, AppState>,
+) -> Result<domain::AppLifecycleState, AppError> {
+    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
+
+    let embedder_ready = state.embedder.read().await.is_some();
+    let is_local_model_ready = state.local_llm.read().await.is_some();
+
+    let init = state.llm_initialization.lock().await;
+    let llm_ready = is_local_model_ready || init.external_ready;
+    let inference_mode = if init.inference_mode.is_empty() {
+        "local".to_string()
+    } else {
+        init.inference_mode.clone()
+    };
+    let model_download_active = init.in_progress;
+    let model_download_progress = init.last_download_progress.clone();
+    drop(init);
+
+    let active_queries_count = state
+        .active_queries
+        .lock()
+        .map(|q| q.len())
+        .unwrap_or(0);
+
+    let active_doc = state
+        .active_document_id
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    let ingestion_active = active_doc.is_some();
+
+    let capacity = state.capacity.snapshot();
+
+    Ok(domain::AppLifecycleState {
+        embedder_ready,
+        llm_ready,
+        inference_mode,
+        model_download_active,
+        model_download_progress,
+        active_queries_count,
+        ingestion_active,
+        active_document_id: active_doc,
+        capacity,
+    })
 }
 
 #[tauri::command]

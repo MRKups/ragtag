@@ -74,7 +74,7 @@
     if (queryState.currentRequestId) {
       void api.cancelQuery(queryState.currentRequestId);
     }
-    queryState.cancel();
+    queryState.reset();
     const requestId = crypto.randomUUID();
     queryState.currentRequestId = requestId;
     queryState.queryText = text;
@@ -119,6 +119,15 @@
     queryState.cancel();
   }
 
+  $effect(() => {
+    return () => {
+      if (queryState.currentRequestId) {
+        void api.cancelQuery(queryState.currentRequestId);
+        queryState.stopGenerating();
+      }
+    };
+  });
+
   function handleCitationClick(detail: { filename: string; storagePath: string; documentId: string; page: number }) {
     queryState.selectedDocument = detail;
   }
@@ -153,11 +162,25 @@
 
     <div class="chat-input-area">
       <div class="input-wrapper-styled">
+        {#if appState.isDownloadingModel}
+          <div class="downloading-banner">
+            <span class="banner-text">{appState.downloadMessage || 'Downloading model in the background...'}</span>
+            <button
+              type="button"
+              class="cancel-banner-btn"
+              onclick={() => void appState.cancelModelDownload()}
+            >
+              Cancel Download
+            </button>
+          </div>
+        {/if}
         <QueryInput
           isLoading={queryState.isLoading}
           isStreaming={queryState.isStreaming}
           unavailable={!appState.queryAvailable}
-          unavailableMessage={'The selected inference model is unavailable. Resolve the issue in the dialog to continue.'}
+          unavailableMessage={appState.isDownloadingModel
+            ? `Downloading model: ${appState.downloadMessage || 'Please wait...'}`
+            : 'The selected inference model is unavailable. Resolve the issue in the dialog to continue.'}
           onSubmit={handleQuery}
           onCancel={handleCancel}
           bind:text={queryState.queryText}
@@ -262,5 +285,44 @@
 
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  .downloading-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+    background-color: #1e293b;
+    border: 1px solid #3b82f6;
+    border-radius: 0.5rem;
+  }
+
+  .banner-text {
+    font-size: 0.8125rem;
+    color: #93c5fd;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cancel-banner-btn {
+    flex-shrink: 0;
+    padding: 0.25rem 0.625rem;
+    background-color: transparent;
+    color: #9ca3af;
+    border: 1px solid #4b5563;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .cancel-banner-btn:hover {
+    color: #f3f4f6;
+    border-color: #9ca3af;
+    background-color: #374151;
   }
 </style>

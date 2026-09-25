@@ -95,7 +95,16 @@ pub async fn download_model(
     filename: &str,
     cache_dir: &std::path::Path,
     emit_progress: ProgressEmitter,
+    mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Result<PathBuf, AppError> {
+    if *cancellation.borrow() {
+        return Err(AppError::internal(
+            "Download model file",
+            "Model download was cancelled by the user",
+            "Retry local model initialization when you are ready to download.",
+        ));
+    }
+
     tokio::fs::create_dir_all(cache_dir).await?;
 
     let client = hf_hub::HFClient::builder()
@@ -125,6 +134,13 @@ pub async fn download_model(
     let max_attempts = 3u32;
 
     let path = loop {
+        if *cancellation.borrow() {
+            return Err(AppError::internal(
+                "Download model file",
+                "Model download was cancelled by the user",
+                "Retry local model initialization when you are ready to download.",
+            ));
+        }
         attempts += 1;
 
         let reporter = ProgressReporter {
@@ -134,13 +150,28 @@ pub async fn download_model(
             total_bytes: Arc::new(AtomicU64::new(0)),
         };
 
-        match repo
+        let download_future = repo
             .download_file()
             .filename(filename)
             .progress(reporter)
-            .send()
-            .await
-        {
+            .send();
+
+        let download_result = tokio::select! {
+            biased;
+            changed = cancellation.changed() => {
+                if changed.is_ok() && *cancellation.borrow() {
+                    return Err(AppError::internal(
+                        "Download model file",
+                        "Model download was cancelled by the user",
+                        "Retry local model initialization when you are ready to download.",
+                    ));
+                }
+                continue;
+            }
+            res = download_future => res,
+        };
+
+        match download_result {
             Ok(path) => break path,
             Err(e) if attempts < max_attempts => {
                 warn!("download attempt {attempts}/{max_attempts} failed — retrying ({e})");
@@ -158,4 +189,22 @@ pub async fn download_model(
     };
 
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_immediately_if_cancellation_already_active() {
+        let (tx, rx) = tokio::sync::watch::channel(true);
+        let emitter: ProgressEmitter = Arc::new(|_| {});
+        let temp_dir = std::env::temp_dir().join(uuid::Uuid::now_v7().to_string());
+        let res = download_model("test/model", "model.gguf", &temp_dir, emitter, rx).await;
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert_eq!(err.code, domain::ErrorCode::Internal);
+        assert!(err.detail.contains("cancelled by the user"));
+        drop(tx);
+    }
 }

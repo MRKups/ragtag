@@ -12,6 +12,10 @@ pub struct LlmInitializationState {
     pub in_progress: bool,
     pub in_progress_generation: Option<u64>,
     pub restart_requested: bool,
+    pub download_cancellation: Option<watch::Sender<bool>>,
+    pub last_download_progress: Option<domain::ModelDownloadProgress>,
+    pub external_ready: bool,
+    pub inference_mode: String,
 }
 
 pub struct IngestionJob {
@@ -38,4 +42,6 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub document_operations: Arc<RwLock<()>>,
     pub active_queries: Arc<StdMutex<HashMap<String, watch::Sender<bool>>>>,
+    pub active_document_id: Arc<StdMutex<Option<String>>>,
+    pub capacity: crate::capacity::ExecutionCapacity,
 }

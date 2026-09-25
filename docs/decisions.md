@@ -153,4 +153,17 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Users receive clear diagnostic feedback paired with direct instructions on how to recover from any error. Frontend code deterministically classifies retryable operations (`queue_full`, `inference`, `storage`) from terminal failures. Raw strings and untyped errors across backend and frontend are eliminated.
 
+## D018 — Protected execution capacity and atomic lifecycle probes
+
+**Context:** High-throughput batch operations (such as multi-document ingestion queues or long-running embedding calculations) and active model generation stream tokens and occupy asynchronous execution capacity. Under load, interactive user commands such as cancellation requests (`cancel_query`, `cancel_model_download`) and frontend lifecycle polling could experience scheduling latency or compete for thread execution. Furthermore, frontend components previously relied on fire-and-forget lifecycle events without a synchronous, non-blocking method to probe app readiness on startup or reconnect.
+
+**Decision:** Adopt AGN's dual-semaphore execution capacity pattern:
+1. **Partitioned capacity (`ExecutionCapacity`):** Divide Tauri command execution into two dedicated pools:
+   - `ORDINARY_COMMAND_CAPACITY` (16 permits): Guards bulk, mutation, and inference commands (`upload_document`, `execute_query`, `delete_document`, `list_documents`, `get_document_preview`, settings, maintenance). Saturated capacity immediately returns `ErrorCode::QueueFull` with active-voice retry guidance.
+   - `PROTECTED_COMMAND_CAPACITY` (4 permits): Reserved strictly for high-priority interactive operations (`cancel_query`, `cancel_model_download`, `get_app_state`). Protected commands never queue behind ordinary operations.
+2. **Atomic memory-only lifecycle probe (`get_app_state`):** Expose an instant (<1ms) snapshot command returning embedder readiness, LLM state, in-flight download progress, channel queue depth, and capacity permit availability without acquiring SQLite transactions or storage locks.
+3. **Cancellable model downloads:** Wrap HTTP download streams in Tokio watch cancellation channels, allowing users to abort multi-gigabyte background downloads immediately and enter the app as soon as document embedding is ready.
+
+**Consequences:** Saturated document queues or active generation loops cannot delay cancellation requests or status queries. Interactive responsiveness is preserved across all system states.
+
 

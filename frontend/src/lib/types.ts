@@ -129,4 +129,41 @@ export type IngestionProgress =
       message: string;
     };
 
+export type DownloadStageType =
+  | 'fetching_info'
+  | 'downloading'
+  | 'complete'
+  | 'loading_model'
+  | 'error';
+
+export interface ModelDownloadProgress {
+  model_id: string;
+  current_file: string;
+  file_downloaded: number;
+  file_total: number;
+  files_completed: number;
+  total_files: number;
+  type: DownloadStageType;
+  message?: string;
+}
+
+export interface CapacityState {
+  ordinary_available: number;
+  ordinary_capacity: number;
+  protected_available: number;
+  protected_capacity: number;
+}
+
+export interface AppLifecycleState {
+  embedder_ready: boolean;
+  llm_ready: boolean;
+  inference_mode: string;
+  model_download_active: boolean;
+  model_download_progress: ModelDownloadProgress | null;
+  active_queries_count: number;
+  ingestion_active: boolean;
+  active_document_id: string | null;
+  capacity: CapacityState;
+}
+
 

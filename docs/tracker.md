@@ -19,16 +19,6 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 
 **References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).
 
-## B192 — Protected execution capacity for cancellations and lifecycle probes
-
-**Problem:** Saturated background ingestion queues or long-running embedding batches can create execution latency for interactive user commands, potentially delaying cancellation requests and status polling.
-
-**Outcome:** Implement protected command capacity separating high-priority interactive operations (`cancel_query`, `cancel_model_download`, `get_app_state`) from batch background processing.
-
-**Acceptance:** A saturated document ingestion queue or active inference generation does not delay execution of cancellation requests or status queries beyond bounded scheduling limits.
-
-**References:** [DEV-07](development.md), [app-architecture.md](app-architecture.md).
-
 ## B193 — Hybrid retrieval relevance and BM25 re-ranking fine-tuning
 
 **Problem:** Candidate chunk retrieval relevance varies across dense technical manuals containing tables, code, and abbreviations when relying on standard BM25 and vector score blending without domain tuning.
