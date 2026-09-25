@@ -159,7 +159,7 @@ pub async fn download_model(
         let download_result = tokio::select! {
             biased;
             changed = cancellation.changed() => {
-                if changed.is_ok() && *cancellation.borrow() {
+                if changed.is_err() || *cancellation.borrow() {
                     return Err(AppError::internal(
                         "Download model file",
                         "Model download was cancelled by the user",
@@ -207,4 +207,18 @@ mod tests {
         assert!(err.detail.contains("cancelled by the user"));
         drop(tx);
     }
+
+    #[tokio::test]
+    async fn aborts_immediately_if_cancellation_sender_is_dropped() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        drop(tx);
+        let emitter: ProgressEmitter = Arc::new(|_| {});
+        let temp_dir = std::env::temp_dir().join(uuid::Uuid::now_v7().to_string());
+        let res = download_model("test/model", "model.gguf", &temp_dir, emitter, rx).await;
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert_eq!(err.code, domain::ErrorCode::Internal);
+        assert!(err.detail.contains("cancelled by the user"));
+    }
 }
+

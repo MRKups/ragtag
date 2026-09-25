@@ -52,7 +52,7 @@
   }
 
   let chatScrollArea: HTMLDivElement | null = $state(null);
-  let userScrolledUp = false;
+  let userScrolledUp = $state(false);
 
   function handleScroll() {
     if (!chatScrollArea) return;

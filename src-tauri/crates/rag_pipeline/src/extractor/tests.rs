@@ -1,6 +1,6 @@
 use super::{
     document_preview,
-    docx::{DOCX_XML_MAX_BYTES, bounded_docx_xml, docx_body_text},
+    docx::{DOCX_XML_MAX_BYTES, bounded_docx_xml, docx_body_text, normalized_docx_xml},
     extract_pages,
     markdown::{
         InlineEnd, MARKDOWN_MAX_NESTING, markdown_blocks, markdown_preview_blocks, parse_inlines,
@@ -600,3 +600,36 @@ fn empty_docx_paragraphs_preserve_newlines() {
     let text = docx_body_text(xml, false).unwrap();
     assert_eq!(text, "First line\n\nSecond line\n");
 }
+
+#[test]
+fn bounded_pdf_text_accepts_split_multibyte_utf8_chunks() {
+    use std::io::Write;
+
+    let mut bounded = BoundedPdfText::new(1024);
+    // Write partial multibyte UTF-8 for '€' (0xE2, 0x82, 0xAC) across two write calls:
+    bounded.write_all(&[0xE2, 0x82]).unwrap();
+    bounded.write_all(&[0xAC]).unwrap();
+
+    // Write partial multibyte UTF-8 for 'é' (0xC3, 0xA9) across two write calls:
+    bounded.write_all(b" Caf").unwrap();
+    bounded.write_all(&[0xC3]).unwrap();
+    bounded.write_all(&[0xA9]).unwrap();
+
+    let text = bounded.into_text();
+    assert_eq!(text, "€ Café");
+}
+
+#[test]
+fn decodes_utf16_docx_xml_with_truncated_surrogate_pair() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-16"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Surrogate: "#;
+    let mut utf16 = vec![0xFF, 0xFE];
+    utf16.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+    // Append high surrogate 0xD834 without matching low surrogate (simulating stream cut):
+    utf16.extend(0xD834u16.to_le_bytes());
+
+    let normalized = normalized_docx_xml(&utf16).unwrap();
+    let text = String::from_utf8_lossy(&normalized);
+    assert!(text.contains("Surrogate: \u{FFFD}"));
+}
+
+

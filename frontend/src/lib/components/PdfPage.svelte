@@ -29,6 +29,7 @@
   let height = $state(1200);
   let loading = $state(true);
   let renderTask: RenderTask | null = null;
+  let activePage: PDFPageProxy | null = null;
   let renderId = 0;
   let textLayer: TextLayer | null = null;
   let mounted = $state(false);
@@ -48,6 +49,10 @@
     renderTask = null;
     textLayer?.cancel();
     textLayer = null;
+    if (activePage) {
+      activePage.cleanup();
+      activePage = null;
+    }
   }
 
   async function renderPage() {
@@ -62,7 +67,11 @@
     let task: RenderTask | null = null;
     try {
       const page = await pdfDoc.getPage(pageNumber);
-      if (myId !== renderId) return;
+      if (myId !== renderId) {
+        page.cleanup();
+        return;
+      }
+      activePage = page;
 
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale });

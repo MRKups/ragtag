@@ -11,7 +11,7 @@ pub const PDF_MAX_PAGE_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const PDF_MAX_RETAINED_TEXT_BYTES: usize = EXTRACTED_TEXT_MAX_BYTES;
 
 pub struct BoundedPdfText {
-    text: String,
+    raw: Vec<u8>,
     max_bytes: usize,
     pub limit_reached: bool,
 }
@@ -19,20 +19,23 @@ pub struct BoundedPdfText {
 impl BoundedPdfText {
     pub fn new(max_bytes: usize) -> Self {
         Self {
-            text: String::with_capacity(max_bytes),
+            raw: Vec::new(),
             max_bytes,
             limit_reached: false,
         }
     }
 
     pub fn into_text(self) -> String {
-        self.text
+        match String::from_utf8(self.raw) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
+        }
     }
 }
 
 impl std::io::Write for BoundedPdfText {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let Some(total_bytes) = self.text.len().checked_add(bytes.len()) else {
+        let Some(total_bytes) = self.raw.len().checked_add(bytes.len()) else {
             self.limit_reached = true;
             return Err(std::io::Error::other("PDF extracted text limit exceeded"));
         };
@@ -41,10 +44,7 @@ impl std::io::Write for BoundedPdfText {
             return Err(std::io::Error::other("PDF extracted text limit exceeded"));
         }
 
-        let text = std::str::from_utf8(bytes).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid PDF text")
-        })?;
-        self.text.push_str(text);
+        self.raw.extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -151,8 +151,12 @@ pub fn extract_pdf_pages(
         if page_text.limit_reached {
             return Err(pdf_text_limit_error());
         }
-        if extraction.is_err() {
-            break;
+        if let Err(err) = extraction {
+            return Err(AppError::invalid_input(
+                "Extract PDF page",
+                format!("Failed to extract PDF page {page_number} of {total_pages}: {err}"),
+                "Verify that the PDF is valid, unencrypted, and uncorrupted.",
+            ));
         }
 
         let text = page_text.into_text();

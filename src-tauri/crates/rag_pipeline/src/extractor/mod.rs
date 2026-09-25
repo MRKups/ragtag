@@ -25,7 +25,7 @@ pub fn extract_pages(
     let extracted = match file_type {
         "pdf" => pdf::extract_pdf_pages(source_path, on_page_extracted),
         "docx" => docx::extract_docx_pages(source_path, on_page_extracted),
-        "text" => text::extract_text_pages(source_path, on_page_extracted),
+        "text" | "txt" | "md" | "markdown" => text::extract_text_pages(source_path, on_page_extracted),
         _ => Err(AppError::invalid_input(
             "Extract document pages",
             format!("Unsupported document file type '{file_type}'"),
@@ -42,9 +42,9 @@ pub fn document_preview(
     filename: &str,
 ) -> Result<DocumentPreview, AppError> {
     match file_type {
-        "text" => {
+        "text" | "txt" | "md" | "markdown" => {
             let (content, truncated) = util::utf8_preview(source_path, "Text preview")?;
-            if markdown::is_markdown_filename(filename) {
+            if markdown::is_markdown_filename(filename) || file_type == "md" || file_type == "markdown" {
                 Ok(DocumentPreview::Markdown {
                     blocks: markdown::markdown_preview_blocks(&content),
                     truncated,

@@ -24,6 +24,18 @@ export class AppState {
   llmReady = $state(false);
   isDownloadingModel = $state(false);
   #localModelRetrying = false;
+  #unlistenFns: (() => void)[] = [];
+
+  #cleanupListeners() {
+    for (const unlisten of this.#unlistenFns) {
+      unlisten();
+    }
+    this.#unlistenFns = [];
+  }
+
+  destroy() {
+    this.#cleanupListeners();
+  }
 
   #applyDownloadProgress(p: ModelDownloadProgress) {
     if (p.type === 'error') {
@@ -117,84 +129,101 @@ export class AppState {
   }
 
   async init() {
+    this.#cleanupListeners();
     try {
-      await api.listen('embedder_ready', () => {
-        console.log('[AppState] embedder ready');
-        this.embedderAvailable = true;
-        this.#tryBecomeReady();
-      });
+      this.#unlistenFns.push(
+        await api.listen('embedder_ready', () => {
+          console.log('[AppState] embedder ready');
+          this.embedderAvailable = true;
+          this.#tryBecomeReady();
+        })
+      );
 
-      await api.listen<{ message: string }>('embedder_failed', () => {
-        console.error('[AppState] embedder failed');
-        this.embedderAvailable = false;
-        this.phase = 'error';
-        this.errorMessage = 'Ragtag could not initialize its document tools. Check your internet connection and local storage, then try again.';
-      });
+      this.#unlistenFns.push(
+        await api.listen<{ message: string }>('embedder_failed', () => {
+          console.error('[AppState] embedder failed');
+          this.embedderAvailable = false;
+          this.phase = 'error';
+          this.errorMessage = 'Ragtag could not initialize its document tools. Check your internet connection and local storage, then try again.';
+        })
+      );
 
-      await api.listen<{ document_id: string }>('document_failed', (event) => {
-        errorDialog.report({
-          dedupeKey: `document-processing-${event.payload.document_id}`,
-          title: 'Document processing failed',
-          message: 'Ragtag could not finish indexing a document.',
-          guidance: 'Review the document status, then remove and upload a new copy if needed.',
-          action: {
-            label: 'Open documents',
-            run: () => router.navigate('documents')
-          }
-        });
-      });
-
-      await api.listen<ModelDownloadProgress>('model_download_progress', (event) => {
-        const p = event.payload;
-        console.log('[AppState] download progress:', p);
-        this.#applyDownloadProgress(p);
-      });
-
-      await api.listen('model_download_cancelled', () => {
-        console.log('[AppState] model download cancelled');
-        this.isDownloadingModel = false;
-        this.downloadMessage = '';
-        this.downloadProgress = 0;
-        this.#localModelRetrying = false;
-        this.#tryBecomeReady();
-      });
-
-      await api.listen('llm_ready', () => {
-        console.log('[AppState] LLM ready');
-        this.#localModelRetrying = false;
-        this.llmReady = true;
-        this.isDownloadingModel = false;
-        errorDialog.clear('local-model-initialization');
-        errorDialog.clear('external-inference-readiness');
-        this.#tryBecomeReady();
-      });
-
-      await api.listen('llm_unready', () => {
-        console.log('[AppState] inference initialization requested');
-        this.#localModelRetrying = false;
-        this.llmReady = false;
-        errorDialog.clear('local-model-initialization');
-        errorDialog.clear('external-inference-readiness');
-      });
-
-      await api.listenExternalInferenceFailed(() => {
-        console.warn('[AppState] external inference unavailable');
-        this.llmReady = false;
-        this.isDownloadingModel = false;
-        errorDialog.report({
-          dedupeKey: 'external-inference-readiness',
-          title: 'Remote provider unavailable',
-          message: 'Ragtag could not connect to the configured remote provider.',
-          guidance: 'Start the provider, then verify its base URL, model name, and API key.',
-          action: {
-            label: 'Open remote settings',
-            run: () => {
-              settingsState.openInferenceConfiguration('external');
-              router.navigate('settings');
+      this.#unlistenFns.push(
+        await api.listen<{ document_id: string }>('document_failed', (event) => {
+          errorDialog.report({
+            dedupeKey: `document-processing-${event.payload.document_id}`,
+            title: 'Document processing failed',
+            message: 'Ragtag could not finish indexing a document.',
+            guidance: 'Review the document status, then remove and upload a new copy if needed.',
+            action: {
+              label: 'Open documents',
+              run: () => router.navigate('documents')
             }
-          }
-        });
-      });
+          });
+        })
+      );
+
+      this.#unlistenFns.push(
+        await api.listen<ModelDownloadProgress>('model_download_progress', (event) => {
+          const p = event.payload;
+          console.log('[AppState] download progress:', p);
+          this.#applyDownloadProgress(p);
+        })
+      );
+
+      this.#unlistenFns.push(
+        await api.listen('model_download_cancelled', () => {
+          console.log('[AppState] model download cancelled');
+          this.isDownloadingModel = false;
+          this.downloadMessage = '';
+          this.downloadProgress = 0;
+          this.#localModelRetrying = false;
+          this.#tryBecomeReady();
+        })
+      );
+
+      this.#unlistenFns.push(
+        await api.listen('llm_ready', () => {
+          console.log('[AppState] LLM ready');
+          this.#localModelRetrying = false;
+          this.llmReady = true;
+          this.isDownloadingModel = false;
+          errorDialog.clear('local-model-initialization');
+          errorDialog.clear('external-inference-readiness');
+          this.#tryBecomeReady();
+        })
+      );
+
+      this.#unlistenFns.push(
+        await api.listen('llm_unready', () => {
+          console.log('[AppState] inference initialization requested');
+          this.#localModelRetrying = false;
+          this.llmReady = false;
+          errorDialog.clear('local-model-initialization');
+          errorDialog.clear('external-inference-readiness');
+        })
+      );
+
+      this.#unlistenFns.push(
+        await api.listenExternalInferenceFailed(() => {
+          console.warn('[AppState] external inference unavailable');
+          this.llmReady = false;
+          this.isDownloadingModel = false;
+          errorDialog.report({
+            dedupeKey: 'external-inference-readiness',
+            title: 'Remote provider unavailable',
+            message: 'Ragtag could not connect to the configured remote provider.',
+            guidance: 'Start the provider, then verify its base URL, model name, and API key.',
+            action: {
+              label: 'Open remote settings',
+              run: () => {
+                settingsState.openInferenceConfiguration('external');
+                router.navigate('settings');
+              }
+            }
+          });
+        })
+      );
 
       // Synchronously reconcile initial state from lifecycle probe
       await this.reconcile();

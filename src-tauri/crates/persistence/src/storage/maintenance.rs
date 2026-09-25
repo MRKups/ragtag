@@ -227,7 +227,12 @@ pub fn complete_pending_reset(
     }
 
     if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
-        let _ = entry.delete_credential();
+        match entry.delete_credential() {
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => {
+                log::warn!("Could not clear external_api_key from keychain during reset: {error}");
+            }
+        }
     }
 
     std::fs::remove_file(sentinel).map_err(|error| {

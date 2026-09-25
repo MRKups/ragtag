@@ -190,28 +190,44 @@ pub async fn finish_local_model_initialization(
     generation: u64,
     model: mistralrs::Model,
 ) -> bool {
-    let mut current = initialization.lock().await;
-    if current.in_progress_generation != Some(generation) {
-        return false;
-    }
+    let restart = {
+        let mut current = initialization.lock().await;
+        if current.in_progress_generation != Some(generation) {
+            return false;
+        }
 
-    if current.generation != generation {
+        if current.generation != generation {
+            current.in_progress = false;
+            current.in_progress_generation = None;
+            current.download_cancellation = None;
+            let restart = current.restart_requested;
+            current.restart_requested = false;
+            return restart;
+        }
+
         current.in_progress = false;
         current.in_progress_generation = None;
         current.download_cancellation = None;
         let restart = current.restart_requested;
         current.restart_requested = false;
-        return restart;
-    }
+        restart
+    };
 
-    *llm_state.write().await = Some(Arc::new(model));
-    current.in_progress = false;
-    current.in_progress_generation = None;
-    current.download_cancellation = None;
-    current.restart_requested = false;
-    info!("mistral.rs pipeline built and ready");
-    let _ = app.emit("llm_ready", ());
-    false
+    let mut write_guard = llm_state.write().await;
+    let current = initialization.lock().await;
+    if current.generation == generation {
+        *write_guard = Some(Arc::new(model));
+        drop(write_guard);
+        drop(current);
+        info!("mistral.rs pipeline built and ready");
+        let _ = app.emit("llm_ready", ());
+        restart
+    } else {
+        drop(write_guard);
+        let restart = restart || current.restart_requested;
+        drop(current);
+        restart
+    }
 }
 
 pub async fn invalidate_llm_readiness(
@@ -219,18 +235,22 @@ pub async fn invalidate_llm_readiness(
     state: &AppState,
     clear_local_model: bool,
 ) -> bool {
-    let mut initialization = state.llm_initialization.lock().await;
-    invalidate_llm_initialization(&mut initialization);
-    if let Some(cancel) = initialization.download_cancellation.take() {
-        let _ = cancel.send(true);
-    }
-    initialization.external_ready = false;
-    let should_start = !initialization.in_progress;
-    if should_start {
-        initialization.in_progress_generation = None;
-    } else {
-        initialization.restart_requested = true;
-    }
+    let should_start = {
+        let mut initialization = state.llm_initialization.lock().await;
+        invalidate_llm_initialization(&mut initialization);
+        if let Some(cancel) = initialization.download_cancellation.take() {
+            let _ = cancel.send(true);
+        }
+        initialization.external_ready = false;
+        let should_start = !initialization.in_progress;
+        if should_start {
+            initialization.in_progress_generation = None;
+        } else {
+            initialization.restart_requested = true;
+        }
+        should_start
+    };
+
     if clear_local_model {
         *state.local_llm.write().await = None;
     }

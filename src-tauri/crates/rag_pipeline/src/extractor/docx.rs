@@ -221,7 +221,7 @@ fn is_wordprocessing_element(
     )
 }
 
-fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
+pub(crate) fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
     let (encoding, xml) = match xml {
         [0xFF, 0xFE, remainder @ ..] => (Some(true), remainder),
         [0xFE, 0xFF, remainder @ ..] => (Some(false), remainder),
@@ -252,13 +252,7 @@ fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {
             }
         })
         .collect::<Vec<_>>();
-    let text = String::from_utf16(&code_units).map_err(|_| {
-        AppError::invalid_input(
-            "Normalize DOCX XML",
-            "DOCX document XML is not valid UTF-16",
-            "Ensure the DOCX document contains valid XML encoding.",
-        )
-    })?;
+    let text = String::from_utf16_lossy(&code_units);
     Ok(Cow::Owned(text.into_bytes()))
 }
 
