@@ -177,8 +177,10 @@ pub async fn execute_query(
                 score: 1.0 / (1.0 + result.score),
                 is_hybrid,
             });
+            if citations.len() == RETRIEVAL_RESULT_LIMIT {
+                break;
+            }
         }
-        citations.truncate(RETRIEVAL_RESULT_LIMIT);
         citations
     };
     require_retrieved_citations(&citations)?;

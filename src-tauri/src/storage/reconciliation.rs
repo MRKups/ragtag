@@ -16,9 +16,17 @@ pub async fn finish_document_deletion(
 ) -> Result<(), AppError> {
     vector_db.delete_chunks(&document.id).await?;
 
-    if let Some(source_path) =
-        document_storage_candidate_for_deletion(app_local_data, &document.storage_path)?
-    {
+    let check_data = app_local_data.to_path_buf();
+    let check_storage_path = document.storage_path.clone();
+    let source_candidate = tokio::task::spawn_blocking(move || {
+        document_storage_candidate_for_deletion(&check_data, &check_storage_path)
+    })
+    .await
+    .map_err(|error| {
+        AppError::Internal(format!("Document storage candidate task panicked: {error}"))
+    })??;
+
+    if let Some(source_path) = source_candidate {
         match tokio::fs::symlink_metadata(&source_path).await {
             Ok(metadata) if metadata.file_type().is_file() => {
                 tokio::fs::remove_file(source_path)

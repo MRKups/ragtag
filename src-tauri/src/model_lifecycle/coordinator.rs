@@ -44,7 +44,10 @@ pub fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
         "generation_model" if is_valid_hugging_face_model_id(value) => Ok(()),
         "tokenizer_model" if is_valid_hugging_face_model_id(value) => Ok(()),
         "gguf_filename"
-            if !value.is_empty() && !value.contains('/') && value.ends_with(".gguf") =>
+            if !value.is_empty()
+                && !value.contains('/')
+                && !value.contains('\\')
+                && value.ends_with(".gguf") =>
         {
             Ok(())
         }
@@ -389,7 +392,12 @@ pub async fn request_llm_initialization_with_resources(
             let gguf_filename = app_settings
                 .get("gguf_filename")
                 .await?
-                .filter(|value| !value.is_empty())
+                .filter(|value| {
+                    !value.is_empty()
+                        && !value.contains('/')
+                        && !value.contains('\\')
+                        && value.ends_with(".gguf")
+                })
                 .unwrap_or_else(|| "Qwen3-1.7B-Q4_K_M.gguf".to_string());
             Ok::<_, AppError>((model_id, tokenizer_model, gguf_filename))
         }

@@ -136,3 +136,12 @@ This document records durable choices and tradeoffs. Linked references own curre
 **Decision:** Support keyless external inference by sending unauthenticated probing requests when the API key is omitted, forward keys in standard `Authorization: Bearer <key>` headers whenever provided (regardless of local or remote endpoint), and provide automatic non-fatal fallback of credential storage to SQLite (`app_settings.external_api_key`) when the OS keychain is inaccessible, displaying explicit UI indicators and warnings for unencrypted database storage.
 
 **Consequences:** Local inference engines connect out-of-the-box without requiring dummy keys. Environments without functional OS keychains can persist external inference credentials with transparent user notification. Cloud providers requiring authentication continue to receive secure authorization headers.
+
+## D016 — Modular desktop application architecture
+
+**Context:** As Ragtag grew, `src-tauri/src/lib.rs` expanded into an unwieldy single file (~4,400 LOC) containing IPC command registration, storage operations, inference streaming, model coordinator lifecycle state machines, and ingestion workers.
+
+**Decision:** Decompose `lib.rs` into five cohesive internal modules (`commands`, `inference`, `model_lifecycle`, `storage`, and `workers`), promote shared IPC contracts to `crates/domain`, and keep `lib.rs` strictly as a lightweight composition and setup root (<200 LOC).
+
+**Consequences:** Clear single-responsibility boundaries, isolated co-located unit tests, simplified maintenance, and zero IPC contract breaking changes. All blocking operations remain strictly dispatched to worker threads.
+

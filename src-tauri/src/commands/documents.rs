@@ -193,7 +193,15 @@ pub async fn delete_document(
             .path()
             .app_local_data_dir()
             .map_err(|error| AppError::Io(error.to_string()))?;
-        document_storage_candidate_for_deletion(&app_local_data, &document.storage_path)?;
+        let check_data = app_local_data.clone();
+        let check_storage_path = document.storage_path.clone();
+        tokio::task::spawn_blocking(move || {
+            document_storage_candidate_for_deletion(&check_data, &check_storage_path)
+        })
+        .await
+        .map_err(|error| {
+            AppError::Internal(format!("Document storage check task panicked: {error}"))
+        })??;
         repo.mark_deleting(&id).await?;
         finish_document_deletion(&repo, &state.vector_db, &app_local_data, &document).await?;
     } else {
