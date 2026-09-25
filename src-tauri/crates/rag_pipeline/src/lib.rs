@@ -387,10 +387,13 @@ pub fn enhance_query(query: &str) -> String {
 pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
     let mut context = String::new();
 
-    for chunk in chunks {
+    for (i, chunk) in chunks.iter().enumerate() {
         context.push_str(&format!(
-            "[Document: {}, Page: {}]\n{}\n\n",
-            chunk.filename, chunk.page, chunk.chunk_content
+            "[Source {}: {}, Page {}]\n{}\n\n",
+            i + 1,
+            chunk.filename,
+            chunk.page,
+            chunk.chunk_content
         ));
     }
 
@@ -403,10 +406,38 @@ pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
 mod tests {
     use super::{
         EMBEDDING_DIMENSION, MAX_DOCUMENT_CHUNKS, MAX_EMBEDDING_INPUT_BYTES, PASSAGE_PREFIX,
-        bounded_embedding_input_bytes, checked_embedding_value_count, embedding_batch_count,
-        enhance_query, ensure_chunk_budget, validate_embedding_shapes,
+        bounded_embedding_input_bytes, build_rag_prompt, checked_embedding_value_count,
+        embedding_batch_count, enhance_query, ensure_chunk_budget, validate_embedding_shapes,
     };
     use crate::Chunk;
+
+    #[test]
+    fn numbers_retrieved_sources_in_rag_prompt() {
+        let citations = vec![
+            domain::Citation {
+                document_id: "doc1".to_string(),
+                filename: "manual.pdf".to_string(),
+                storage_path: "manual.pdf".to_string(),
+                page: 3,
+                chunk_content: "First excerpt".to_string(),
+                score: 0.9,
+                is_hybrid: false,
+            },
+            domain::Citation {
+                document_id: "doc2".to_string(),
+                filename: "spec.docx".to_string(),
+                storage_path: "spec.docx".to_string(),
+                page: 1,
+                chunk_content: "Second excerpt".to_string(),
+                score: 0.8,
+                is_hybrid: false,
+            },
+        ];
+        let prompt = build_rag_prompt("How does it work?", &citations);
+        assert!(prompt.contains("[Source 1: manual.pdf, Page 3]\nFirst excerpt\n\n"));
+        assert!(prompt.contains("[Source 2: spec.docx, Page 1]\nSecond excerpt\n\n"));
+        assert!(prompt.contains("User question: How does it work?"));
+    }
 
     #[test]
     fn adds_unique_technical_expansions() {

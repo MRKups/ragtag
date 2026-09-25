@@ -2,13 +2,30 @@
   import { onMount, tick, untrack } from 'svelte';
   import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
-  import { Cpu, Database, HardDrive, Link, Key, BrainCircuit, Cloud, RotateCcw } from '@lucide/svelte';
+  import {
+    Cpu,
+    Database,
+    HardDrive,
+    Link,
+    Key,
+    BrainCircuit,
+    Cloud,
+    RotateCcw,
+    CheckCircle,
+    AlertCircle,
+    Loader2
+  } from '@lucide/svelte';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
   import Toggle from './Toggle.svelte';
   import AppSelect, { type SelectOption } from './AppSelect.svelte';
 
   type InferenceConfig = 'local' | 'external';
   import type { ApiKeyStorage } from '$lib/types';
+
+  type ConnectionStatus = {
+    kind: 'checking' | 'success' | 'warning' | 'error';
+    message: string;
+  };
 
   let apiKeyValue = $state('');
   let apiKeyExists = $state(false);
@@ -27,7 +44,7 @@
   let externalPortDraft = $state('');
   let externalModelDraft = $state('');
   let availableExternalModels = $state<string[]>([]);
-  let externalConnectionStatus = $state('');
+  let externalConnectionStatus = $state<ConnectionStatus | null>(null);
   let isTestingExternalProvider = $state(false);
   let isSavingExternalProvider = $state(false);
   let externalProviderDraftRevision = 0;
@@ -37,6 +54,15 @@
   let resetModal = $state<HTMLDivElement>();
   let inferenceFocusOrigin: HTMLElement | null = null;
   let resetFocusOrigin: HTMLElement | null = null;
+
+  function formatEndpointAuthority(url: string): string {
+    try {
+      const parsed = new URL(url);
+      return parsed.host;
+    } catch {
+      return url;
+    }
+  }
 
   // Storage management
   let storageInfo = $state<{
@@ -81,7 +107,7 @@
     invalidateExternalProviderTest();
     externalModelDraft = '';
     availableExternalModels = [];
-    externalConnectionStatus = '';
+    externalConnectionStatus = null;
   }
 
   const modalFocusableSelector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -178,8 +204,12 @@
       invalidateExternalProviderTest();
       loadExternalEndpointDraft(settingsState.external_base_url);
       externalModelDraft = settingsState.external_model;
-      availableExternalModels = [];
-      externalConnectionStatus = '';
+      availableExternalModels = externalModelDraft ? [externalModelDraft] : [];
+      externalConnectionStatus = null;
+
+      if (externalServerAddressDraft.trim()) {
+        void testExternalProvider({ auto: true });
+      }
     }
 
     void focusModalControl(configModal);
@@ -272,6 +302,9 @@
 
   async function setDefaultInference(mode: InferenceConfig) {
     await settingsState.updateInferenceMode(mode);
+    if (mode === 'external' && !settingsState.external_base_url) {
+      openInferenceConfiguration('external');
+    }
   }
 
   function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfig) {
@@ -298,8 +331,10 @@
       apiKeyStorage = res.storage;
       apiKeySaved = true;
       apiKeyValue = '';
-      resetExternalModelDiscovery();
       setTimeout(() => (apiKeySaved = false), 2000);
+      if (externalServerAddressDraft.trim()) {
+        void testExternalProvider({ auto: true });
+      }
     } catch {
       errorDialog.report({
         dedupeKey: 'api-key-save',
@@ -317,7 +352,9 @@
       apiKeyExists = false;
       apiKeyStorage = 'none';
       apiKeyValue = '';
-      resetExternalModelDiscovery();
+      if (externalServerAddressDraft.trim()) {
+        void testExternalProvider({ auto: true });
+      }
     } catch {
       errorDialog.report({
         dedupeKey: 'api-key-delete',
@@ -329,14 +366,18 @@
     }
   }
 
-  async function testExternalProvider() {
+  async function testExternalProvider(options: { auto?: boolean } = {}) {
+    const isAutoCheck = options.auto ?? false;
     const baseUrl = buildExternalBaseUrl();
     if (!baseUrl) return;
 
     const requestRevision = externalProviderDraftRevision;
     const testId = ++externalProviderTestId;
     isTestingExternalProvider = true;
-    externalConnectionStatus = '';
+    externalConnectionStatus = {
+      kind: 'checking',
+      message: isAutoCheck ? 'Checking connection to saved provider…' : 'Testing connection to provider…'
+    };
     try {
       const connection = await api.testExternalProvider(baseUrl, apiKeyValue.trim() || null);
       if (
@@ -347,10 +388,21 @@
       }
 
       availableExternalModels = connection.models;
-      if (!availableExternalModels.includes(externalModelDraft)) {
-        externalModelDraft = '';
+      if (externalModelDraft && !availableExternalModels.includes(externalModelDraft)) {
+        availableExternalModels = [externalModelDraft, ...availableExternalModels.filter((m) => m !== externalModelDraft)];
+        externalConnectionStatus = {
+          kind: 'warning',
+          message: `Connected to provider (${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available). Saved model "${externalModelDraft}" was not found in the provider list.`
+        };
+      } else {
+        if (!externalModelDraft && availableExternalModels.length > 0) {
+          externalModelDraft = availableExternalModels[0];
+        }
+        externalConnectionStatus = {
+          kind: 'success',
+          message: `Connected. ${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available.`
+        };
       }
-      externalConnectionStatus = `Connected. ${connection.models.length} model${connection.models.length === 1 ? '' : 's'} available.`;
     } catch (err: unknown) {
       if (
         requestRevision !== externalProviderDraftRevision
@@ -363,20 +415,36 @@
         ? (err as { message: string }).message
         : String(err);
 
-      externalConnectionStatus = 'Connection test failed. Review the error dialog and try again.';
-
       const isAuthError = errorMessage.includes('401') || errorMessage.includes('403') || errorMessage.toLowerCase().includes('authentication');
 
-      errorDialog.report({
-        dedupeKey: 'external-provider-test',
-        title: isAuthError ? 'Authentication required' : 'Remote provider unavailable',
-        message: isAuthError
-          ? 'The remote provider requires an API key (HTTP 401/403).'
-          : errorMessage || 'Ragtag could not connect to that remote provider.',
-        guidance: isAuthError
-          ? 'Enter your API key in the field below and test again.'
-          : 'Verify the base URL, ensure the provider is running, or check network settings.'
-      });
+      if (externalModelDraft && !availableExternalModels.includes(externalModelDraft)) {
+        availableExternalModels = [externalModelDraft];
+      }
+
+      if (isAutoCheck) {
+        externalConnectionStatus = {
+          kind: isAuthError ? 'warning' : 'error',
+          message: isAuthError
+            ? 'Authentication required (HTTP 401/403). Enter an API key below and test again.'
+            : `Could not connect to provider at ${baseUrl}. Ensure the server is running.`
+        };
+      } else {
+        externalConnectionStatus = {
+          kind: 'error',
+          message: 'Connection test failed. Review the error dialog and try again.'
+        };
+
+        errorDialog.report({
+          dedupeKey: 'external-provider-test',
+          title: isAuthError ? 'Authentication required' : 'Remote provider unavailable',
+          message: isAuthError
+            ? 'The remote provider requires an API key (HTTP 401/403).'
+            : errorMessage || 'Ragtag could not connect to that remote provider.',
+          guidance: isAuthError
+            ? 'Enter your API key in the field below and test again.'
+            : 'Verify the base URL, ensure the provider is running, or check network settings.'
+        });
+      }
     } finally {
       if (testId === externalProviderTestId) isTestingExternalProvider = false;
     }
@@ -399,9 +467,15 @@
     try {
       await api.setExternalProviderConfig(baseUrl, model);
       settingsState.setExternalProvider(baseUrl, model);
-      externalConnectionStatus = 'Provider saved. Ragtag is validating it for queries.';
+      externalConnectionStatus = {
+        kind: 'success',
+        message: 'Provider saved. Ragtag is ready for queries.'
+      };
     } catch {
-      externalConnectionStatus = 'Provider was not saved. Review the error dialog and try again.';
+      externalConnectionStatus = {
+        kind: 'error',
+        message: 'Provider was not saved. Review the error dialog and try again.'
+      };
       errorDialog.report({
         dedupeKey: 'external-provider-save',
         title: 'Provider configuration was not saved',
@@ -554,7 +628,13 @@
               <div class="inference-card-icon"><Cloud size={18} /></div>
               <div class="inference-card-copy">
                 <span>Remote provider</span>
-                <small>OpenAI-compatible endpoint</small>
+                <small>
+                  {#if settingsState.external_base_url && settingsState.external_model}
+                    {settingsState.external_model} · {formatEndpointAuthority(settingsState.external_base_url)}
+                  {:else}
+                    OpenAI-compatible endpoint
+                  {/if}
+                </small>
               </div>
             </button>
             <button type="button" class="btn btn-small btn-secondary configure-btn" onclick={() => openInferenceConfiguration('external')}>
@@ -704,9 +784,15 @@
                       ariaLabel="External model"
                     />
                     <p class="help-text">
-                      {availableExternalModels.length === 0
-                        ? 'Test the connection to load models from this provider.'
-                        : 'Select the model Ragtag should use for remote answers.'}
+                      {#if isTestingExternalProvider}
+                        Connecting to provider to discover available models…
+                      {:else if externalConnectionStatus?.kind === 'error'}
+                        Could not reach provider. Check that the server is running or update the address above.
+                      {:else if availableExternalModels.length === 0}
+                        Test the connection to load models from this provider.
+                      {:else}
+                        Select the model Ragtag should use for remote answers.
+                      {/if}
                     </p>
                   </div>
 
@@ -736,7 +822,7 @@
                           autocomplete="off"
                           aria-label="External API key"
                           bind:value={apiKeyValue}
-                          oninput={resetExternalModelDiscovery}
+                          oninput={() => { externalConnectionStatus = null; }}
                           onkeydown={(event) => event.key === 'Enter' && saveApiKey()}
                         />
                         <button type="button" class="btn btn-small" onclick={saveApiKey}>Save key</button>
@@ -754,7 +840,16 @@
                 </div>
 
                 {#if externalConnectionStatus}
-                  <p class="provider-connection-status" role="status">{externalConnectionStatus}</p>
+                  <div class="provider-connection-status {externalConnectionStatus.kind}" role="status">
+                    {#if externalConnectionStatus.kind === 'checking'}
+                      <Loader2 size={14} class="spin" aria-hidden="true" />
+                    {:else if externalConnectionStatus.kind === 'success'}
+                      <CheckCircle size={14} aria-hidden="true" />
+                    {:else}
+                      <AlertCircle size={14} aria-hidden="true" />
+                    {/if}
+                    <span>{externalConnectionStatus.message}</span>
+                  </div>
                 {/if}
               {/if}
 
@@ -764,9 +859,14 @@
                     type="button"
                     class="btn btn-secondary"
                     disabled={isTestingExternalProvider || isSavingExternalProvider || !externalServerAddressDraft.trim()}
-                    onclick={testExternalProvider}
+                    onclick={() => testExternalProvider({ auto: false })}
                   >
-                    {isTestingExternalProvider ? 'Testing connection…' : 'Test connection'}
+                    {#if isTestingExternalProvider}
+                      <Loader2 size={14} class="spin btn-icon" aria-hidden="true" />
+                      Testing connection…
+                    {:else}
+                      Test connection
+                    {/if}
                   </button>
                   <button
                     type="button"
@@ -774,7 +874,12 @@
                     disabled={isTestingExternalProvider || isSavingExternalProvider || !externalServerAddressDraft.trim() || !externalModelDraft.trim() || !availableExternalModels.includes(externalModelDraft.trim())}
                     onclick={saveExternalProvider}
                   >
-                    {isSavingExternalProvider ? 'Saving provider…' : 'Save provider'}
+                    {#if isSavingExternalProvider}
+                      <Loader2 size={14} class="spin btn-icon" aria-hidden="true" />
+                      Saving provider…
+                    {:else}
+                      Save provider
+                    {/if}
                   </button>
                 {/if}
                 <button type="button" class="btn btn-secondary" onclick={closeInferenceConfiguration}>Done</button>
@@ -1355,14 +1460,58 @@
   }
 
   .provider-connection-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     margin: 1rem 0 0;
     padding: 0.625rem 0.75rem;
-    color: var(--success);
     font-size: 0.8125rem;
     line-height: 1.45;
+    border-radius: var(--radius-sm);
+  }
+
+  .provider-connection-status.success {
+    color: var(--success);
     background: var(--success-soft);
     border: 1px solid var(--success-border);
-    border-radius: var(--radius-sm);
+  }
+
+  .provider-connection-status.checking {
+    color: var(--primary-ring);
+    background: var(--primary-soft);
+    border: 1px solid var(--primary-border);
+  }
+
+  .provider-connection-status.warning {
+    color: #eab308;
+    background: rgba(234, 179, 8, 0.12);
+    border: 1px solid rgba(234, 179, 8, 0.3);
+  }
+
+  .provider-connection-status.error {
+    color: var(--danger-text-muted);
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-border);
+  }
+
+  .btn-icon {
+    display: inline-block;
+    vertical-align: -0.125em;
+    margin-right: 0.375rem;
+  }
+
+  .spin {
+    animation: spin 1s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .help-text {

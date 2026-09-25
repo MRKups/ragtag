@@ -83,7 +83,7 @@
           <div class="logo">
             <Wrench color="white" size={20} />
           </div>
-          <h1>Ragtag V1</h1>
+          <h1>Ragtag</h1>
         </button>
       </div>
 

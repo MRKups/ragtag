@@ -47,7 +47,26 @@
     });
   }
 
+  let chatScrollArea: HTMLDivElement | null = $state(null);
+  let userScrolledUp = false;
+
+  function handleScroll() {
+    if (!chatScrollArea) return;
+    const distanceToBottom = chatScrollArea.scrollHeight - chatScrollArea.scrollTop - chatScrollArea.clientHeight;
+    userScrolledUp = distanceToBottom > 80;
+  }
+
+  $effect(() => {
+    if (chatScrollArea && (queryState.isStreaming || queryState.isLoading)) {
+      const _ = queryState.text;
+      if (!userScrolledUp) {
+        chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
+      }
+    }
+  });
+
   async function handleQuery(text: string) {
+    userScrolledUp = false;
     if (queryState.currentRequestId) {
       void api.cancelQuery(queryState.currentRequestId);
     }
@@ -100,7 +119,7 @@
 
 <div class="page-container">
   <div class="panel left-panel">
-    <div class="chat-scroll-area">
+    <div class="chat-scroll-area" bind:this={chatScrollArea} onscroll={handleScroll}>
       {#if queryState.isLoading && !queryState.text}
         <div class="loading-state">
           <div class="spinner"></div>

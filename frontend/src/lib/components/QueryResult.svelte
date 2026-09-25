@@ -16,26 +16,119 @@
     onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
   }>();
 
-  let contentEl: HTMLDivElement | null = $state(null);
+  function transformCitations(html: string, citationsList: Citation[]): string {
+    if (!citationsList.length || !html.includes('[')) return html;
+
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      const textNodes: Text[] = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const parentTag = node.parentElement?.tagName.toLowerCase();
+        if (
+          parentTag !== 'code' &&
+          parentTag !== 'pre' &&
+          parentTag !== 'script' &&
+          parentTag !== 'style' &&
+          parentTag !== 'button'
+        ) {
+          textNodes.push(node);
+        }
+      }
+
+      const bracketRegex = /\[(?:Source\s*)?(\d+)(?:\s*,\s*(?:Source\s*)?(\d+))*\]/gi;
+
+      for (const node of textNodes) {
+        const textVal = node.nodeValue;
+        if (!textVal || !textVal.includes('[')) continue;
+
+        if (!bracketRegex.test(textVal)) continue;
+        bracketRegex.lastIndex = 0;
+
+        const fragment = doc.createDocumentFragment();
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+
+        while ((match = bracketRegex.exec(textVal)) !== null) {
+          if (match.index > lastIndex) {
+            fragment.appendChild(doc.createTextNode(textVal.slice(lastIndex, match.index)));
+          }
+
+          const inside = match[0].slice(1, -1);
+          const numbers = inside.match(/\d+/g) || [];
+
+          let anyPillAdded = false;
+          for (const numStr of numbers) {
+            const num = parseInt(numStr, 10);
+            if (num >= 1 && num <= citationsList.length) {
+              const cit = citationsList[num - 1];
+              const btn = doc.createElement('button');
+              btn.type = 'button';
+              btn.className = 'citation-pill';
+              btn.setAttribute('data-citation-id', String(num - 1));
+              btn.setAttribute('title', `${cit.filename} (Page ${cit.page})`);
+              btn.textContent = `[${num}]`;
+              fragment.appendChild(btn);
+              anyPillAdded = true;
+            }
+          }
+
+          if (!anyPillAdded) {
+            fragment.appendChild(doc.createTextNode(match[0]));
+          }
+
+          lastIndex = bracketRegex.lastIndex;
+        }
+
+        if (lastIndex < textVal.length) {
+          fragment.appendChild(doc.createTextNode(textVal.slice(lastIndex)));
+        }
+
+        node.parentNode?.replaceChild(fragment, node);
+      }
+
+      return doc.body.innerHTML;
+    } catch {
+      return html;
+    }
+  }
 
   let renderedHtml = $derived.by(() => {
     if (!text) return '';
     const parsedHtml = marked.parse(text) as string;
-    return DOMPurify.sanitize(parsedHtml);
+    const sanitized = DOMPurify.sanitize(parsedHtml);
+    return transformCitations(sanitized, citations);
   });
 
-  $effect(() => {
-    if (contentEl) {
-      contentEl.scrollTop = contentEl.scrollHeight;
+  function handleProseClick(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    const citationBtn = target?.closest('[data-citation-id]');
+    if (citationBtn) {
+      event.preventDefault();
+      event.stopPropagation();
+      const idx = parseInt(citationBtn.getAttribute('data-citation-id') || '', 10);
+      const citation = citations[idx];
+      if (citation) {
+        onCitationClick({
+          filename: citation.filename,
+          storagePath: citation.storage_path,
+          documentId: citation.document_id,
+          page: citation.page
+        });
+      }
     }
-  });
-
+  }
 </script>
 
 <div class="result-container" class:has-content={!!text || isStreaming}>
 
   {#if text || isStreaming}
-    <div class="prose" bind:this={contentEl}>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="prose" onclick={handleProseClick}>
       {@html renderedHtml}
       {#if isStreaming}
         <span class="cursor-blink">|</span>
@@ -68,8 +161,6 @@
     font-size: 1.05rem;
     overflow-wrap: break-word;
     word-break: break-word;
-    max-height: 60vh;
-    overflow-y: auto;
   }
 
   .prose :global(p) {
@@ -133,17 +224,35 @@
     50% { opacity: 0; }
   }
 
-
-  .prose::-webkit-scrollbar {
-    width: 6px;
+  .prose :global(.citation-pill) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 0.15rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: #93c5fd;
+    background: rgba(30, 58, 138, 0.45);
+    border: 1px solid rgba(96, 165, 250, 0.4);
+    border-radius: 0.25rem;
+    cursor: pointer;
+    vertical-align: baseline;
+    transition: all 120ms ease-out;
+    text-decoration: none;
+    font-family: inherit;
   }
 
-  .prose::-webkit-scrollbar-track {
-    background: transparent;
+  .prose :global(.citation-pill:hover) {
+    color: #ffffff;
+    background: #2563eb;
+    border-color: #60a5fa;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   }
 
-  .prose::-webkit-scrollbar-thumb {
-    background: #475569;
-    border-radius: 3px;
+  .prose :global(.citation-pill:active) {
+    transform: translateY(0);
   }
 </style>
