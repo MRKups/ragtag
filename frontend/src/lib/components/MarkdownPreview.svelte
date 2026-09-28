@@ -1,10 +1,60 @@
 <script lang="ts">
   import type { MarkdownBlock, MarkdownInline } from '$lib/types';
+  import { api } from '$lib/api';
 
   let { blocks } = $props<{ blocks: MarkdownBlock[] }>();
 
   function headingTag(level: number) {
     return `h${Math.min(6, Math.max(1, level))}`;
+  }
+
+  function getInlineText(items: MarkdownInline[]): string {
+    return items
+      .map((item) => {
+        if (item.kind === 'text' || item.kind === 'code') return item.content;
+        if ('content' in item && Array.isArray(item.content)) return getInlineText(item.content);
+        return '';
+      })
+      .join('');
+  }
+
+  function slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/[\s_-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  function isSafeHref(href: string): boolean {
+    const trimmed = href.trim().toLowerCase();
+    return (
+      trimmed.startsWith('https://') ||
+      trimmed.startsWith('http://') ||
+      trimmed.startsWith('mailto:') ||
+      trimmed.startsWith('#')
+    );
+  }
+
+  function handleLinkClick(event: MouseEvent, href: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trimmed = href.trim();
+    if (trimmed.startsWith('#')) {
+      const targetId = trimmed.slice(1);
+      if (targetId) {
+        const element = document.getElementById(targetId);
+        element?.scrollIntoView({ behavior: 'smooth' });
+      }
+      return;
+    }
+    const lower = trimmed.toLowerCase();
+    if (lower.startsWith('https://') || lower.startsWith('http://') || lower.startsWith('mailto:')) {
+      api.openExternalUrl(trimmed).catch((err) => {
+        console.error('Failed to open external url:', err);
+      });
+    }
   }
 </script>
 
@@ -21,7 +71,11 @@
     {:else if item.kind === 'strikethrough'}
       <s>{@render renderInlines(item.content)}</s>
     {:else if item.kind === 'link'}
-      <a href={item.href} target="_blank" rel="noopener noreferrer">{@render renderInlines(item.content)}</a>
+      {#if isSafeHref(item.href)}
+        <a href={item.href} onclick={(e) => handleLinkClick(e, item.href)}>{@render renderInlines(item.content)}</a>
+      {:else}
+        {@render renderInlines(item.content)}
+      {/if}
     {:else if item.kind === 'break'}
       <br />
     {/if}
@@ -31,7 +85,8 @@
 {#snippet renderBlocks(items: MarkdownBlock[])}
   {#each items as block}
     {#if block.kind === 'heading'}
-      <svelte:element this={headingTag(block.level)}>{@render renderInlines(block.content)}</svelte:element>
+      {@const slug = slugify(getInlineText(block.content))}
+      <svelte:element this={headingTag(block.level)} id={slug || undefined}>{@render renderInlines(block.content)}</svelte:element>
     {:else if block.kind === 'paragraph'}
       <p>{@render renderInlines(block.content)}</p>
     {:else if block.kind === 'block_quote'}

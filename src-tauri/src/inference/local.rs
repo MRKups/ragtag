@@ -11,13 +11,20 @@ pub async fn stream_local_inference(
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
     events: &mpsc::Sender<InferenceEvent>,
 ) -> Result<(), AppError> {
+    if *cancellation.borrow() {
+        return Ok(());
+    }
     let request = mistralrs::RequestBuilder::new()
         .add_message(mistralrs::TextMessageRole::System, system_prompt)
         .add_message(mistralrs::TextMessageRole::User, context);
     let stream_result = tokio::select! {
+        biased;
         _ = cancellation.changed() => return Ok(()),
         result = model.stream_chat_request(request) => result,
     };
+    if *cancellation.borrow() {
+        return Ok(());
+    }
     let stream = match stream_result {
         Ok(stream) => stream,
         Err(error) => {
@@ -41,11 +48,19 @@ pub async fn forward_local_responses(
 ) -> Result<(), AppError> {
     use futures_util::StreamExt;
 
+    if *cancellation.borrow() {
+        return Ok(());
+    }
+
     loop {
         let response = tokio::select! {
+            biased;
             _ = cancellation.changed() => return Ok(()),
             response = stream.next() => response,
         };
+        if *cancellation.borrow() {
+            return Ok(());
+        }
         match response {
             Some(mistralrs::Response::Chunk(chunk)) => {
                 if let Some(choice) = chunk.choices.into_iter().next() {

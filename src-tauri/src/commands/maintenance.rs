@@ -64,6 +64,7 @@ pub async fn reset_all_data(
 ) -> Result<serde_json::Value, AppError> {
     let state = app.state::<AppState>();
     let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _doc_op = state.document_operations.write().await;
     let app_local_data = app
         .path()
         .app_local_data_dir()
@@ -118,12 +119,93 @@ pub async fn reset_all_data(
     let payload = serde_json::json!({"delete_models": delete_models});
     tokio::fs::write(&sentinel, payload.to_string()).await?;
 
-    if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
-        let _ = entry.delete_credential();
-    }
+    let _ = tokio::task::spawn_blocking(|| {
+        if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
+            let _ = entry.delete_credential();
+        }
+    })
+    .await;
 
     info!("reset requested — restarting application");
     app.request_restart();
 
     Ok(serde_json::json!({"restarting": true}))
+}
+
+#[tauri::command]
+pub async fn open_external_url(url: String) -> Result<(), AppError> {
+    let parsed = reqwest::Url::parse(url.trim()).map_err(|e| {
+        AppError::invalid_input(
+            "Open external URL",
+            format!("Invalid URL: {e}"),
+            "Provide a valid URL.",
+        )
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto") {
+        return Err(AppError::invalid_input(
+            "Open external URL",
+            "Only HTTP, HTTPS, and mailto URLs may be opened",
+            "Provide an HTTP, HTTPS, or mailto link.",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::invalid_input(
+            "Open external URL",
+            "URLs with embedded credentials are not permitted",
+            "Provide a standard URL without username or password.",
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let res = std::process::Command::new("open").arg(parsed.as_str()).spawn();
+        #[cfg(target_os = "windows")]
+        let res = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", parsed.as_str()])
+            .spawn();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let res = std::process::Command::new("xdg-open")
+            .arg(parsed.as_str())
+            .spawn();
+
+        res.map_err(|error| {
+            AppError::internal(
+                "Open external URL",
+                format!("Failed to spawn browser process: {error}"),
+                "Ensure your operating system has a default web browser configured.",
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        AppError::internal(
+            "Open external URL",
+            format!("Browser launcher task panicked: {e}"),
+            "Restart the application and try opening the link again.",
+        )
+    })??;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::ErrorCode;
+
+    #[tokio::test]
+    async fn rejects_invalid_and_unsafe_external_urls() {
+        let err = open_external_url("not a url".to_string()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let err = open_external_url("javascript:alert(1)".to_string()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let err = open_external_url("file:///etc/passwd".to_string()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let err = open_external_url("data:text/html,bad".to_string()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let err = open_external_url("http://user:pass@example.com".to_string()).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
 }

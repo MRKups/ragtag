@@ -100,6 +100,7 @@ The frontend uses the typed IPC API.
 | `vacuum_database` | none | Completion status. |
 | `reset_all_data` | `deleteModels` | Whether restart was requested. |
 | `get_platform` | none | Host operating system identifier: `macos`, `windows`, or `linux`. |
+| `open_external_url` | `url` | Opens an external HTTP, HTTPS, or mailto link safely in the default system browser. |
 
 ## Execution capacity and lifecycle state
 

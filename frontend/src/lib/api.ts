@@ -88,5 +88,7 @@ export const api = {
 
   resetAllData: (deleteModels: boolean) => invoke<{ restarting: boolean }>('reset_all_data', { deleteModels }),
 
-  getPlatform: () => invoke<Platform>('get_platform')
+  getPlatform: () => invoke<Platform>('get_platform'),
+
+  openExternalUrl: (url: string) => invoke<void>('open_external_url', { url })
 };

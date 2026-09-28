@@ -91,7 +91,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `models.rs`: Model status inspection, atomic lifecycle state probe, local model downloads, download cancellation, and external provider probing.
   - `settings.rs`: Settings retrieval and updates.
   - `keys.rs`: Keychain and fallback API key operations.
-  - `maintenance.rs`: Storage diagnostics, database compaction, and factory reset coordination.
+  - `maintenance.rs`: Storage diagnostics, database compaction, factory reset coordination, and safe external URL dispatch.
 - `src/inference/`: Inference execution:
   - `mod.rs`: `InferenceProvider` router multiplexing between local and external engines.
   - `local.rs`: In-process Mistral.rs execution streaming tokens with cancellation checks.

@@ -57,7 +57,9 @@ pub async fn process_document(
         document_id,
         provenance,
     } = doc;
-    repo.mark_embedding(document_id).await?;
+    if !repo.mark_embedding(document_id).await? {
+        return Ok(());
+    }
 
     let source_path = source_path.to_path_buf();
     let file_type = file_type.to_string();
@@ -240,13 +242,20 @@ pub async fn process_document(
     vector_db.delete_chunks(document_id).await?;
     vector_db.upsert_chunks(std::iter::once(batch)).await?;
 
-    repo.mark_indexed(
-        document_id,
-        chunks.len(),
-        "EmbeddingGemma-300M",
-        &provenance,
-    )
-    .await?;
+    let marked = repo
+        .mark_indexed(
+            document_id,
+            chunks.len(),
+            "EmbeddingGemma-300M",
+            &provenance,
+        )
+        .await?;
+
+    if !marked {
+        let _ = vector_db.delete_chunks(document_id).await;
+        return Ok(());
+    }
+
     on_progress(IngestionProgress::Stored {
         document_id: document_id.to_string(),
         chunk_count: chunks.len(),

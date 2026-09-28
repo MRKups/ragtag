@@ -172,6 +172,10 @@ pub async fn read_external_models_response_cancellable(
 ) -> Result<Option<ExternalModelsResponse>, AppError> {
     use futures_util::StreamExt;
 
+    if *cancellation.borrow() {
+        return Ok(None);
+    }
+
     if external_models_response_too_large(&response) {
         return Err(AppError::inference(
             "Read external models response",
@@ -186,7 +190,11 @@ pub async fn read_external_models_response_cancellable(
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     loop {
+        if *cancellation.borrow() {
+            return Ok(None);
+        }
         let chunk = tokio::select! {
+            biased;
             _ = cancellation.changed() => return Ok(None),
             result = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next()) => result,
         }
@@ -407,9 +415,13 @@ pub async fn probe_external_inference_readiness_cancellable(
     config: &ExternalInferenceConfig,
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<bool, AppError> {
+    if *cancellation.borrow() {
+        return Ok(false);
+    }
     let models_url = config.models_url()?;
     let request = apply_external_auth(client.get(models_url), config.api_key.as_deref());
     let response = tokio::select! {
+        biased;
         _ = cancellation.changed() => return Ok(false),
         result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
@@ -474,6 +486,7 @@ pub async fn stream_external_inference(
     let request = apply_external_auth(client.post(url).json(&body), api_key.as_deref());
 
     let response = tokio::select! {
+        biased;
         _ = cancellation.changed() => return Ok(()),
         result = tokio::time::timeout(EXTERNAL_REQUEST_START_TIMEOUT, request.send()) => result,
     }
@@ -505,7 +518,11 @@ pub async fn stream_external_inference(
     let mut buffer = Vec::new();
 
     loop {
+        if *cancellation.borrow() {
+            return Ok(());
+        }
         let chunk = tokio::select! {
+            biased;
             _ = cancellation.changed() => return Ok(()),
             result = tokio::time::timeout(EXTERNAL_STREAM_IDLE_TIMEOUT, stream.next()) => match result {
                 Ok(chunk) => chunk,

@@ -65,8 +65,15 @@ if (
 }
 
 queryToCancel.reset();
-const resetQuery = queryToCancel as { text: string; citations: unknown[] };
-if (resetQuery.text !== '' || resetQuery.citations.length !== 0) {
-  throw new Error('Reset must clear text and citations.');
+const resetQuery = queryToCancel as { text: string; citations: unknown[]; submittedQuery: string };
+if (resetQuery.text !== '' || resetQuery.citations.length !== 0 || resetQuery.submittedQuery !== '') {
+  throw new Error('Reset must clear text, citations, and submittedQuery.');
+}
+
+const queryPreserve = new QueryState();
+queryPreserve.submittedQuery = 'What is the torque spec?';
+queryPreserve.complete([]);
+if (queryPreserve.submittedQuery !== 'What is the torque spec?') {
+  throw new Error('A completed answer must preserve submittedQuery.');
 }
 

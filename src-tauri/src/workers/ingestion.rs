@@ -73,7 +73,7 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
         pool,
         vector_db,
         embedder: embedder_worker,
-        document_operations: _document_operations_worker,
+        document_operations: document_operations_worker,
         app_local_data,
         mut rx,
         tx,
@@ -114,6 +114,7 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                 warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
                 continue;
             };
+            let _document_operation = document_operations_worker.read().await;
 
             let result = match repo.get_by_id(&doc_id).await {
                 Ok(Some(doc)) if doc.status == DocumentStatus::Queued => {
@@ -178,42 +179,67 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                     if attempt > MAX_REGISTRY_READ_RETRIES {
                         registry_read_retries.remove(&doc_id);
                         error!(
-                            "database error while fetching document {doc_id} exceeded maximum retries ({MAX_REGISTRY_READ_RETRIES}): {error}; dropping job"
+                            "database error while fetching document {doc_id} exceeded maximum retries ({MAX_REGISTRY_READ_RETRIES}): {error}; recording failure"
                         );
+                        Err(AppError::storage(
+                            "Read document registry",
+                            format!(
+                                "Database error while fetching document {doc_id} exceeded maximum retries ({MAX_REGISTRY_READ_RETRIES}): {error}"
+                            ),
+                            "Check database access permissions and restart Ragtag.",
+                        ))
+                    } else {
+                        let delay = registry_read_retry_delay(attempt);
+                        warn!(
+                            "database error while fetching document {doc_id}: {error}; retrying in {delay:?} (attempt {attempt}/{MAX_REGISTRY_READ_RETRIES})"
+                        );
+                        let queue = job_queue_worker.clone();
+                        let retry_document_id = doc_id.clone();
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            if let Err(error) = queue
+                                .send(IngestionJob {
+                                    document_id: retry_document_id,
+                                    progress_channel: retry_progress_channel,
+                                })
+                                .await
+                            {
+                                error!("registry read retry producer stopped: {error}");
+                            }
+                        });
                         continue;
                     }
-                    let delay = registry_read_retry_delay(attempt);
-                    warn!(
-                        "database error while fetching document {doc_id}: {error}; retrying in {delay:?} (attempt {attempt}/{MAX_REGISTRY_READ_RETRIES})"
-                    );
-                    let queue = job_queue_worker.clone();
-                    let retry_document_id = doc_id.clone();
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        if let Err(error) = queue
-                            .send(IngestionJob {
-                                document_id: retry_document_id,
-                                progress_channel: retry_progress_channel,
-                            })
-                            .await
-                        {
-                            error!("registry read retry producer stopped: {error}");
-                        }
-                    });
-                    continue;
                 }
             };
 
             match result {
                 Ok(()) => {
-                    info!("document {doc_id} indexed successfully");
-                    let _ = app_handle.emit("document_indexed", serde_json::json!({
-                        "document_id": &doc_id,
-                        "status": "indexed",
-                    }));
+                    if let Ok(Some(doc)) = repo.get_by_id(&doc_id).await {
+                        if doc.status == DocumentStatus::Indexed {
+                            info!("document {doc_id} indexed successfully");
+                            let _ = app_handle.emit(
+                                "document_indexed",
+                                serde_json::json!({
+                                    "document_id": &doc_id,
+                                    "status": "indexed",
+                                }),
+                            );
+                        } else {
+                            debug!(
+                                "document {doc_id} status is {:?}; skipping document_indexed event",
+                                doc.status
+                            );
+                        }
+                    }
                 }
                 Err(error) => {
                     let message = error.to_string();
+                    if let Ok(Some(doc)) = repo.get_by_id(&doc_id).await
+                        && doc.status == DocumentStatus::Deleting
+                    {
+                        debug!("document {doc_id} was deleting; skipping failure reporting");
+                        continue;
+                    }
                     error!("document {doc_id} processing failed: {message}");
                     let _ = repo.mark_failed(&doc_id, &message).await;
                     progress_callback(IngestionProgress::Error {

@@ -3,7 +3,6 @@
   import { pdfjsLib } from '$lib/pdf-init';
   import type { PDFDocumentLoadingTask, PDFDocumentProxy } from 'pdfjs-dist';
   import PdfPage from './PdfPage.svelte';
-  import 'pdfjs-dist/web/pdf_viewer.css';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
 
   let {
@@ -26,6 +25,14 @@
   let error: string | null = $state(null);
   let loadId = 0;
   let lastIncomingPage: number | null = null;
+  let defaultBaseWidth = $state(595);
+  let defaultBaseHeight = $state(842);
+  let scrollContainer: HTMLDivElement | null = $state(null);
+  let isProgrammaticScroll = false;
+  let programmaticTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let pageWidth = $derived(Math.round(defaultBaseWidth * scale));
+  let pageHeight = $derived(Math.round(defaultBaseHeight * scale));
 
   let pagesToRender = $derived.by(() => {
     if (!totalPages) return [] as number[];
@@ -48,29 +55,47 @@
     if (pdfDoc && page >= 1 && page <= totalPages && page !== lastIncomingPage) {
       pageNum = page;
       lastIncomingPage = page;
+      tick().then(() => scrollToPage(page));
     }
   });
 
-  $effect(() => {
-    const target = pageNum;
-    if (totalPages && !loading && target >= 1) {
-      let cancelled = false;
-      tick().then(() => {
-        if (!cancelled) {
-          scrollToPage(target);
+  let scrollTicking = false;
+
+  function handleScroll() {
+    if (isProgrammaticScroll || !scrollContainer || !totalPages) return;
+    if (!scrollTicking) {
+      scrollTicking = true;
+      requestAnimationFrame(() => {
+        scrollTicking = false;
+        if (isProgrammaticScroll || !scrollContainer) return;
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const midPoint = containerRect.top + containerRect.height / 3;
+        const slots = scrollContainer.querySelectorAll<HTMLElement>('.page-slot');
+        for (const slot of slots) {
+          const rect = slot.getBoundingClientRect();
+          if (rect.top <= midPoint && rect.bottom >= midPoint) {
+            const p = Number(slot.dataset.page);
+            if (p && p !== pageNum) {
+              pageNum = p;
+            }
+            break;
+          }
         }
       });
-      return () => {
-        cancelled = true;
-      };
     }
-  });
+  }
 
   function scrollToPage(p: number) {
     const el = document.getElementById(`pdf-page-${p}`);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (el) {
+      isProgrammaticScroll = true;
+      if (programmaticTimer) clearTimeout(programmaticTimer);
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      programmaticTimer = setTimeout(() => {
+        isProgrammaticScroll = false;
+      }, 600);
+    }
   }
-
 
   function reportPdfError(action: () => void) {
     errorDialog.report({
@@ -119,6 +144,14 @@
 
       pdfDoc = document;
       totalPages = document.numPages;
+      try {
+        const firstPage = await document.getPage(1);
+        const vp = firstPage.getViewport({ scale: 1.0 });
+        defaultBaseWidth = vp.width;
+        defaultBaseHeight = vp.height;
+      } catch {
+        // Fallback default A4 dimensions remain
+      }
       pageNum = (page && page <= totalPages) ? page : 1;
       loading = false;
       await tick();
@@ -138,11 +171,13 @@
   function onPrevPage() {
     if (pageNum <= 1) return;
     pageNum -= 1;
+    scrollToPage(pageNum);
   }
 
   function onNextPage() {
     if (pageNum >= totalPages) return;
     pageNum += 1;
+    scrollToPage(pageNum);
   }
 
   function onZoomIn() {
@@ -156,6 +191,7 @@
 
   onDestroy(() => {
     ++loadId;
+    if (programmaticTimer) clearTimeout(programmaticTimer);
     void disposeLoadingTask();
   });
 </script>
@@ -186,20 +222,34 @@
       </div>
     </div>
 
-    <div class="scroll-container">
+    <div class="scroll-container" bind:this={scrollContainer} onscroll={handleScroll}>
       {#if loading}
         <div class="loading-overlay"><div class="spinner"></div></div>
       {:else if pdfDoc}
         <div class="pages-list">
-          {#each pagesToRender as p (p)}
+          {#each Array.from({ length: totalPages }, (_, i) => i + 1) as p (p)}
+            {@const isRendered = pagesToRender.includes(p)}
             {@const isCited = p === page}
-            <PdfPage
-              {pdfDoc}
-              pageNumber={p}
-              {scale}
-              isCitation={isCited}
-              onError={() => reportPdfError(() => void loadDocument(url))}
-            />
+            <div
+              id="pdf-page-{p}"
+              class="page-slot"
+              style="min-height: {pageHeight}px; width: {pageWidth}px;"
+              data-page={p}
+            >
+              {#if isRendered}
+                <PdfPage
+                  {pdfDoc}
+                  pageNumber={p}
+                  {scale}
+                  isCitation={isCited}
+                  onError={() => reportPdfError(() => void loadDocument(url))}
+                />
+              {:else}
+                <div class="page-placeholder" style="height: {pageHeight}px; width: {pageWidth}px;">
+                  <span>Page {p}</span>
+                </div>
+              {/if}
+            </div>
           {/each}
         </div>
       {/if}
@@ -276,7 +326,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1rem;
+    gap: 2rem;
     min-height: 100%;
   }
 
@@ -309,5 +359,22 @@
   @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+  }
+
+  .page-slot {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .page-placeholder {
+    background-color: #1e293b;
+    border: 1px dashed #334155;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    font-size: 0.875rem;
   }
 </style>

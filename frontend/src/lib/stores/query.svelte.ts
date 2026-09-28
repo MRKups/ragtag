@@ -7,6 +7,7 @@ export class QueryState {
   citations = $state<Citation[]>([]);
   retrievalWarning = $state<string | null>(null);
   queryText = $state('');
+  submittedQuery = $state('');
   selectedDocument = $state<{ documentId: string; filename: string; storagePath?: string; page: number } | null>(null);
   isStreaming = $state(false);
   currentRequestId = $state<string | null>(null);
@@ -27,6 +28,7 @@ export class QueryState {
     this.citations = [];
     this.retrievalWarning = null;
     this.queryText = '';
+    this.submittedQuery = '';
     this.selectedDocument = null;
     this.isStreaming = false;
     this.currentRequestId = null;

@@ -646,4 +646,29 @@ fn decodes_utf16_docx_xml_with_truncated_surrogate_pair() {
     assert!(text.contains("Surrogate: \u{FFFD}"));
 }
 
+#[test]
+fn safe_link_href_accepts_case_insensitive_schemes_and_rejects_unsafe() {
+    use super::markdown::safe_link_href;
+
+    assert_eq!(
+        safe_link_href("HTTPS://example.com/test"),
+        Some("HTTPS://example.com/test".to_string())
+    );
+    assert_eq!(
+        safe_link_href("http://example.com"),
+        Some("http://example.com".to_string())
+    );
+    assert_eq!(
+        safe_link_href("MAILTO:user@example.com"),
+        Some("MAILTO:user@example.com".to_string())
+    );
+    assert_eq!(
+        safe_link_href("#heading-anchor"),
+        Some("#heading-anchor".to_string())
+    );
+    assert_eq!(safe_link_href("javascript:alert(1)"), None);
+    assert_eq!(safe_link_href("data:text/html,<h1>bad</h1>"), None);
+    assert_eq!(safe_link_href("file:///etc/passwd"), None);
+}
+
 

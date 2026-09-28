@@ -225,6 +225,10 @@ pub async fn execute_query(
     };
     require_retrieved_citations(&citations)?;
 
+    if *cancel_receiver.borrow() {
+        return Ok(());
+    }
+
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
     let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Ground statements by citing the corresponding source numbers in brackets, for example [1] or [2], matching the numbered sources provided above. Place citations at the end of the relevant sentence or bullet point. Do not invent citations or page numbers outside the provided excerpts. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
 

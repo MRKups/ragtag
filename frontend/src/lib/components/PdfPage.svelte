@@ -140,7 +140,6 @@
 </script>
 
 <div
-  id="pdf-page-{pageNumber}"
   class="page-wrapper {isCitation ? 'citation-page' : ''}"
   style="width: {width}px; height: {height}px;"
 >
@@ -163,7 +162,7 @@
 <style>
   .page-wrapper {
     position: relative;
-    margin: 2rem auto;
+    margin: 0 auto;
     background-color: white;
     box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
     border-radius: 4px;

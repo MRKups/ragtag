@@ -513,10 +513,11 @@ pub fn matches_inline_end(tag_end: &TagEnd, expected: InlineEnd) -> bool {
 
 pub fn safe_link_href(href: &str) -> Option<String> {
     let normalized = href.trim();
+    let lower = normalized.to_ascii_lowercase();
     (normalized.starts_with('#')
-        || normalized.starts_with("https://")
-        || normalized.starts_with("http://")
-        || normalized.starts_with("mailto:"))
+        || lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("mailto:"))
     .then(|| normalized.to_string())
 }
 

@@ -77,7 +77,11 @@ pub async fn send_inference_event(
     events: &mpsc::Sender<InferenceEvent>,
     event: InferenceEvent,
 ) -> bool {
+    if *cancellation.borrow() {
+        return false;
+    }
     tokio::select! {
+        biased;
         _ = cancellation.changed() => false,
         result = events.send(event) => result.is_ok(),
     }
@@ -89,6 +93,9 @@ pub async fn forward_inference_events(
     channel: tauri::ipc::Channel<TokenEvent>,
     citations: Vec<Citation>,
 ) -> Result<(), AppError> {
+    if *cancellation.borrow() {
+        return Ok(());
+    }
     let (events, mut receiver) = mpsc::channel(INFERENCE_EVENT_BUFFER_CAPACITY);
     let producer_cancellation = cancellation.clone();
     tauri::async_runtime::spawn(async move {
@@ -98,6 +105,9 @@ pub async fn forward_inference_events(
     });
 
     loop {
+        if *cancellation.borrow() {
+            return Ok(());
+        }
         tokio::select! {
             biased;
             _ = cancellation.changed() => return Ok(()),

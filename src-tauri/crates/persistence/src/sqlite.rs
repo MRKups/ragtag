@@ -135,21 +135,21 @@ impl DocumentRepository {
         Ok(())
     }
 
-    pub async fn mark_embedding(&self, id: &str) -> Result<(), AppError> {
-        sqlx::query(
+    pub async fn mark_embedding(&self, id: &str) -> Result<bool, AppError> {
+        let result = sqlx::query(
             "UPDATE documents
              SET status = 'embedding',
                  processing_started_at = CURRENT_TIMESTAMP,
                  embedding_attempts = COALESCE(embedding_attempts, 0) + 1,
                  error_message = NULL
-             WHERE id = ?",
+             WHERE id = ? AND status != 'deleting'",
         )
         .bind(id)
         .execute(&self.pool)
         .await
         .map_err(sql_err)?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn mark_indexed(
@@ -158,7 +158,7 @@ impl DocumentRepository {
         chunk_count: usize,
         embedding_model: &str,
         provenance: &IndexProvenance,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let chunk_count = i32::try_from(chunk_count).map_err(|_| {
             AppError::storage(
                 "Store document chunk count",
@@ -167,7 +167,7 @@ impl DocumentRepository {
             )
         })?;
 
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE documents
              SET status = 'indexed',
                  chunk_count = ?,
@@ -178,7 +178,7 @@ impl DocumentRepository {
                  indexed_chunk_size = ?,
                  indexed_chunk_overlap = ?,
                  error_message = NULL
-             WHERE id = ?",
+             WHERE id = ? AND status = 'embedding'",
         )
         .bind(chunk_count)
         .bind(embedding_model)
@@ -190,7 +190,7 @@ impl DocumentRepository {
         .await
         .map_err(sql_err)?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn get_by_id(&self, id: &str) -> Result<Option<Document>, AppError> {
@@ -270,11 +270,11 @@ impl DocumentRepository {
     }
 
     pub async fn mark_failed(&self, id: &str, error_message: &str) -> Result<(), AppError> {
-        sqlx::query!(
-            "UPDATE documents SET status = 'failed', retry_count = retry_count + 1, error_message = ? WHERE id = ?",
-            error_message,
-            id
+        sqlx::query(
+            "UPDATE documents SET status = 'failed', retry_count = retry_count + 1, error_message = ? WHERE id = ? AND status != 'deleting'"
         )
+        .bind(error_message)
+        .bind(id)
         .execute(&self.pool)
         .await
         .map_err(sql_err)?;
@@ -903,6 +903,7 @@ mod tests {
             ..prior.clone()
         };
         let mut document = indexed_document("previous-success", prior.clone());
+        document.status = DocumentStatus::Embedding;
         document.embedding_attempts = 3;
         documents.insert(&document).await.unwrap();
 
@@ -1048,6 +1049,82 @@ mod tests {
                 .unwrap()
                 .status,
             DocumentStatus::Queued
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mark_indexed_does_not_overwrite_deleting_status() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v1".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let mut document = indexed_document("deleting-doc", provenance.clone());
+        document.status = DocumentStatus::Deleting;
+        documents.insert(&document).await.unwrap();
+
+        let updated = documents
+            .mark_indexed(&document.id, 1, "EmbeddingGemma-300M", &provenance)
+            .await
+            .unwrap();
+
+        assert!(!updated);
+        assert_eq!(
+            documents
+                .get_by_id(&document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Deleting
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mark_embedding_and_failed_do_not_overwrite_deleting_status() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v1".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let mut document = indexed_document("deleting-doc-2", provenance.clone());
+        document.status = DocumentStatus::Deleting;
+        documents.insert(&document).await.unwrap();
+
+        let updated_embedding = documents.mark_embedding(&document.id).await.unwrap();
+        assert!(!updated_embedding);
+        assert_eq!(
+            documents
+                .get_by_id(&document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Deleting
+        );
+
+        documents
+            .mark_failed(&document.id, "synthetic failure")
+            .await
+            .unwrap();
+        assert_eq!(
+            documents
+                .get_by_id(&document.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DocumentStatus::Deleting
         );
 
         pool.close().await;

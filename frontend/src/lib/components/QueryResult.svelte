@@ -2,6 +2,7 @@
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import type { Citation } from '$lib/types';
+  import { api } from '$lib/api';
   import CitationList from './CitationList.svelte';
 
   let {
@@ -118,6 +119,23 @@
           documentId: citation.document_id,
           page: citation.page
         });
+      }
+      return;
+    }
+
+    const anchor = target?.closest('a');
+    if (anchor && anchor.href) {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const parsed = new URL(anchor.href);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
+          api.openExternalUrl(anchor.href).catch((err) => {
+            console.error('Failed to open external link:', err);
+          });
+        }
+      } catch {
+        // Ignore malformed URLs; navigation already prevented
       }
     }
   }

@@ -185,7 +185,8 @@ pub fn run() {
             compact_vector_store,
             vacuum_database,
             reset_all_data,
-            get_platform
+            get_platform,
+            open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -78,6 +78,7 @@
     const requestId = crypto.randomUUID();
     queryState.currentRequestId = requestId;
     queryState.queryText = text;
+    queryState.submittedQuery = text;
     queryState.isLoading = true;
     queryState.isStreaming = true;
 
@@ -138,11 +139,23 @@
   <div class="panel left-panel">
     <div class="chat-scroll-area" bind:this={chatScrollArea} onscroll={handleScroll}>
       {#if queryState.isLoading && !queryState.text}
+        {#if queryState.submittedQuery}
+          <div class="user-query-card">
+            <span class="user-query-label">Question</span>
+            <p class="user-query-text">{queryState.submittedQuery}</p>
+          </div>
+        {/if}
         <div class="loading-state">
           <div class="spinner"></div>
           <p>Searching manuals...</p>
         </div>
       {:else if queryState.text || queryState.citations.length > 0 || queryState.retrievalWarning}
+        {#if queryState.submittedQuery}
+          <div class="user-query-card">
+            <span class="user-query-label">Question</span>
+            <p class="user-query-text">{queryState.submittedQuery}</p>
+          </div>
+        {/if}
         {#if queryState.retrievalWarning}
           <p class="retrieval-warning" role="status">{queryState.retrievalWarning}</p>
         {/if}
@@ -263,6 +276,32 @@
   .welcome-state p {
     color: #9ca3af;
     font-size: 1.05rem;
+  }
+
+  .user-query-card {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+  }
+
+  .user-query-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    margin-bottom: 4px;
+  }
+
+  .user-query-text {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    color: #f8fafc;
+    word-break: break-word;
   }
 
   .retrieval-warning {

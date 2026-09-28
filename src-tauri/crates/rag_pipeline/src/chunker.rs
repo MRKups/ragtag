@@ -122,6 +122,13 @@ fn append_page_chunks(
     let mut chunk_index = 0;
 
     while start_token < offsets.len() {
+        while start_token < offsets.len() && !text.is_char_boundary(offsets[start_token].0) {
+            start_token += 1;
+        }
+        if start_token >= offsets.len() {
+            break;
+        }
+
         let mut end_token = (start_token + content_token_budget).min(offsets.len());
         let mut emitted = false;
 
@@ -145,7 +152,12 @@ fn append_page_chunks(
                     chunk_index += 1;
                 }
                 let chunk_token_count = end_token - start_token;
-                start_token = end_token - overlap.min(chunk_token_count.saturating_sub(1));
+                let step_back = overlap.min(chunk_token_count.saturating_sub(1));
+                let mut next_start = end_token - step_back;
+                while next_start < end_token && !text.is_char_boundary(offsets[next_start].0) {
+                    next_start += 1;
+                }
+                start_token = next_start;
                 emitted = true;
                 break;
             }
@@ -307,5 +319,57 @@ mod tests {
     fn rejects_a_limit_that_cannot_fit_the_passage_prefix() {
         let err = chunk_pages(vec![(1, "one".into())], 1, 0, tokenizer()).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn handles_byte_fallback_tokens_with_overlap() {
+        let mut vocab_entries = vec![
+            r#""<unk>": 0"#.to_string(),
+            r#""passage": 1"#.to_string(),
+            r#"":": 2"#.to_string(),
+            r#"" ": 3"#.to_string(),
+            r#""hello": 4"#.to_string(),
+            r#""world": 5"#.to_string(),
+        ];
+        for b in 0..=255u8 {
+            vocab_entries.push(format!(r#""<0x{b:02X}>": {}"#, 6 + b as usize));
+        }
+        let json = format!(
+            r#"{{
+                "version": "1.0",
+                "truncation": null,
+                "padding": null,
+                "added_tokens": [],
+                "normalizer": null,
+                "pre_tokenizer": null,
+                "post_processor": null,
+                "decoder": null,
+                "model": {{
+                    "type": "BPE",
+                    "dropout": null,
+                    "unk_token": "<unk>",
+                    "continuing_subword_prefix": null,
+                    "end_of_word_suffix": null,
+                    "fuse_unk": false,
+                    "byte_fallback": true,
+                    "vocab": {{ {} }},
+                    "merges": []
+                }}
+            }}"#,
+            vocab_entries.join(", ")
+        );
+        let tok = Tokenizer::from_bytes(json.as_bytes()).unwrap();
+
+        let text = "hello 🔤 world 🦀 more text ⚡️ café".to_string();
+        for budget in [16, 24, 32] {
+            for overlap in [2, 4, 6] {
+                let chunks = chunk_pages(vec![(1, text.clone())], budget, overlap, tok.clone())
+                    .expect("chunks should handle multi-byte characters with overlap");
+                assert!(!chunks.is_empty());
+                for chunk in chunks {
+                    assert!(!chunk.content.is_empty());
+                }
+            }
+        }
     }
 }
