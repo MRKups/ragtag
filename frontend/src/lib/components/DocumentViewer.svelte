@@ -111,7 +111,7 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background-color: #0f172a;
+    background-color: var(--bg-panel-alt, #18181b);
   }
 
   .doc-placeholder {
@@ -120,7 +120,7 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    color: #9ca3af;
+    color: var(--text-secondary, #a1a1aa);
     gap: 1rem;
     height: 100%;
     padding: 2rem;
@@ -130,7 +130,7 @@
     width: 5rem;
     height: 5rem;
     border-radius: 50%;
-    background-color: #1e293b;
+    background-color: var(--bg-card, #1e1e22);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -138,7 +138,7 @@
   }
 
   .doc-placeholder h3 {
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
     font-size: 1.25rem;
     font-weight: 600;
     margin: 0;
@@ -153,7 +153,7 @@
     min-height: 0;
     overflow: auto;
     padding: 1.5rem;
-    color: #d1d5db;
+    color: var(--text-primary, #f4f4f5);
   }
 
   .text-preview-header {
@@ -161,7 +161,7 @@
     align-items: center;
     gap: 0.75rem;
     margin-bottom: 1rem;
-    color: #e5e7eb;
+    color: var(--text-heading, #ffffff);
   }
 
   .text-preview-header h3 {
@@ -171,7 +171,7 @@
   }
 
   .text-preview-status {
-    color: #9ca3af;
+    color: var(--text-muted, #71717a);
   }
 
   .text-preview pre {
@@ -179,5 +179,6 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font: 0.875rem/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--text-primary, #f4f4f5);
   }
 </style>

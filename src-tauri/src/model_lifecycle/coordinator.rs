@@ -30,6 +30,7 @@ pub fn is_valid_hugging_face_model_id(value: &str) -> bool {
 
 pub fn validate_setting(key: &str, value: &str) -> Result<(), AppError> {
     match key {
+        "theme" if matches!(value, "light" | "dark") => Ok(()),
         "inference_mode" if matches!(value, "local" | "external") => Ok(()),
         "use_query_enhancement" if matches!(value, "true" | "false") => Ok(()),
         "chunk_size" => value
@@ -776,6 +777,14 @@ pub async fn request_llm_initialization_with_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_theme() {
+        assert!(validate_setting("theme", "dark").is_ok());
+        assert!(validate_setting("theme", "light").is_ok());
+        assert!(validate_setting("theme", "system").is_err());
+        assert!(validate_setting("theme", "").is_err());
+    }
 
     #[test]
     fn validates_external_model() {

@@ -44,6 +44,7 @@ Indexes cover status, newest creation time, and non-null file hashes. Rust, not 
 
 | Key | Accepted value | Default when absent |
 | --- | --- | --- |
+| `theme` | `dark` or `light` | `dark` |
 | `inference_mode` | `local` or `external` | `local` |
 | `use_query_enhancement` | `true` or `false` | application-defined |
 | `chunk_size` | Integer from 128 through 2048 | `512` |

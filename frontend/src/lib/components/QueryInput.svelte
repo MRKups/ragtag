@@ -101,11 +101,11 @@
     overflow-y: hidden;
     resize: none;
     border-radius: 0.75rem;
-    border: 1px solid #374151;
-    background-color: #111827;
+    border: 1px solid var(--border-card, #2e2e33);
+    background-color: var(--bg-input, #16161a);
     padding: 1rem 3.5rem 1rem 1rem;
     font-size: 1rem;
-    color: white;
+    color: var(--text-primary, #f4f4f5);
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     font-family: inherit;
     line-height: 1.5;
@@ -114,18 +114,18 @@
 
   .query-textarea:focus {
     outline: none;
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 1px #3b82f6;
+    border-color: var(--primary-ring, #3b82f6);
+    box-shadow: 0 0 0 1px var(--primary-ring, #3b82f6);
   }
 
   .query-textarea:disabled {
-    background-color: #1f2937;
-    color: #6b7280;
+    background-color: var(--bg-card-hover, #26262b);
+    color: var(--text-muted, #71717a);
     cursor: not-allowed;
   }
 
   .query-textarea::placeholder {
-    color: #6b7280;
+    color: var(--text-muted, #71717a);
   }
 
   .submit-btn {
@@ -145,17 +145,17 @@
   }
 
   .submit-btn.active {
-    background-color: #2563eb;
+    background-color: var(--primary, #3b82f6);
   }
 
   .submit-btn.active:hover {
-    background-color: #1d4ed8;
+    background-color: var(--primary-hover, #2563eb);
   }
 
   .submit-btn.disabled {
-    background-color: #374151;
+    background-color: var(--border-card, #2e2e33);
     cursor: not-allowed;
-    color: #9ca3af;
+    color: var(--text-muted, #71717a);
   }
 
   .submit-btn.stop {

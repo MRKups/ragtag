@@ -40,7 +40,7 @@
         }
       }
 
-      const bracketRegex = /\[(?:Source\s*)?(\d+)(?:\s*,\s*(?:Source\s*)?(\d+))*\]/gi;
+      const bracketRegex = /\[\s*(?:(?:source|doc|document):?\s*)?(\d+)(?:[\s,]+(?:(?:source|doc|document):?\s*)?(\d+))*(?:[\s,]+(?:page|p\.?)\s*\d+)?\s*\]/gi;
 
       for (const node of textNodes) {
         const textVal = node.nodeValue;
@@ -58,7 +58,8 @@
             fragment.appendChild(doc.createTextNode(textVal.slice(lastIndex, match.index)));
           }
 
-          const inside = match[0].slice(1, -1);
+          let inside = match[0].slice(1, -1);
+          inside = inside.replace(/(?:page|p\.?)\s*\d+/gi, '');
           const numbers = inside.match(/\d+/g) || [];
 
           let anyPillAdded = false;
@@ -165,16 +166,18 @@
   }
 
   .result-container.has-content {
-    background: #1f2937;
+    background: var(--bg-card, #1e1e22);
     border-radius: 1rem;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--shadow-card, 0 4px 6px -1px rgba(0, 0, 0, 0.3));
     padding: 2rem;
-    border: 1px solid #374151;
+    border: 1px solid var(--border-card, #2e2e33);
     box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
   }
 
   .prose {
-    color: #d1d5db;
+    color: var(--text-primary, #f4f4f5);
     line-height: 1.7;
     font-size: 1.05rem;
     overflow-wrap: break-word;
@@ -197,44 +200,45 @@
   }
 
   .prose :global(strong) {
-    color: #f9fafb;
+    color: var(--text-heading, #ffffff);
     font-weight: 600;
   }
 
   .prose :global(h1), .prose :global(h2), .prose :global(h3), .prose :global(h4) {
-    color: #f3f4f6;
+    color: var(--text-heading, #ffffff);
     font-weight: 600;
     margin-top: 1.5em;
     margin-bottom: 0.75em;
   }
 
   .prose :global(code) {
-    background-color: #374151;
+    background-color: var(--bg-card-subtle, #161619);
     padding: 0.2em 0.4em;
     border-radius: 0.25em;
     font-family: monospace;
     font-size: 0.9em;
+    color: var(--text-primary);
   }
 
   .prose :global(pre) {
-    background-color: #111827;
+    background-color: var(--bg-input, #16161a);
     padding: 1em;
     border-radius: 0.5em;
     overflow-x: auto;
     margin-bottom: 1.25em;
-    border: 1px solid #374151;
+    border: 1px solid var(--border-color, #27272a);
   }
 
   .prose :global(pre code) {
     background-color: transparent;
     padding: 0;
     border-radius: 0;
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
   }
 
   .cursor-blink {
     animation: blink 1s step-end infinite;
-    color: #3b82f6;
+    color: var(--primary-ring, #3b82f6);
     font-weight: bold;
   }
 
@@ -251,9 +255,9 @@
     font-size: 0.75rem;
     font-weight: 600;
     line-height: 1.2;
-    color: #93c5fd;
-    background: rgba(30, 58, 138, 0.45);
-    border: 1px solid rgba(96, 165, 250, 0.4);
+    color: var(--citation-badge-text, #60a5fa);
+    background: var(--citation-badge-bg, rgba(59, 130, 246, 0.15));
+    border: 1px solid var(--primary-border, rgba(59, 130, 246, 0.3));
     border-radius: 0.25rem;
     cursor: pointer;
     vertical-align: baseline;
@@ -264,8 +268,8 @@
 
   .prose :global(.citation-pill:hover) {
     color: #ffffff;
-    background: #2563eb;
-    border-color: #60a5fa;
+    background: var(--primary, #3b82f6);
+    border-color: var(--primary-ring, #60a5fa);
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
   }

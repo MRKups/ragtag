@@ -1,8 +1,142 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
-  <title id="title">Ragtag</title>
-  <desc id="desc">Ragtag document search application mark</desc>
-  <rect x="28" y="28" width="456" height="456" rx="112" fill="#10233f"/>
-  <path d="M166 380V132h102c67 0 108 39 108 98 0 42-22 73-60 88l76 62" fill="none" stroke="#f8fafc" stroke-linecap="round" stroke-linejoin="round" stroke-width="52"/>
-  <path d="M168 287h105" fill="none" stroke="#38d6b5" stroke-linecap="round" stroke-width="30"/>
-  <circle cx="385" cy="128" r="26" fill="#f6a83a"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background Tile Shadow -->
+    <filter id="tile-shadow-b2" x="-10%" y="-5%" width="120%" height="125%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="24" stdDeviation="32" flood-color="#000000" flood-opacity="0.55"/>
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+
+    <!-- Tag Realistic Drop Shadow -->
+    <filter id="tag-shadow-b2" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.5"/>
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+
+    <!-- Squircle Clip Path -->
+    <clipPath id="squircle-clip-b2">
+      <rect x="112" y="112" width="800" height="800" rx="180"/>
+    </clipPath>
+
+    <!-- Gradients -->
+    <linearGradient id="tile-bg-b2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#242730"/>
+      <stop offset="50%" stop-color="#16171c"/>
+      <stop offset="100%" stop-color="#0d0e11"/>
+    </linearGradient>
+
+    <linearGradient id="rim-specular-b2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="25%" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.0"/>
+    </linearGradient>
+
+    <!-- Tag Vibrant Blue Gradient -->
+    <linearGradient id="tag-body-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="35%" stop-color="#2563eb"/>
+      <stop offset="85%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#1e3a8a"/>
+    </linearGradient>
+
+    <linearGradient id="tag-bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.4"/>
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.25"/>
+    </linearGradient>
+
+    <radialGradient id="tag-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#2563eb" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#2563eb" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Base Squircle Tile -->
+  <g filter="url(#tile-shadow-b2)">
+    <rect x="112" y="112" width="800" height="800" rx="180" fill="url(#tile-bg-b2)"/>
+    <rect x="112" y="112" width="800" height="800" rx="180" fill="url(#tag-glow)"/>
+    <rect x="112" y="112" width="800" height="800" rx="180" fill="none" stroke="url(#rim-specular-b2)" stroke-width="2.5"/>
+  </g>
+
+  <!-- Tag Container strictly bounded inside Squircle -->
+  <g clip-path="url(#squircle-clip-b2)">
+    <!-- THE TAG (🏷️) WITH CUTOUT "R" MONOGRAM -->
+    <!-- Centered & rotated -20 degrees, beautifully proportioned -->
+    <g transform="translate(512, 512) rotate(-20) translate(-512, -512)" filter="url(#tag-shadow-b2)">
+      
+      <!-- Lanyard Loop String: completely contained within squircle boundaries -->
+      <!-- Curves smoothly from eyelet (512, 250) up to (480, 150) and loops gracefully back -->
+      <path d="M 512 250 
+               C 512 185, 495 150, 475 150 
+               C 445 150, 420 175, 410 215" 
+            fill="none" stroke="#94a3b8" stroke-width="5.5" stroke-linecap="round" opacity="0.75"/>
+      
+      <!-- Subtle string highlight strand -->
+      <path d="M 512 250 
+               C 512 185, 495 150, 475 150 
+               C 445 150, 420 175, 410 215" 
+            fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" opacity="0.35"/>
+
+      <!-- Tag Silhouette: chamfered shoulders at top, rounded base at bottom -->
+      <path d="M 440 190 
+               L 584 190 
+               L 688 290 
+               L 688 790 
+               C 688 820, 665 845, 635 845 
+               L 389 845 
+               C 359 845, 336 820, 336 790 
+               L 336 290 
+               Z" 
+            fill="url(#tag-body-grad)"/>
+
+      <!-- Tag Rim Specular Bevel / Inner Stroke -->
+      <path d="M 440 190 
+               L 584 190 
+               L 688 290 
+               L 688 790 
+               C 688 820, 665 845, 635 845 
+               L 389 845 
+               C 359 845, 336 820, 336 790 
+               L 336 290 
+               Z" 
+            fill="none" stroke="url(#tag-bevel)" stroke-width="3"/>
+
+      <!-- Tag Metallic Eyelet Punch Hole -->
+      <circle cx="512" cy="250" r="28" fill="#14151a" stroke="#cbd5e1" stroke-width="6"/>
+      <circle cx="512" cy="250" r="14" fill="#0d0e11"/>
+
+      <!-- BOLD "R" MONOGRAM (Precision Cutout in Crisp White) -->
+      <g fill="#ffffff">
+        <!-- Left Stem -->
+        <rect x="405" y="370" width="58" height="400" rx="14"/>
+
+        <!-- Upper Loop Bowl -->
+        <path d="M 448 370 
+                 L 545 370 
+                 C 615 370, 642 405, 642 465 
+                 C 642 525, 610 560, 542 560 
+                 L 448 560 
+                 Z"/>
+
+        <!-- Inner Counter / Hole of Loop (showing tag background blue) -->
+        <path d="M 463 422 
+                 L 532 422 
+                 C 570 422, 584 442, 584 465 
+                 C 584 488, 570 508, 532 508 
+                 L 463 508 
+                 Z" 
+              fill="#1d4ed8"/>
+
+        <!-- Diagonal Leg of the R -->
+        <path d="M 515 540 
+                 L 612 750 
+                 C 622 770, 640 770, 660 765 
+                 L 660 745 
+                 L 572 540 
+                 Z"/>
+      </g>
+
+      <!-- Subtle Perforation / Stitching Accent along Tag Base -->
+      <line x1="370" y1="815" x2="654" y2="815" stroke="#38bdf8" stroke-width="2.5" stroke-dasharray="8 6" opacity="0.6"/>
+    </g>
+  </g>
 </svg>

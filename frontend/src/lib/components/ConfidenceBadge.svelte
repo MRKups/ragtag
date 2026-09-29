@@ -31,4 +31,19 @@
     background: rgba(239, 68, 68, 0.15);
     color: #f87171;
   }
+
+  :global(:root[data-theme="light"]) .high {
+    background: rgba(34, 197, 94, 0.2);
+    color: #15803d;
+  }
+
+  :global(:root[data-theme="light"]) .medium {
+    background: rgba(234, 179, 8, 0.2);
+    color: #a16207;
+  }
+
+  :global(:root[data-theme="light"]) .low {
+    background: rgba(239, 68, 68, 0.2);
+    color: #b91c1c;
+  }
 </style>

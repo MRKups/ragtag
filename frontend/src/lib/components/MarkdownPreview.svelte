@@ -142,7 +142,7 @@
 
 <style>
   .markdown-preview {
-    color: #d1d5db;
+    color: var(--text-primary, #f4f4f5);
     line-height: 1.6;
   }
 
@@ -152,7 +152,7 @@
   .markdown-preview :global(h4),
   .markdown-preview :global(h5),
   .markdown-preview :global(h6) {
-    color: #f3f4f6;
+    color: var(--text-heading, #ffffff);
     line-height: 1.25;
     margin: 1.5rem 0 0.75rem;
   }
@@ -169,23 +169,23 @@
   }
 
   .markdown-preview :global(a) {
-    color: #60a5fa;
+    color: var(--primary-ring, #3b82f6);
     text-decoration: underline;
   }
 
   .markdown-preview :global(code) {
     border-radius: 0.25rem;
-    background: #111827;
-    color: #e5e7eb;
+    background: var(--bg-card-subtle, #161619);
+    color: var(--text-primary, #f4f4f5);
     padding: 0.1rem 0.3rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 
   .markdown-preview :global(pre) {
     overflow-x: auto;
-    border: 1px solid #334155;
+    border: 1px solid var(--border-card, #2e2e33);
     border-radius: 0.5rem;
-    background: #111827;
+    background: var(--bg-input, #16161a);
     margin: 0 0 1rem;
     padding: 1rem;
   }
@@ -196,8 +196,8 @@
   }
 
   .markdown-preview :global(blockquote) {
-    border-left: 3px solid #64748b;
-    color: #cbd5e1;
+    border-left: 3px solid var(--border-card-hover, #3f3f46);
+    color: var(--text-secondary, #a1a1aa);
     margin: 0 0 1rem;
     padding-left: 1rem;
   }
@@ -214,7 +214,7 @@
 
   .markdown-preview :global(hr) {
     border: 0;
-    border-top: 1px solid #334155;
+    border-top: 1px solid var(--border-card, #2e2e33);
     margin: 1.5rem 0;
   }
 
@@ -230,14 +230,14 @@
 
   th,
   td {
-    border: 1px solid #334155;
+    border: 1px solid var(--border-card, #2e2e33);
     padding: 0.5rem 0.75rem;
     text-align: left;
     vertical-align: top;
   }
 
   th {
-    background: #1e293b;
-    color: #f3f4f6;
+    background: var(--bg-card, #1e1e22);
+    color: var(--text-heading, #ffffff);
   }
 </style>

@@ -106,6 +106,26 @@ try {
   if (blankSaved || blankInput.chunk_overlap !== 80 || setSettingCalls !== 0) {
     throw new Error('A blank numeric chunk input must restore its persisted value without saving.');
   }
+
+  const themeSettingCalls: Array<{ key: string; value: string }> = [];
+  api.setSetting = async (key: string, value: string) => {
+    themeSettingCalls.push({ key, value });
+  };
+  const themeState = new SettingsState();
+  if ((themeState.theme as string) !== 'dark') {
+    throw new Error('Default theme must be dark.');
+  }
+  await themeState.toggleTheme();
+  if ((themeState.theme as string) !== 'light') {
+    throw new Error('Toggling dark theme must switch to light.');
+  }
+  if (themeSettingCalls.length !== 1 || themeSettingCalls[0].key !== 'theme' || themeSettingCalls[0].value !== 'light') {
+    throw new Error('Toggling theme must persist the new theme via api.setSetting.');
+  }
+  await themeState.toggleTheme();
+  if ((themeState.theme as string) !== 'dark') {
+    throw new Error('Toggling light theme must switch back to dark.');
+  }
 } finally {
   api.setSetting = originalSetSetting;
 }

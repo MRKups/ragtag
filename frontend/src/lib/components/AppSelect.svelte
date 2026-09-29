@@ -232,17 +232,17 @@
 
 <style>
   .select {
-    --select-surface: var(--page-bg, #111827);
-    --select-surface-hover: var(--surface-soft, rgba(31, 41, 55, 0.5));
-    --select-surface-raised: var(--surface, #1f2937);
-    --select-border: var(--border, #374151);
-    --select-border-strong: var(--border-strong, #4b5563);
-    --select-text: var(--text-strong, #f3f4f6);
-    --select-text-subtle: var(--text-subtle, #6b7280);
+    --select-surface: var(--page-bg, #121214);
+    --select-surface-hover: var(--surface-soft, rgba(255, 255, 255, 0.05));
+    --select-surface-raised: var(--surface, #1e1e22);
+    --select-border: var(--border, #27272a);
+    --select-border-strong: var(--border-strong, #3f3f46);
+    --select-text: var(--text-strong, #f4f4f5);
+    --select-text-subtle: var(--text-subtle, #71717a);
     --select-primary: var(--primary-ring, #3b82f6);
-    --select-primary-soft: var(--primary-soft, rgba(37, 99, 235, 0.15));
+    --select-primary-soft: var(--primary-soft, rgba(59, 130, 246, 0.12));
     --select-focus-ring: var(--focus-ring, rgba(59, 130, 246, 0.2));
-    --select-shadow: var(--shadow-raised, 0 14px 30px rgba(0, 0, 0, 0.16));
+    --select-shadow: var(--shadow-raised, 0 14px 30px rgba(0, 0, 0, 0.25));
     position: relative;
     width: 100%;
   }

@@ -300,9 +300,9 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-    background-color: #1e293b;
+    background-color: var(--bg-card, #1e1e22);
     border-radius: 0.75rem;
-    border: 1px solid #334155;
+    border: 1px solid var(--border-card, #2e2e33);
     overflow: hidden;
   }
 
@@ -311,15 +311,15 @@
     align-items: center;
     justify-content: space-between;
     padding: 1rem;
-    border-bottom: 1px solid #334155;
-    background-color: #0f172a;
+    border-bottom: 1px solid var(--border-card, #2e2e33);
+    background-color: var(--bg-header, #18181b);
   }
 
   .title {
     margin: 0;
     font-size: 1rem;
     font-weight: 600;
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -328,7 +328,7 @@
   .refresh-btn {
     background: transparent;
     border: none;
-    color: #9ca3af;
+    color: var(--text-secondary, #a1a1aa);
     cursor: pointer;
     padding: 0.25rem;
     border-radius: 0.25rem;
@@ -339,8 +339,8 @@
   }
 
   .refresh-btn:hover:not(:disabled) {
-    color: white;
-    background-color: #334155;
+    color: var(--text-primary, white);
+    background-color: var(--bg-card-hover, #26262b);
   }
 
   .refresh-btn:disabled {
@@ -365,7 +365,7 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.75rem 1rem;
-    border-bottom: 1px solid #334155;
+    border-bottom: 1px solid var(--border-card, #2e2e33);
     transition: background-color 0.2s;
   }
 
@@ -374,7 +374,7 @@
   }
 
   .document-item:hover {
-    background-color: #334155;
+    background-color: var(--bg-card-hover, #26262b);
   }
 
   .doc-icon-wrapper {
@@ -400,7 +400,7 @@
   }
 
   .doc-name {
-    color: #e5e7eb;
+    color: var(--text-primary, #e5e7eb);
     font-size: 0.875rem;
     white-space: nowrap;
     overflow: hidden;
@@ -423,7 +423,7 @@
   .status-deleting { color: #fbbf24; }
 
   .doc-stage {
-    color: #6b7280;
+    color: var(--text-muted, #6b7280);
     font-size: 0.7rem;
     font-weight: 400;
     text-transform: none;
@@ -464,7 +464,7 @@
   }
 
   .action-btn:hover:not(:disabled) {
-    background-color: #1e293b;
+    background-color: var(--bg-card-hover, #26262b);
   }
   
   .action-btn:disabled {
@@ -538,16 +538,16 @@
   }
   
   .content::-webkit-scrollbar-track {
-    background: #1e293b; 
+    background: transparent; 
   }
   
   .content::-webkit-scrollbar-thumb {
-    background: #475569; 
-    border-radius: 3px;
+    background: var(--scrollbar-thumb); 
+    border-radius: 9999px;
   }
   
   .content::-webkit-scrollbar-thumb:hover {
-    background: #64748b; 
+    background: var(--scrollbar-thumb-hover); 
   }
 
   .confirm-overlay {
@@ -561,8 +561,8 @@
   }
 
   .confirm-dialog {
-    background: #1e293b;
-    border: 1px solid #334155;
+    background: var(--bg-card, #1e1e22);
+    border: 1px solid var(--border-card, #2e2e33);
     border-radius: 0.75rem;
     padding: 1.5rem;
     max-width: 350px;
@@ -571,13 +571,13 @@
   }
 
   .confirm-text {
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
     font-size: 0.95rem;
     margin: 0 0 0.5rem 0;
   }
 
   .confirm-sub {
-    color: #9ca3af;
+    color: var(--text-secondary, #a1a1aa);
     font-size: 0.8rem;
     margin: 0 0 1.25rem 0;
   }
@@ -589,9 +589,9 @@
   }
 
   .confirm-cancel-btn {
-    background: #334155;
-    color: #e5e7eb;
-    border: none;
+    background: var(--bg-card-hover, #26262b);
+    color: var(--text-primary, #f4f4f5);
+    border: 1px solid var(--border-card, #2e2e33);
     border-radius: 0.5rem;
     padding: 0.5rem 1.25rem;
     font-size: 0.875rem;
@@ -600,7 +600,7 @@
   }
 
   .confirm-cancel-btn:hover {
-    background: #475569;
+    background: var(--border-card-hover, #3f3f46);
   }
 
   .confirm-delete-btn {

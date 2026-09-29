@@ -516,7 +516,10 @@ pub fn build_rag_prompt(query: &str, chunks: &[domain::Citation]) -> String {
         ));
     }
 
-    context.push_str(&format!("User question: {}", query));
+    context.push_str(&format!(
+        "User question: {}\n\nInstructions: Answer the question using ONLY the provided excerpts. You MUST cite the source number in brackets, for example [1] or [2], at the end of every sentence or bullet point that relies on that source (e.g., \"...enforces policy execution [1].\").",
+        query
+    ));
 
     context
 }
@@ -556,6 +559,7 @@ mod tests {
         assert!(prompt.contains("[Source 1: manual.pdf, Page 3]\nFirst excerpt\n\n"));
         assert!(prompt.contains("[Source 2: spec.docx, Page 1]\nSecond excerpt\n\n"));
         assert!(prompt.contains("User question: How does it work?"));
+        assert!(prompt.contains("Instructions: Answer the question using ONLY the provided excerpts."));
     }
 
     #[test]

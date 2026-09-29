@@ -1,6 +1,7 @@
 <script lang="ts">
   import { LoaderCircle } from '@lucide/svelte';
   import { appState } from '$lib/stores/app-state.svelte';
+  import rtLogoUrl from '$lib/assets/rt-logo.svg';
 
   let { children } = $props();
 </script>
@@ -9,14 +10,12 @@
   {@render children()}
 {:else}
   <div class="init-overlay">
+    <div class="init-drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div class="init-card">
-      <div class="init-logo">
-        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-          <rect width="48" height="48" rx="12" fill="#2563eb" />
-          <path d="M14 16h6l4 16-4-16h6l4 16M32 16v16" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+      <div class="init-logo" data-tauri-drag-region>
+        <img src={rtLogoUrl} alt="Ragtag" width="64" height="64" class="init-logo-img" />
       </div>
-      <h2 class="init-title">Ragtag</h2>
+      <h2 class="init-title" data-tauri-drag-region>Ragtag</h2>
 
       {#if appState.phase === 'error'}
         <div class="init-error">
@@ -66,29 +65,48 @@
   .init-overlay {
     position: fixed;
     inset: 0;
-    background-color: #0f172a;
+    background-color: var(--bg-app, #121214);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 9999;
   }
 
+  .init-drag-surface {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+
   .init-card {
+    position: relative;
+    z-index: 2;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 1.5rem;
     text-align: center;
+    pointer-events: none;
+  }
+
+  .init-card > * {
+    pointer-events: auto;
   }
 
   .init-logo {
-    opacity: 0.9;
+    opacity: 0.95;
+  }
+
+  .init-logo-img {
+    width: 72px;
+    height: 72px;
+    display: block;
   }
 
   .init-title {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #f3f4f6;
+    color: var(--text-primary, #f4f4f5);
     margin: 0;
     letter-spacing: -0.025em;
   }
@@ -102,7 +120,7 @@
 
   .spinner-wrap {
     animation: spin 1s linear infinite;
-    color: #3b82f6;
+    color: var(--primary, #3b82f6);
     display: flex;
   }
 
@@ -112,7 +130,7 @@
   }
 
   .init-text {
-    color: #9ca3af;
+    color: var(--text-secondary, #a1a1aa);
     font-size: 0.875rem;
     margin: 0;
   }
@@ -127,14 +145,14 @@
   .progress-bar-track {
     width: 100%;
     height: 6px;
-    background-color: #1e293b;
+    background-color: var(--border-color, #27272a);
     border-radius: 3px;
     overflow: hidden;
   }
 
   .progress-bar-fill {
     height: 100%;
-    background-color: #3b82f6;
+    background-color: var(--primary, #3b82f6);
     border-radius: 3px;
     transition: width 0.3s ease;
   }
@@ -150,7 +168,7 @@
   }
 
   .progress-text {
-    color: #9ca3af;
+    color: var(--text-secondary, #a1a1aa);
     font-size: 0.8125rem;
     margin: 0;
     word-break: break-word;
@@ -172,7 +190,7 @@
 
   .retry-btn {
     padding: 0.5rem 1.5rem;
-    background-color: #3b82f6;
+    background-color: var(--primary, #3b82f6);
     color: white;
     border: none;
     border-radius: 0.375rem;
@@ -183,7 +201,7 @@
   }
 
   .retry-btn:hover {
-    background-color: #2563eb;
+    background-color: var(--primary-hover, #2563eb);
   }
 
   .cancel-download-btn {
@@ -191,8 +209,8 @@
     margin-top: 0.5rem;
     padding: 0.375rem 1rem;
     background-color: transparent;
-    color: #9ca3af;
-    border: 1px solid #374151;
+    color: var(--text-secondary, #a1a1aa);
+    border: 1px solid var(--border-color, #27272a);
     border-radius: 0.375rem;
     font-size: 0.75rem;
     font-weight: 500;
@@ -201,8 +219,8 @@
   }
 
   .cancel-download-btn:hover {
-    color: #f3f4f6;
-    border-color: #6b7280;
-    background-color: #1e293b;
+    color: var(--text-primary, #f4f4f5);
+    border-color: var(--border-card-hover, #3f3f46);
+    background-color: var(--bg-card-hover, #26262b);
   }
 </style>

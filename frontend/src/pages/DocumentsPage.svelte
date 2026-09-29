@@ -23,6 +23,7 @@
         display: flex;
         width: 100%;
         height: 100%;
+        background-color: var(--bg-app, #121214);
     }
 
     .panel {
@@ -32,7 +33,12 @@
     }
 
     .panel:first-child {
-        border-right: 1px solid #374151;
+        border-right: 1px solid var(--border-color, #27272a);
+        background-color: var(--bg-panel, #121214);
+    }
+
+    .panel:last-child {
+        background-color: var(--bg-panel-alt, #18181b);
     }
 
     .panel-content {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Wrench, MessageSquare, Files, Settings as SettingsIcon } from '@lucide/svelte';
+  import { MessageSquare, Files, Settings as SettingsIcon, Sun, Moon } from '@lucide/svelte';
+  import rtLogoUrl from '$lib/assets/rt-logo.svg';
   import { api } from '$lib/api';
   import { settingsState } from '$lib/stores/settings.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
@@ -80,9 +81,7 @@
       <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
       <div class="brand">
         <button class="logo-link" onclick={() => navTo('query')}>
-          <div class="logo">
-            <Wrench color="white" size={20} />
-          </div>
+          <img src={rtLogoUrl} alt="Ragtag" class="logo-img" width="36" height="36" />
           <h1>Ragtag</h1>
         </button>
       </div>
@@ -114,7 +113,21 @@
         </button>
       </nav>
 
-      <div class="header-spacer"></div>
+      <div class="header-actions">
+        <button
+          type="button"
+          class="theme-toggle-btn"
+          onclick={() => void settingsState.toggleTheme()}
+          title={`Switch to ${settingsState.theme === 'dark' ? 'light' : 'dark'} mode`}
+          aria-label="Toggle theme"
+        >
+          {#if settingsState.theme === 'dark'}
+            <Sun size={18} />
+          {:else}
+            <Moon size={18} />
+          {/if}
+        </button>
+      </div>
     </header>
 
     <main class="main-content">
@@ -133,15 +146,95 @@
 </AppInitializer>
 
 <style>
+  :root {
+    --bg-app: #121214;
+    --bg-header: #18181b;
+    --bg-panel: #121214;
+    --bg-panel-alt: #18181b;
+    --bg-card: #1e1e22;
+    --bg-card-subtle: #161619;
+    --bg-card-hover: #26262b;
+    --bg-input: #16161a;
+    --border-color: #27272a;
+    --border-card: #2e2e33;
+    --border-card-hover: #3f3f46;
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-muted: #71717a;
+    --text-heading: #ffffff;
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --primary-ring: #3b82f6;
+    --primary-soft: rgba(59, 130, 246, 0.12);
+    --primary-border: rgba(59, 130, 246, 0.3);
+    --citation-badge-bg: rgba(59, 130, 246, 0.15);
+    --citation-badge-text: #60a5fa;
+    --citation-card-bg: #18181b;
+    --citation-card-hover: #222226;
+    --scrollbar-thumb: rgba(161, 161, 170, 0.28);
+    --scrollbar-thumb-hover: rgba(161, 161, 170, 0.5);
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.35);
+  }
+
+  :root[data-theme="light"] {
+    --bg-app: #f8fafc;
+    --bg-header: #ffffff;
+    --bg-panel: #f8fafc;
+    --bg-panel-alt: #f1f5f9;
+    --bg-card: #ffffff;
+    --bg-card-subtle: #f8fafc;
+    --bg-card-hover: #f1f5f9;
+    --bg-input: #ffffff;
+    --border-color: #e2e8f0;
+    --border-card: #e2e8f0;
+    --border-card-hover: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --text-heading: #0f172a;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --primary-ring: #2563eb;
+    --primary-soft: rgba(37, 99, 235, 0.1);
+    --primary-border: rgba(59, 130, 246, 0.25);
+    --citation-badge-bg: #dbeafe;
+    --citation-badge-text: #1d4ed8;
+    --citation-card-bg: #ffffff;
+    --citation-card-hover: #f8fafc;
+    --scrollbar-thumb: rgba(100, 116, 139, 0.35);
+    --scrollbar-thumb-hover: rgba(100, 116, 139, 0.6);
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.06);
+  }
+
   :global(*) {
     box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  :global(*::-webkit-scrollbar) {
+    width: 6px;
+    height: 6px;
+  }
+
+  :global(*::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+
+  :global(*::-webkit-scrollbar-thumb) {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  :global(*::-webkit-scrollbar-thumb:hover) {
+    background: var(--scrollbar-thumb-hover);
   }
 
   :global(body) {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-    background-color: #111827;
-    color: #f3f4f6;
+    background-color: var(--bg-app);
+    color: var(--text-primary);
     overflow: hidden;
   }
 
@@ -151,17 +244,18 @@
     height: 100dvh;
     width: 100%;
     overflow: hidden;
+    background-color: var(--bg-app);
   }
 
   .header {
     position: relative;
     height: 48px;
-    border-bottom: 1px solid #1e293b;
+    border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 2rem;
-    background-color: #0f172a;
+    background-color: var(--bg-header);
     flex-shrink: 0;
     width: 100%;
     isolation: isolate;
@@ -183,7 +277,7 @@
   .logo-link {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
     text-decoration: none;
     background: none;
     border: none;
@@ -193,8 +287,32 @@
     font: inherit;
   }
 
-  .header-spacer {
+  .header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     width: 300px;
+    padding-right: 0.5rem;
+  }
+
+  .theme-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border-color);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .theme-toggle-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-card-hover);
+    background: var(--bg-card-hover);
   }
 
   .drag-surface {
@@ -205,36 +323,34 @@
 
   .brand,
   .nav-menu,
-  .header-spacer {
+  .header-actions {
     position: relative;
     z-index: 1;
   }
 
   .brand,
   .nav-menu,
-  .header-spacer {
+  .header-actions {
     pointer-events: none;
   }
 
   .logo-link,
-  .nav-btn {
+  .nav-btn,
+  .theme-toggle-btn {
     pointer-events: auto;
   }
 
-  .logo {
-    padding: 0.5rem;
-    background-color: #2563eb;
-    border-radius: 0.5rem;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .logo-img {
+    width: 36px;
+    height: 36px;
+    display: block;
+    flex-shrink: 0;
   }
 
   h1 {
     font-size: 1.125rem;
     font-weight: 700;
-    color: white;
+    color: var(--text-heading);
     margin: 0;
     letter-spacing: -0.025em;
     white-space: nowrap;
@@ -242,35 +358,42 @@
 
   .nav-menu {
     display: flex;
+    align-items: center;
     gap: 0.5rem;
-    background-color: #1e293b;
-    padding: 0.25rem;
-    border-radius: 0.5rem;
-    border: 1px solid #374151;
+    background: transparent;
+    padding: 0;
+    border: none;
   }
 
   .nav-btn {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    border-radius: 0.375rem;
-    border: none;
+    padding: 0.45rem 0.9rem;
+    border-radius: 0.5rem;
+    border: 1px solid transparent;
     background: transparent;
-    color: #9ca3af;
+    color: var(--text-secondary);
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
+    transition: all 0.15s ease;
   }
 
   .nav-btn:hover {
-    color: white;
+    color: var(--text-primary);
+    background-color: var(--bg-card-hover);
   }
 
   .nav-btn.active {
-    background-color: #3b82f6;
-    color: white;
+    background-color: var(--primary);
+    color: #ffffff;
     box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  }
+
+  .nav-btn.active:hover {
+    background-color: var(--primary-hover);
+    color: #ffffff;
   }
 
   .main-content {

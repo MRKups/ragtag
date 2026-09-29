@@ -230,7 +230,7 @@ pub async fn execute_query(
     }
 
     let context = rag_pipeline::build_rag_prompt(&query, &citations);
-    let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. Ground statements by citing the corresponding source numbers in brackets, for example [1] or [2], matching the numbered sources provided above. Place citations at the end of the relevant sentence or bullet point. Do not invent citations or page numbers outside the provided excerpts. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
+    let system_prompt = "You are a helpful assistant that answers questions using only the provided document excerpts. Answer concisely. You MUST ground every statement by citing the corresponding source numbers in brackets, for example [1] or [2] (or multiple like [1][2]), matching the numbered sources provided in the context. Place citations at the end of every relevant sentence or bullet point (e.g. \"...enforces policy execution [1].\"). Do not write out words like \"Source\" or \"Page\" inside the brackets; use only the bracketed numbers like [1]. Do not invent citations or page numbers outside the provided excerpts. Do not use your own knowledge. Do not use <|think|> or </|think|> tags.";
 
     let mode = settings_repo
         .get("inference_mode")

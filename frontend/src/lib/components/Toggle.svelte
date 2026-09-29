@@ -38,8 +38,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 1.25rem;
-    background-color: #1f2937;
-    border: 1px solid #374151;
+    background-color: var(--bg-card, #1f2937);
+    border: 1px solid var(--border-card, #374151);
     border-radius: 0.75rem;
     margin-bottom: 1rem;
     cursor: pointer;
@@ -47,7 +47,7 @@
   }
 
   .setting-item:hover {
-    border-color: #4b5563;
+    border-color: var(--border-card-hover, #4b5563);
   }
 
   .setting-info {
@@ -61,13 +61,13 @@
     gap: 0.5rem;
     font-size: 0.9375rem;
     font-weight: 500;
-    color: #f3f4f6;
+    color: var(--text-heading, #f3f4f6);
     margin-bottom: 0.25rem;
   }
 
   .setting-desc {
     font-size: 0.8125rem;
-    color: #9ca3af;
+    color: var(--text-secondary, #9ca3af);
     line-height: 1.4;
   }
 
@@ -75,14 +75,14 @@
     position: relative;
     width: 50px;
     height: 26px;
-    background-color: #374151;
+    background-color: var(--border-card, #374151);
     border-radius: 34px;
     transition: 0.4s;
     flex-shrink: 0;
   }
 
   .toggle-switch.checked {
-    background-color: #2563eb;
+    background-color: var(--primary, #2563eb);
   }
 
   .toggle-slider {

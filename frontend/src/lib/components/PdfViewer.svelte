@@ -263,7 +263,7 @@
     flex-direction: column;
     height: 100%;
     width: 100%;
-    background-color: #0f172a;
+    background-color: var(--bg-panel-alt, #18181b);
     position: relative;
   }
 
@@ -272,9 +272,9 @@
     align-items: center;
     justify-content: space-between;
     padding: 0.75rem 1.5rem;
-    background-color: #0f172a;
-    border-bottom: 1px solid #1e293b;
-    color: #f1f5f9;
+    background-color: var(--bg-header, #18181b);
+    border-bottom: 1px solid var(--border-color, #27272a);
+    color: var(--text-primary, #f4f4f5);
     z-index: 10;
     flex-shrink: 0;
   }
@@ -284,7 +284,7 @@
     overflow: auto;
     position: relative;
     padding: 2rem;
-    background-color: #0f172a;
+    background-color: var(--bg-panel-alt, #18181b);
   }
 
   .group {
@@ -296,7 +296,7 @@
   .tool-btn {
     background: transparent;
     border: none;
-    color: #f1f5f9;
+    color: var(--text-primary, #f1f5f9);
     cursor: pointer;
     padding: 0.25rem;
     border-radius: 0.25rem;
@@ -307,7 +307,7 @@
   }
 
   .tool-btn:hover:not(:disabled) {
-    background-color: rgba(255,255,255,0.1);
+    background-color: var(--bg-card-hover, rgba(255,255,255,0.1));
   }
 
   .tool-btn:disabled {
@@ -343,7 +343,7 @@
     width: 3rem;
     height: 3rem;
     border: 4px solid #f3f3f3;
-    border-top: 4px solid #3b82f6;
+    border-top: 4px solid var(--primary, #3b82f6);
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }
@@ -368,13 +368,13 @@
   }
 
   .page-placeholder {
-    background-color: #1e293b;
-    border: 1px dashed #334155;
+    background-color: var(--bg-card, #1e1e22);
+    border: 1px dashed var(--border-card, #2e2e33);
     border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #64748b;
+    color: var(--text-muted, #71717a);
     font-size: 0.875rem;
   }
 </style>

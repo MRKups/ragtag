@@ -256,13 +256,13 @@
   .title {
     font-size: 1.25rem;
     font-weight: 600;
-    color: white;
+    color: var(--text-heading, white);
     margin: 0 0 1.5rem 0;
     display: flex;
     align-items: center;
     gap: 0.75rem;
     padding-bottom: 1rem;
-    border-bottom: 1px solid #374151;
+    border-bottom: 1px solid var(--border-color, #374151);
   }
 
   .hidden {
@@ -272,23 +272,23 @@
   /* Drop Zone */
   .drop-zone {
     position: relative;
-    border: 2px dashed #4b5563;
+    border: 2px dashed var(--border-card-hover, #4b5563);
     border-radius: 0.75rem;
     padding: 3rem 2rem;
     text-align: center;
     transition: all 0.2s ease-in-out;
     cursor: pointer;
     margin-bottom: 1.5rem;
-    background-color: rgba(31, 41, 55, 0.5);
+    background-color: var(--bg-card-subtle, rgba(31, 41, 55, 0.5));
   }
 
   .drop-zone:hover {
-    border-color: #6b7280;
+    border-color: var(--primary-ring, #6b7280);
   }
 
   .drop-zone.dragging {
-    border-color: #3b82f6;
-    background-color: rgba(30, 58, 138, 0.2);
+    border-color: var(--primary-ring, #3b82f6);
+    background-color: var(--primary-soft, rgba(30, 58, 138, 0.2));
   }
 
   .drop-zone.disabled {
@@ -305,7 +305,7 @@
 
   .icon-circle {
     padding: 0.75rem;
-    background-color: #374151;
+    background-color: var(--bg-card-hover, #374151);
     border-radius: 9999px;
   }
 
@@ -318,13 +318,13 @@
   .primary-text {
     font-size: 0.875rem;
     font-weight: 500;
-    color: #e5e7eb;
+    color: var(--text-primary, #e5e7eb);
     margin: 0;
   }
 
   .secondary-text {
     font-size: 0.75rem;
-    color: #6b7280;
+    color: var(--text-muted, #6b7280);
     margin: 0;
   }
 
@@ -341,7 +341,8 @@
   }
 
   .file-item {
-    background-color: rgba(55, 65, 81, 0.5);
+    background-color: var(--bg-card, rgba(55, 65, 81, 0.5));
+    border: 1px solid var(--border-card, transparent);
     border-radius: 0.5rem;
     padding: 0.75rem;
     display: flex;
@@ -360,7 +361,7 @@
 
   .file-name {
     font-size: 0.875rem;
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -369,7 +370,7 @@
 
   .file-size {
     font-size: 0.75rem;
-    color: #6b7280;
+    color: var(--text-muted, #71717a);
     margin: 0;
   }
 

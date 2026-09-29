@@ -115,9 +115,9 @@
     width: min(100%, 32rem);
     margin: 0;
     padding: 1.5rem;
-    color: #e5e7eb;
-    background: #1e293b;
-    border: 1px solid #475569;
+    color: var(--text-primary, #f4f4f5);
+    background: var(--bg-card, #1e1e22);
+    border: 1px solid var(--border-card, #2e2e33);
     border-radius: 0.75rem;
     box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
   }
@@ -236,13 +236,13 @@
   }
 
   .dismiss-button {
-    color: #e2e8f0;
-    background: #334155;
-    border: 1px solid #475569;
+    color: var(--text-primary, #f4f4f5);
+    background: var(--bg-card-hover, #26262b);
+    border: 1px solid var(--border-card, #2e2e33);
   }
 
   .dismiss-button:hover {
-    background: #475569;
+    background: var(--border-card-hover, #3f3f46);
   }
 
   .action-button {

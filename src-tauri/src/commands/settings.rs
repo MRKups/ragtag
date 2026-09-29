@@ -18,6 +18,19 @@ pub fn inference_mode_is_unchanged(current_mode: Option<&str>, requested_mode: &
     current_mode.unwrap_or("local") == requested_mode
 }
 
+pub const SETTINGS_KEYS: &[&str] = &[
+    "theme",
+    "inference_mode",
+    "external_base_url",
+    "external_model",
+    "generation_model",
+    "tokenizer_model",
+    "gguf_filename",
+    "use_query_enhancement",
+    "chunk_size",
+    "chunk_overlap",
+];
+
 #[tauri::command]
 pub async fn get_settings(
     state: tauri::State<'_, AppState>,
@@ -25,18 +38,7 @@ pub async fn get_settings(
     let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let mut all = repo.get_all().await?;
-    const KEYS: &[&str] = &[
-        "inference_mode",
-        "external_base_url",
-        "external_model",
-        "generation_model",
-        "tokenizer_model",
-        "gguf_filename",
-        "use_query_enhancement",
-        "chunk_size",
-        "chunk_overlap",
-    ];
-    all.retain(|k, _| KEYS.contains(&k.as_str()));
+    all.retain(|k, _| SETTINGS_KEYS.contains(&k.as_str()));
     Ok(all)
 }
 
@@ -164,5 +166,10 @@ mod tests {
         assert!(inference_mode_is_unchanged(Some("external"), "external"));
         assert!(inference_mode_is_unchanged(None, "local"));
         assert!(!inference_mode_is_unchanged(Some("local"), "external"));
+    }
+
+    #[test]
+    fn settings_keys_include_theme() {
+        assert!(SETTINGS_KEYS.contains(&"theme"));
     }
 }

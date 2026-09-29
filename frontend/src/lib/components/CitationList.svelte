@@ -54,13 +54,13 @@
   .citations-container {
     margin-top: 2rem;
     padding-top: 1.5rem;
-    border-top: 1px solid #374151;
+    border-top: 1px solid var(--border-color, #27272a);
   }
 
   .citations-title {
     font-size: 0.875rem;
     font-weight: 600;
-    color: #6b7280;
+    color: var(--text-muted, #71717a);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin-bottom: 0.75rem;
@@ -72,12 +72,14 @@
   .citations-grid {
     display: grid;
     gap: 0.75rem;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
   }
 
   .citation-card {
-    background: #111827;
-    border: 1px solid #374151;
+    background: var(--citation-card-bg, #18181b);
+    border: 1px solid var(--border-card, #2e2e33);
     border-radius: 0.5rem;
     padding: 0.75rem;
     font-size: 0.875rem;
@@ -87,12 +89,16 @@
     font-family: inherit;
     text-align: left;
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
     line-height: inherit;
   }
 
   .citation-card:hover {
-    background: #1f2937;
-    border-color: #4b5563;
+    background: var(--citation-card-hover, #26262b);
+    border-color: var(--border-card-hover, #3f3f46);
   }
 
   .citation-header {
@@ -100,44 +106,48 @@
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 0.5rem;
+    min-width: 0;
   }
 
   .citation-number {
     font-weight: bold;
-    color: #60a5fa;
-    background: #1e3a8a;
+    color: var(--citation-badge-text, #60a5fa);
+    background: var(--citation-badge-bg, rgba(59, 130, 246, 0.15));
     padding: 0 0.4rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
+    flex-shrink: 0;
   }
 
   .citation-source {
     font-weight: 500;
-    color: #e5e7eb;
+    color: var(--text-primary, #f4f4f5);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     display: flex;
     align-items: center;
     gap: 0.25rem;
+    min-width: 0;
   }
 
   .citation-details {
     display: flex;
     gap: 0.5rem;
     margin-bottom: 0.5rem;
+    min-width: 0;
   }
 
   .badge {
-    background: #374151;
-    color: #d1d5db;
+    background: var(--border-color, #27272a);
+    color: var(--text-primary, #f4f4f5);
     padding: 0.1rem 0.4rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
   }
 
   .citation-text {
-    color: #9ca3af;
+    color: var(--text-secondary, #9ca3af);
     font-style: italic;
     line-height: 1.4;
     display: -webkit-box;
@@ -145,6 +155,9 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
     margin: 0;
   }
 </style>

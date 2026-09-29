@@ -10,6 +10,7 @@ export const DEFAULT_LOCAL_INFERENCE = {
 } as const;
 
 export type InferenceConfiguration = 'local' | 'external';
+export type Theme = 'dark' | 'light';
 
 function isQueueFull(error: unknown): boolean {
   if (isAppError(error) && error.code === 'queue_full') return true;
@@ -25,6 +26,11 @@ function isQueueFull(error: unknown): boolean {
 }
 
 export class SettingsState {
+  theme = $state<Theme>(
+    typeof localStorage !== 'undefined' && localStorage.getItem('ragtag_theme') === 'light'
+      ? 'light'
+      : 'dark'
+  );
   inference_mode = $state('local');
   external_base_url = $state('');
   external_model = $state('gpt-4o-mini');
@@ -41,6 +47,7 @@ export class SettingsState {
 
 
   private persistedSettings: Record<string, string> = {
+    theme: this.theme,
     inference_mode: this.inference_mode,
     external_base_url: this.external_base_url,
     external_model: this.external_model,
@@ -53,6 +60,15 @@ export class SettingsState {
   };
 
   private applySettingValue(key: string, value: string) {
+    if (key === 'theme' && (value === 'light' || value === 'dark')) {
+      this.theme = value;
+      if (typeof document !== 'undefined') {
+        document.documentElement.setAttribute('data-theme', value);
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('ragtag_theme', value);
+      }
+    }
     if (key === 'use_query_enhancement') this.use_query_enhancement = value === 'true';
     if (key === 'inference_mode') this.inference_mode = value;
     if (key === 'external_base_url') this.external_base_url = value;
@@ -65,6 +81,7 @@ export class SettingsState {
   }
 
   private currentSettingValue(key: string): string | undefined {
+    if (key === 'theme') return this.theme;
     if (key === 'use_query_enhancement') return String(this.use_query_enhancement);
     if (key === 'inference_mode') return this.inference_mode;
     if (key === 'external_base_url') return this.external_base_url;
@@ -93,11 +110,30 @@ export class SettingsState {
     this.persistSettingValue('external_model', model);
   }
 
+  async toggleTheme() {
+    const nextTheme: Theme = this.theme === 'dark' ? 'light' : 'dark';
+    this.theme = nextTheme;
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', nextTheme);
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ragtag_theme', nextTheme);
+    }
+    void this.update('theme', nextTheme);
+  }
 
   async load() {
     this.isLoading = true;
     try {
       const settings = await api.getSettings();
+      if (settings.theme != null && (settings.theme === 'light' || settings.theme === 'dark')) {
+        this.persistSettingValue('theme', settings.theme);
+      } else {
+        const local = typeof localStorage !== 'undefined' ? localStorage.getItem('ragtag_theme') : null;
+        if (local === 'light' || local === 'dark') {
+          this.persistSettingValue('theme', local);
+        }
+      }
       if (settings.inference_mode != null) this.persistSettingValue('inference_mode', settings.inference_mode);
       if (settings.external_base_url != null) this.persistSettingValue('external_base_url', settings.external_base_url);
       if (settings.external_model != null) this.persistSettingValue('external_model', settings.external_model);
@@ -183,3 +219,10 @@ export class SettingsState {
 }
 
 export const settingsState = new SettingsState();
+
+if (typeof document !== 'undefined' && typeof localStorage !== 'undefined') {
+  const saved = localStorage.getItem('ragtag_theme');
+  if (saved === 'light' || saved === 'dark') {
+    document.documentElement.setAttribute('data-theme', saved);
+  }
+}
