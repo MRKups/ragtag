@@ -1,6 +1,8 @@
 use super::{
     ExtractedPages,
-    util::{EXTRACTED_TEXT_MAX_BYTES, extracted_text_limit_error, nonpaginated_page, read_bounded_bytes},
+    util::{
+        EXTRACTED_TEXT_MAX_BYTES, extracted_text_limit_error, nonpaginated_page, read_bounded_bytes,
+    },
 };
 use domain::AppError;
 use std::{fs::File, io::Read, path::Path};
@@ -46,7 +48,10 @@ fn bounded_utf8_text(source_path: &Path) -> Result<String, AppError> {
     bounded_utf8_text_reader(&mut file, capacity)
 }
 
-pub fn bounded_utf8_text_reader(reader: &mut impl Read, capacity: usize) -> Result<String, AppError> {
+pub fn bounded_utf8_text_reader(
+    reader: &mut impl Read,
+    capacity: usize,
+) -> Result<String, AppError> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity.min(EXTRACTED_TEXT_MAX_BYTES))

@@ -20,7 +20,10 @@ pub async fn requeue_indexed_documents_after_vector_loss(
     repo.requeue_indexed_documents_after_vector_loss().await
 }
 
-pub fn indexed_chunk_count_mismatch(recorded_count: Option<i64>, indexed_count: Option<usize>) -> bool {
+pub fn indexed_chunk_count_mismatch(
+    recorded_count: Option<i64>,
+    indexed_count: Option<usize>,
+) -> bool {
     match recorded_count.and_then(|count| usize::try_from(count).ok()) {
         Some(recorded_count) => indexed_count != Some(recorded_count),
         None => true,
@@ -58,9 +61,13 @@ pub fn validate_indexing_provenance(provenance: &IndexProvenance) -> Result<(), 
 
 pub fn parse_chunk_setting(key: &str, value: &str) -> Result<i32, AppError> {
     validate_setting(key, value)?;
-    value
-        .parse::<i32>()
-        .map_err(|_| AppError::invalid_input("Parse chunk setting", format!("Invalid {key}: expected an integer"), "Provide an integer value for chunk settings."))
+    value.parse::<i32>().map_err(|_| {
+        AppError::invalid_input(
+            "Parse chunk setting",
+            format!("Invalid {key}: expected an integer"),
+            "Provide an integer value for chunk settings.",
+        )
+    })
 }
 
 pub async fn desired_indexing_provenance(

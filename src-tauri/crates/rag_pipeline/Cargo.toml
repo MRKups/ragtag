@@ -11,11 +11,15 @@ repository = "https://github.com/MRKups/mrk-ragtag"
 domain = { path = "../domain" }
 persistence = { path = "../persistence" }
 pdf-extract = "0.12.1"
-zip = { version = "=7.2.0", default-features = false, features = ["deflate"] }
-quick-xml = "=0.39.4"
-pulldown-cmark = "=0.13.0"
-fastembed = "=6.0.2"
-tokio = { version = "1.53.1", features = ["full"] }
+zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
+quick-xml = "=0.42.0"
+pulldown-cmark = "=0.13.4"
+fastembed = "=7.1.1"
+tokio = { version = "1.53.3", features = ["full"] }
 arrow-array = "=58.4.0"
 arrow-schema = "=58.4.0"
-tokenizers = { version = "=0.22.2", default-features = false }
+tokenizers = { version = "=0.23.2", default-features = false }
+
+[dev-dependencies]
+# Machine-readable output for the opt-in synthetic retrieval benchmark.
+serde_json = "1.0.154"

@@ -103,6 +103,10 @@ The frontend uses the typed IPC API.
 | `get_platform` | none | Host operating system identifier: `macos`, `windows`, or `linux`. |
 | `open_external_url` | `url` | Opens an external HTTP, HTTPS, or mailto link safely in the default system browser. |
 
+Credential mutations report typed errors when cleanup is incomplete. A successful keychain save removes any plaintext fallback before reporting success. Deletion attempts both stores and returns `false` when neither contained a key; it never reports success if either removal fails. Data reset checks credential cleanup before writing the restart/reset marker.
+
+`get_api_key_status` reports `database` whenever a plaintext fallback remains, including after a partial migration that also saved a keychain copy. This keeps the unencrypted-storage warning visible; inference still prefers the keychain key.
+
 ## Execution capacity and lifecycle state
 
 `get_app_state` returns an atomic, memory-only snapshot of current system readiness and execution permits without acquiring SQLite transaction or storage locks:
@@ -195,4 +199,3 @@ Command errors serialize as `{ code, operation, detail, recovery, message }`. `c
 - `detail`: The underlying technical cause or bounded diagnostic reason.
 - `recovery`: Actionable, user-facing remediation instruction (e.g. `Wait a moment for existing documents to finish indexing, then retry.`).
 - `message`: Formatted composite string (`"{operation}: {detail}. {recovery}"`) ensuring backward compatibility for consumers expecting a descriptive string message.
-

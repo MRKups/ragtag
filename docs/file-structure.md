@@ -11,7 +11,10 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 
 ## Root
 
-- `README.md`: User-facing setup, operation, development, checks, and build guide.
+- `README.md`: App description, screenshot placeholder, requirements, and run commands.
+- `THIRD_PARTY_NOTICES.md` and `LICENSE`: First-party license and dependency notice summary.
+- `scripts/check-release.mjs` and `scripts/check-release.test.mjs`: Version, publishing, and inventory-freshness checks with regressions.
+- `scripts/license-inventory.mjs`: Locked Rust/npm license-inventory generator.
 - `Taskfile.yml`: Development, checking, build, bundle, and cleanup tasks.
 - `docs/`: Current guides, specifications, and records. Start at [`docs/README.md`](README.md).
 - `frontend/`: Svelte 5 and Vite interface.
@@ -80,9 +83,11 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `capabilities/`: Tauri security capability declarations.
 - `icons/`: Native application icons.
 - `src/main.rs`: Native binary entry point delegating to `mrk_ragtag_app::run()`.
+- `examples/local_inference_smoke.rs`: Opt-in real-engine streaming/concurrency/receiver-drop checks over retained synthetic retrieval evidence; does not launch the personal application or qualify the WebView.
 - `src/lib.rs`: Application composition, builder setup, pending data resets, and background worker initialization.
 - `src/capacity.rs`: Dual-semaphore command capacity manager prioritizing interactive cancellations and probes over ordinary operations.
 - `src/state.rs`: Central `AppState` holding pools, stores, embedders, capacity semaphores, active tracking, and worker channels.
+- `src/credentials.rs`: Credential save/removal coordination, partial-failure reporting, and isolated adapter regressions.
 - `src/model_download.rs`: Model download streamer supporting real-time progress emissions and Tokio watch cancellation.
 - `src/commands/`: Focused Tauri IPC command modules:
   - `mod.rs`: Module exports and command handler registration.
@@ -106,7 +111,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries and active job tracking.
 - `crates/`: Domain, persistence, and document-processing libraries.
 - `.sqlx/`: Committed SQLx offline query metadata.
-- `vendor/mistralrs-core/`: Licensed upstream v0.9.3 core with Ragtag's explicit tensor-selection repair ([D007](decisions.md)).
+- `vendor/mistralrs-core/`: Licensed upstream v0.9.4 core with Ragtag's explicit tensor-selection repair ([D007](decisions.md)).
 - `vendor/toml-selectors/`: Unchanged upstream test fixtures for the vendored core.
 
 ### `src-tauri/crates/domain/`
@@ -126,6 +131,7 @@ Relational, vector, and managed source storage:
 ### `src-tauri/crates/rag_pipeline/`
 
 Document extraction, chunking, and embedding:
+- `examples/retrieval_eval.rs`: Opt-in dense/hybrid/enhanced retrieval baseline over synthetic technical passages, using runtime embeddings and a new isolated output directory.
 - `chunker.rs`: Token-budgeted text chunker preserving physical page boundaries.
 - `lib.rs`: FastEmbed `TextEmbedder` for 768-d EmbeddingGemma with instruction prefixes.
 - `extractor/`: Format-specific extractors:

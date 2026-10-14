@@ -111,14 +111,26 @@ fn truncate_preview_text(mut content: String) -> (String, bool) {
 
 pub fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, AppError> {
     let xml = normalized_docx_xml(xml)?;
-    let mut reader = NsReader::from_reader(xml.as_ref());
+    // quick-xml 0.42 exposes UTF-8 events. Preserve lossy recovery for bounded
+    // previews while rejecting invalid UTF-8 during full extraction.
+    let xml = if allow_truncated_eof {
+        String::from_utf8_lossy(xml.as_ref())
+    } else {
+        Cow::Borrowed(std::str::from_utf8(xml.as_ref()).map_err(|error| {
+            AppError::invalid_input(
+                "Decode DOCX XML",
+                format!("DOCX XML text decoding failed: {error}"),
+                "Ensure the DOCX document contains valid text encoding.",
+            )
+        })?)
+    };
+    let mut reader = NsReader::from_str(&xml);
     reader.config_mut().trim_text(false);
-    let mut buffer = Vec::new();
     let mut in_text = false;
     let mut text = String::new();
 
     loop {
-        match reader.read_resolved_event_into(&mut buffer) {
+        match reader.read_resolved_event() {
             Ok((namespace, Event::Start(event))) => {
                 if is_wordprocessing_element(&namespace, event.local_name(), "t") {
                     in_text = true;
@@ -148,47 +160,13 @@ pub fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, A
                 }
             }
             Ok((_, Event::Text(event))) if in_text => {
-                match event.decode() {
-                    Ok(decoded) => append_extracted_text(&mut text, &decoded)?,
-                    Err(_) if allow_truncated_eof => {
-                        let lossy = String::from_utf8_lossy(event.as_ref());
-                        let _ = append_extracted_text(&mut text, &lossy);
-                        break;
-                    }
-                    Err(e) => {
-                        return Err(AppError::invalid_input(
-                            "Decode DOCX text",
-                            format!("DOCX text decoding failed: {e}"),
-                            "Ensure the DOCX document contains valid text encoding.",
-                        ));
-                    }
-                }
+                append_extracted_text(&mut text, event.as_ref())?;
             }
             Ok((_, Event::CData(event))) if in_text => {
-                match event.decode() {
-                    Ok(decoded) => append_extracted_text(&mut text, &decoded)?,
-                    Err(_) if allow_truncated_eof => {
-                        let lossy = String::from_utf8_lossy(event.as_ref());
-                        let _ = append_extracted_text(&mut text, &lossy);
-                        break;
-                    }
-                    Err(e) => {
-                        return Err(AppError::invalid_input(
-                            "Decode DOCX CDATA",
-                            format!("DOCX CDATA decoding failed: {e}"),
-                            "Ensure the DOCX document contains valid character data.",
-                        ));
-                    }
-                }
+                append_extracted_text(&mut text, event.as_ref())?;
             }
             Ok((_, Event::GeneralRef(event))) if in_text => {
-                let reference = event.decode().map_err(|e| {
-                    AppError::invalid_input(
-                        "Decode DOCX entity reference",
-                        format!("DOCX text entity decoding failed: {e}"),
-                        "Ensure the DOCX document contains valid XML entity references.",
-                    )
-                })?;
+                let reference = event.as_ref();
                 let encoded = format!("&{reference};");
                 let resolved = unescape(&encoded).map_err(|e| {
                     AppError::invalid_input(
@@ -210,7 +188,6 @@ pub fn docx_body_text(xml: &[u8], allow_truncated_eof: bool) -> Result<String, A
                 ));
             }
         }
-        buffer.clear();
     }
 
     Ok(text)
@@ -224,15 +201,10 @@ fn is_wordprocessing_element(
     let ResolveResult::Bound(namespace) = namespace else {
         return false;
     };
-    let namespace = std::str::from_utf8(namespace.as_ref()).ok();
-    let local_name = std::str::from_utf8(local_name.as_ref()).ok();
     matches!(
-        (namespace, local_name),
-        (
-            Some(WORDPROCESSINGML_NAMESPACE | STRICT_WORDPROCESSINGML_NAMESPACE),
-            Some(local_name)
-        ) if local_name == expected_local_name
-    )
+        namespace.as_ref(),
+        WORDPROCESSINGML_NAMESPACE | STRICT_WORDPROCESSINGML_NAMESPACE
+    ) && local_name.as_ref() == expected_local_name
 }
 
 pub(crate) fn normalized_docx_xml(xml: &[u8]) -> Result<Cow<'_, [u8]>, AppError> {

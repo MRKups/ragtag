@@ -437,7 +437,10 @@ pub fn parse_inlines(
     content
 }
 
-pub fn flatten_inlines(events: &mut MarkdownEvents<'_>, expected: InlineEnd) -> Vec<MarkdownInline> {
+pub fn flatten_inlines(
+    events: &mut MarkdownEvents<'_>,
+    expected: InlineEnd,
+) -> Vec<MarkdownInline> {
     let mut content = Vec::new();
     let mut nesting = 1;
 

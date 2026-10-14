@@ -1,5 +1,6 @@
 mod capacity;
 mod commands;
+mod credentials;
 mod inference;
 mod model_download;
 mod model_lifecycle;
@@ -8,8 +9,8 @@ mod workers;
 
 use commands::*;
 use model_lifecycle::*;
-pub use state::{AppState, IngestionJob};
 use persistence::storage::*;
+pub use state::{AppState, IngestionJob};
 use workers::*;
 
 use log::{error, info};

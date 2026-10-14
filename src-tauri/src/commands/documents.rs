@@ -39,7 +39,9 @@ pub async fn upload_document(
 ) -> Result<String, AppError> {
     let file_type = validate_upload(&filename, &file_bytes)?;
     let state = app.state::<AppState>();
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     if state.embedder.read().await.is_none() {
         return Err(AppError::internal(
             "Upload document",
@@ -49,16 +51,13 @@ pub async fn upload_document(
     }
     let repo = DocumentRepository::new(state.db_pool.clone());
 
-    let app_local_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
+        AppError::storage(
+            "Resolve storage path",
+            format!("Failed to resolve app local data directory: {e}"),
+            "Verify application local storage permissions.",
+        )
+    })?;
     let docs_dir = tokio::task::spawn_blocking({
         let app_local_data = app_local_data.clone();
         move || managed_documents_directory(&app_local_data, true)
@@ -189,7 +188,9 @@ pub async fn upload_document(
 
 #[tauri::command]
 pub async fn list_documents(state: tauri::State<'_, AppState>) -> Result<Vec<Document>, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
     repo.list_all().await
 }
@@ -200,30 +201,26 @@ pub async fn get_document_preview(
     state: tauri::State<'_, AppState>,
     document_id: String,
 ) -> Result<DocumentPreview, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
-    let document = repo
-        .get_by_id(&document_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::not_found(
-                "Get document preview",
-                "Document is not available for preview",
-                "Ensure the document exists and has completed indexing.",
-            )
-        })?;
+    let document = repo.get_by_id(&document_id).await?.ok_or_else(|| {
+        AppError::not_found(
+            "Get document preview",
+            "Document is not available for preview",
+            "Ensure the document exists and has completed indexing.",
+        )
+    })?;
     validate_document_preview_document(&document)?;
 
-    let app_local_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
+        AppError::storage(
+            "Resolve storage path",
+            format!("Failed to resolve app local data directory: {e}"),
+            "Verify application local storage permissions.",
+        )
+    })?;
     let storage_path = document.storage_path;
     let file_type = document.file_type;
     let filename = document.filename;
@@ -248,7 +245,9 @@ pub async fn delete_document(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let id = uuid::Uuid::parse_str(&id)
         .map_err(|_| {
             AppError::invalid_input(
@@ -262,16 +261,13 @@ pub async fn delete_document(
     let repo = DocumentRepository::new(state.db_pool.clone());
     let document = repo.get_by_id(&id).await?;
     if let Some(document) = document {
-        let app_local_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|error| {
-                AppError::storage(
-                    "Resolve storage path",
-                    format!("Failed to resolve app local data directory: {error}"),
-                    "Verify application local storage permissions.",
-                )
-            })?;
+        let app_local_data = app.path().app_local_data_dir().map_err(|error| {
+            AppError::storage(
+                "Resolve storage path",
+                format!("Failed to resolve app local data directory: {error}"),
+                "Verify application local storage permissions.",
+            )
+        })?;
         let check_data = app_local_data.clone();
         let check_storage_path = document.storage_path.clone();
         tokio::task::spawn_blocking(move || {

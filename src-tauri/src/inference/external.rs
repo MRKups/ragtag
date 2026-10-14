@@ -272,16 +272,16 @@ pub async fn read_external_api_key(
     let from_keychain = tokio::task::spawn_blocking(|| {
         let entry = match keyring::v1::Entry::new("ragtag", "external_api_key") {
             Ok(entry) => entry,
-            Err(error) => {
-                log::warn!("System keychain entry unavailable: {error}");
+            Err(_) => {
+                log::warn!("System keychain entry unavailable");
                 return None;
             }
         };
         match entry.get_password() {
             Ok(api_key) if !api_key.is_empty() => Some(api_key),
             Ok(_) | Err(keyring::v1::Error::NoEntry) => None,
-            Err(error) => {
-                log::warn!("System keychain password read failed: {error}");
+            Err(_) => {
+                log::warn!("System keychain password read failed");
                 None
             }
         }
@@ -289,7 +289,15 @@ pub async fn read_external_api_key(
     .await
     .unwrap_or(None);
 
-    if let Some(key) = from_keychain {
+    resolve_external_api_key(settings, from_keychain).await
+}
+
+// Keep source selection testable without accessing the developer's OS keychain.
+async fn resolve_external_api_key(
+    settings: &AppSettingsRepository,
+    from_keychain: Option<String>,
+) -> Result<Option<String>, AppError> {
+    if let Some(key) = from_keychain.filter(|key| !key.trim().is_empty()) {
         return Ok(Some(key));
     }
 
@@ -322,7 +330,10 @@ pub async fn external_inference_config(
     })
 }
 
-pub fn external_model_is_available(models: &ExternalModelsResponse, configured_model: &str) -> bool {
+pub fn external_model_is_available(
+    models: &ExternalModelsResponse,
+    configured_model: &str,
+) -> bool {
     let configured_model = configured_model.trim();
     models
         .data
@@ -812,15 +823,37 @@ mod tests {
 
     #[tokio::test]
     async fn read_external_api_key_falls_back_to_sqlite() {
-        let app_local_data = std::env::temp_dir().join(format!("ragtag-test-{}", uuid::Uuid::now_v7()));
+        let app_local_data =
+            std::env::temp_dir().join(format!("ragtag-test-{}", uuid::Uuid::now_v7()));
         tokio::fs::create_dir_all(&app_local_data).await.unwrap();
         let pool = persistence::init_pool(&app_local_data).await.unwrap();
         let settings = persistence::AppSettingsRepository::new(pool.clone());
 
-        settings.set("external_api_key", "sk-test-fallback").await.unwrap();
+        settings
+            .set("external_api_key", "sk-test-fallback")
+            .await
+            .unwrap();
 
-        let api_key = read_external_api_key(&settings).await.unwrap();
+        let api_key = resolve_external_api_key(&settings, None).await.unwrap();
         assert_eq!(api_key.as_deref(), Some("sk-test-fallback"));
+
+        let api_key = resolve_external_api_key(&settings, Some("test-keychain-key".into()))
+            .await
+            .unwrap();
+        assert_eq!(api_key.as_deref(), Some("test-keychain-key"));
+
+        let api_key = resolve_external_api_key(&settings, Some(" ".into()))
+            .await
+            .unwrap();
+        assert_eq!(api_key.as_deref(), Some("sk-test-fallback"));
+
+        settings.delete("external_api_key").await.unwrap();
+        assert!(
+            resolve_external_api_key(&settings, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         pool.close().await;
         std::fs::remove_dir_all(app_local_data).unwrap();

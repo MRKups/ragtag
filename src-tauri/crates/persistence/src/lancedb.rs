@@ -138,16 +138,13 @@ impl VectorDb {
     }
 
     pub async fn delete_chunks(&self, document_id: &str) -> Result<(), AppError> {
-        let _permit = VECTOR_WRITE_LOCK
-            .acquire()
-            .await
-            .map_err(|_| {
-                AppError::internal(
-                    "Delete vector chunks",
-                    "Failed to acquire vector write lock",
-                    "Wait for active vector operations to complete and retry.",
-                )
-            })?;
+        let _permit = VECTOR_WRITE_LOCK.acquire().await.map_err(|_| {
+            AppError::internal(
+                "Delete vector chunks",
+                "Failed to acquire vector write lock",
+                "Wait for active vector operations to complete and retry.",
+            )
+        })?;
 
         let table_names = self
             .conn
@@ -184,16 +181,13 @@ impl VectorDb {
             return Ok(());
         }
 
-        let _permit = VECTOR_WRITE_LOCK
-            .acquire()
-            .await
-            .map_err(|_| {
-                AppError::internal(
-                    "Insert vector chunks",
-                    "Failed to acquire vector write lock",
-                    "Wait for ongoing vector writes to finish and retry.",
-                )
-            })?;
+        let _permit = VECTOR_WRITE_LOCK.acquire().await.map_err(|_| {
+            AppError::internal(
+                "Insert vector chunks",
+                "Failed to acquire vector write lock",
+                "Wait for ongoing vector writes to finish and retry.",
+            )
+        })?;
 
         let schema = Self::schema();
 
@@ -281,16 +275,13 @@ impl VectorDb {
     }
 
     pub async fn compact(&self) -> Result<(), AppError> {
-        let _permit = VECTOR_WRITE_LOCK
-            .acquire()
-            .await
-            .map_err(|_| {
-                AppError::internal(
-                    "Compact vector store",
-                    "Failed to acquire vector write lock",
-                    "Wait for active queries to complete and retry.",
-                )
-            })?;
+        let _permit = VECTOR_WRITE_LOCK.acquire().await.map_err(|_| {
+            AppError::internal(
+                "Compact vector store",
+                "Failed to acquire vector write lock",
+                "Wait for active queries to complete and retry.",
+            )
+        })?;
 
         if !self.chunks_table_exists().await? {
             return Ok(());
@@ -311,56 +302,85 @@ impl VectorDb {
         indexed_document_ids: &[String],
         limit: usize,
     ) -> Result<HybridSearchResult, AppError> {
+        self.search(Some(query_text), query_vector, indexed_document_ids, limit)
+            .await
+    }
+
+    /// Dense-only baseline with the same registry eligibility filter and result mapping.
+    pub async fn vector_search(
+        &self,
+        query_vector: &[f32],
+        indexed_document_ids: &[String],
+        limit: usize,
+    ) -> Result<HybridSearchResult, AppError> {
+        self.search(None, query_vector, indexed_document_ids, limit)
+            .await
+    }
+
+    async fn search(
+        &self,
+        query_text: Option<&str>,
+        query_vector: &[f32],
+        indexed_document_ids: &[String],
+        limit: usize,
+    ) -> Result<HybridSearchResult, AppError> {
+        let requested_mode = if query_text.is_some() {
+            RetrievalMode::Hybrid
+        } else {
+            RetrievalMode::VectorOnly
+        };
         let Some(document_filter) = indexed_document_filter(indexed_document_ids) else {
             return Ok(HybridSearchResult {
                 results: Vec::new(),
-                retrieval_mode: RetrievalMode::Hybrid,
+                retrieval_mode: requested_mode,
             });
         };
 
         if !self.chunks_table_exists().await? {
             return Ok(HybridSearchResult {
                 results: Vec::new(),
-                retrieval_mode: RetrievalMode::Hybrid,
+                retrieval_mode: requested_mode,
             });
         }
 
         let table = self.open_table().await?;
 
-        let query_vector_f32: Vec<f32> = query_vector.to_vec();
-        let fts_query = lancedb::index::scalar::FullTextSearchQuery::new(query_text.to_string());
+        let vector_query = table
+            .query()
+            .nearest_to(query_vector.to_vec())
+            .map_err(|e| vector_err("Execute vector search query", e))?
+            .only_if(&document_filter)
+            .limit(limit);
 
         static FTS_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
-        let (mut stream, retrieval_mode) = match table
-            .query()
-            .full_text_search(fts_query)
-            .nearest_to(query_vector_f32.clone())
-            .map_err(|e| vector_err("Execute hybrid full-text search", e))?
-            .only_if(&document_filter)
-            .limit(limit)
-            .execute()
-            .await
-        {
-            Ok(stream) => (stream, RetrievalMode::Hybrid),
-            Err(e) => {
+        let primary = if let Some(query_text) = query_text {
+            vector_query
+                .clone()
+                .full_text_search(lancedb::index::scalar::FullTextSearchQuery::new(
+                    query_text.to_string(),
+                ))
+                .execute()
+                .await
+        } else {
+            vector_query.clone().execute().await
+        };
+        let (mut stream, retrieval_mode) = match primary {
+            Ok(stream) => (stream, requested_mode),
+            Err(e) if query_text.is_some() => {
                 if !FTS_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
                     warn!(
                         "hybrid search unavailable (FTS index missing) — falling back to vector-only search"
                     );
                 }
                 warn!("hybrid search error detail: {e}");
-                let stream = table
-                    .query()
-                    .nearest_to(query_vector_f32)
-                    .map_err(|e| vector_err("Execute vector search query", e))?
-                    .only_if(&document_filter)
-                    .limit(limit)
+                let stream = vector_query
                     .execute()
                     .await
                     .map_err(|e| vector_err("Fetch vector search stream", e))?;
                 (stream, RetrievalMode::VectorOnly)
             }
+            Err(error) => return Err(vector_err("Execute vector search query", error)),
         };
 
         let mut out = Vec::new();
@@ -681,6 +701,17 @@ mod tests {
             .unwrap();
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].document_id, "indexed");
+
+        let dense = db
+            .vector_search(&vec![0.0; 768], &["indexed".to_string()], 2)
+            .await
+            .unwrap();
+        assert_eq!(dense.retrieval_mode, super::RetrievalMode::VectorOnly);
+        assert_eq!(dense.results.len(), 1);
+        assert_eq!(dense.results[0].document_id, "indexed");
+        let empty = db.vector_search(&vec![0.0; 768], &[], 2).await.unwrap();
+        assert!(empty.results.is_empty());
+        assert_eq!(empty.retrieval_mode, super::RetrievalMode::VectorOnly);
 
         drop(db);
         std::fs::remove_dir_all(path).unwrap();

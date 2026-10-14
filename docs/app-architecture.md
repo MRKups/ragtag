@@ -62,6 +62,8 @@ External mode calls a user-selected OpenAI-compatible endpoint. Ragtag verifies 
 
 Default model files are downloaded on first use rather than bundled, using configurable Hugging Face repositories and GGUF filenames.
 
+Generation-model loading verifies GGUF bytes against the Hub cache's SHA-256 identity, including on cache hits. Verification stays local and responds to cancellation; incompatible or corrupt artifacts return typed errors rather than reaching the inference engine.
+
 ## User-visible failure behavior
 
 Operations return serializable typed errors. Failures before answer streaming reject the command; later failures use a terminal error event with available citations. Ingestion progress reports completed work. The interface shows safe recovery guidance instead of raw backend details.

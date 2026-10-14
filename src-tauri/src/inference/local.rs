@@ -162,10 +162,7 @@ mod tests {
             receiver.recv().await,
             Some(InferenceEvent::Token(token)) if token == "fé"
         ));
-        assert!(matches!(
-            receiver.recv().await,
-            Some(InferenceEvent::Done)
-        ));
+        assert!(matches!(receiver.recv().await, Some(InferenceEvent::Done)));
         assert!(receiver.recv().await.is_none());
     }
 
@@ -186,10 +183,7 @@ mod tests {
             receiver.recv().await,
             Some(InferenceEvent::Token(token)) if token == "42"
         ));
-        assert!(matches!(
-            receiver.recv().await,
-            Some(InferenceEvent::Done)
-        ));
+        assert!(matches!(receiver.recv().await, Some(InferenceEvent::Done)));
         assert!(receiver.recv().await.is_none());
     }
 

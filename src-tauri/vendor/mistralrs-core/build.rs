@@ -301,6 +301,6 @@ fn add_cudnn_link_search() {
 fn set_git_revision() {
     // This package is vendored; Ragtag's Git HEAD is not the engine's revision.
     println!(
-        "cargo:rustc-env=MISTRALRS_GIT_REVISION=24dbf5c256f232176ee5949485ba264049407fbe+ragtag.1"
+        "cargo:rustc-env=MISTRALRS_GIT_REVISION=4400935451da5e2dc7379a3f92fbbada66557f6c+ragtag.1"
     );
 }

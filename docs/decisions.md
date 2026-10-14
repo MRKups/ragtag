@@ -65,13 +65,13 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Default processing, retrieval, and generation need no model server; external inference crosses the configured provider boundary. Credentials reside in the OS keychain with automatic fallback to SQLite when unavailable; external endpoints support standard HTTP for local servers (Ollama, LM Studio) and HTTPS for cloud providers.
 
-**Dependency source:** Pin `mistral.rs` v0.9.3 to Git revision `24dbf5c256f232176ee5949485ba264049407fbe` with Metal acceleration on Apple Silicon. At the 2026-09-21 review, crates.io's latest SDK was 0.8.1. Use the source revision rather than a floating branch or tag, and retain the application's resolved `Cargo.lock`, including Candle 0.11.0 at Git revision `35d7ae7ca5c93e17c77359c3617376b8a72e96a4`.
+**Dependency source:** Pin `mistral.rs` v0.9.4 to Git revision `4400935451da5e2dc7379a3f92fbbada66557f6c` with Metal acceleration on Apple Silicon. Crates.io's latest SDK remains 0.8.1 at the 2026-10-14 update. Retain the resolved `Cargo.lock`, including upstream's Candle 0.11.0 revision `66a8cf184a5a519671454066b1b9efd446ec9f5c`.
 
 **Maintained deviation:** Override only `mistralrs-core` with the licensed source in `src-tauri/vendor/mistralrs-core`. Patch `ragtag.1` makes narrowed batched logits selections contiguous before quantized projection; it preserves concurrent inference rather than adding a request semaphore. The vendored manifest resolves upstream workspace inheritance and keeps sibling packages on the same Git revision. Its build script reports the upstream revision plus `ragtag.1`, not the enclosing application's Git HEAD. All other upstream source remains unchanged.
 
-**Maintenance boundary:** Keep the imported package and license intact, with the manifest normalization, revision reporting, and selection repair as explicit deviations. Preserve the two original fixtures in the adjacent `vendor/toml-selectors/`; the upstream crate needs them even when compiling a filtered test target. Its focused regression is part of the native test tasks; the rest of the upstream suite is not implicitly part of Ragtag's workspace. Retire the override only after an upstream replacement provides the repair and equivalent regression and real-model qualification pass. [README](../README.md#build-profile-and-upstream-deviations) explains the build inputs and platform requirements without treating compilation as runtime acceptance.
+**Maintenance boundary:** Keep the imported package and license intact, with the manifest normalization, revision reporting, and selection repair as explicit deviations. Preserve the two original fixtures in the adjacent `vendor/toml-selectors/`; the upstream crate needs them even when compiling a filtered test target. Its focused regression is part of the native test tasks; the rest of the upstream suite is not implicitly part of Ragtag's workspace. Retire the override only after an upstream replacement provides the repair and equivalent regression and real-model qualification pass.
 
-**Qualification:** The patched engine was qualified for batched logits selection contiguousness before quantized projection, supporting concurrent queries. [B189](tracker.md) retains the Apple Silicon Metal and packaged-app acceptance gate.
+**Qualification:** With v0.9.4, the batched quantized-projection regression and real Metal streaming, concurrent queries, receiver-drop recovery, and cached offline initialization pass. [B189](tracker.md) retains packaged-app acceptance.
 
 ## D008 — Format-specific extraction with page preservation
 
@@ -80,6 +80,10 @@ This document records durable choices and tradeoffs. Linked references own curre
 **Decision:** Extract PDFs with the PDF pipeline, DOCX locally, and other supported sources as UTF-8 text.
 
 **Consequences:** PDF chunks retain physical pages. DOCX and UTF-8 sources use one logical source page. Extraction relies on streaming parser limits without artificial decompression budgets.
+
+**Security maintenance:** Pin the direct DOCX parser to `quick-xml` 0.42.0, retaining the fixes for namespace-allocation and duplicate-attribute denial-of-service advisories RUSTSEC-2026-0195 and RUSTSEC-2026-0194. Retain extraction and preview regression coverage when updating the parser.
+
+**Parser compatibility:** Normalize DOCX XML to UTF-8 before reading quick-xml 0.42 string events. Full extraction rejects invalid UTF-8; bounded previews preserve lossy recovery. Retain the parser's 128 in-scope namespace-binding limit and verify its boundary in tests.
 
 ## D009 — Tokenizer-boundary chunking
 
@@ -105,6 +109,10 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** The application exposes staged availability. App-managed model files can be removed without deleting a user-selected Hugging Face cache. Repositories and GGUF filenames are user-configurable with lightweight defaults.
 
+**Integrity boundary:** Before loading a downloaded or cached GGUF, validate its header and SHA-256 against the Hub's content-addressed cache identity in a cancellable blocking worker. This checks corruption without an online restart probe; it does not authenticate a publisher, pin mutable repository branches, or verify FastEmbed/tokenizer artifacts. Model weights remain runtime downloads, not bundled release components.
+
+**Cache reuse:** Resolve the retained GGUF from the local Hub cache before attempting a download. Verified cache hits do not perform a metadata request, so offline restart does not wait for a network timeout. Existing snapshots remain in use until the user changes model settings or removes the corresponding app-managed cache.
+
 ## D012 — Native macOS window chrome
 
 **Context:** Ragtag requires a compact macOS title area while retaining native window controls.
@@ -120,6 +128,8 @@ This document records durable choices and tradeoffs. Linked references own curre
 **Decision:** Target Apple Silicon (`aarch64-apple-darwin`) exclusively with Metal acceleration. Intel macOS development and external ONNX Runtime workarounds have been retired.
 
 **Consequences:** Build tasks, dependencies, and environments target Apple Silicon and Metal directly. Intel-specific task runners and external ONNX Runtime setup are removed.
+
+**Minimum system version:** Require macOS 15. The pinned `mistralrs-metal-compile` runtime compiler calls `MTLCompileOptions.setMathMode`, which Apple's Metal headers mark as available from macOS 15; it also selects Metal language 3.1 (macOS 14). The current statically linked ONNX Runtime objects target macOS 13.4. Declaring macOS 11 would therefore misrepresent the native stack. This deployment floor is not a substitute for packaged-app acceptance testing on the oldest supported OS.
 
 ## D014 — Cross-platform scaffolding
 
@@ -166,4 +176,6 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Saturated document queues or active generation loops cannot delay cancellation requests or status queries. Interactive responsiveness is preserved across all system states.
 
+## Dependency compatibility
 
+The 2026-10-14 dependency update uses Rust 1.99.0, FastEmbed 7.1.1, and tokenizers 0.23.2. Retain LanceDB 0.37.1: releases 0.38 through 0.40 reference the remote-only `Error::Http` variant in their embedded job decoder and fail to compile without the `remote` feature. Do not enable unused remote dependencies to bypass that upstream defect. Keep Arrow 58.4.0 for LanceDB's record-batch compatibility, SQLx 0.9.0, and FastEmbed's required ONNX Runtime 2.0.0-rc.13 pins. `Cargo.lock` records compatible transitive updates.

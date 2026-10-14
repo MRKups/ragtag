@@ -111,7 +111,9 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                 guard.clone()
             };
             let Some(embedder) = embedder else {
-                warn!("embedder not ready — deferring document {doc_id} (will resume on next restart)");
+                warn!(
+                    "embedder not ready — deferring document {doc_id} (will resume on next restart)"
+                );
                 continue;
             };
             let _document_operation = document_operations_worker.read().await;
@@ -246,10 +248,13 @@ pub fn start_document_worker(config: DocumentWorkerConfig) {
                         document_id: doc_id.clone(),
                         message: message.clone(),
                     });
-                    let _ = app_handle.emit("document_failed", serde_json::json!({
-                        "document_id": &doc_id,
-                        "error": message,
-                    }));
+                    let _ = app_handle.emit(
+                        "document_failed",
+                        serde_json::json!({
+                            "document_id": &doc_id,
+                            "error": message,
+                        }),
+                    );
                 }
             }
         }

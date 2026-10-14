@@ -10,17 +10,16 @@ pub async fn get_storage_info(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
-    let app_local_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
+        AppError::storage(
+            "Resolve storage path",
+            format!("Failed to resolve app local data directory: {e}"),
+            "Verify application local storage permissions.",
+        )
+    })?;
 
     let (db_size, lancedb_size, docs_size, models_size) =
         tokio::task::spawn_blocking(move || storage_sizes(&app_local_data))
@@ -45,14 +44,20 @@ pub async fn get_storage_info(
 pub async fn compact_vector_store(
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     state.vector_db.compact().await?;
     Ok(serde_json::json!({"status": "compacted"}))
 }
 
 #[tauri::command]
-pub async fn vacuum_database(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+pub async fn vacuum_database(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, AppError> {
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     persistence::vacuum(&state.db_pool).await?;
     Ok(serde_json::json!({"status": "vacuumed"}))
 }
@@ -63,18 +68,17 @@ pub async fn reset_all_data(
     delete_models: bool,
 ) -> Result<serde_json::Value, AppError> {
     let state = app.state::<AppState>();
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let _doc_op = state.document_operations.write().await;
-    let app_local_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
+        AppError::storage(
+            "Resolve storage path",
+            format!("Failed to resolve app local data directory: {e}"),
+            "Verify application local storage permissions.",
+        )
+    })?;
 
     let sentinel = app_local_data.join(".reset_pending");
     tokio::task::spawn_blocking({
@@ -116,20 +120,31 @@ pub async fn reset_all_data(
             "Restart the application and retry data reset.",
         )
     })??;
-    let payload = serde_json::json!({"delete_models": delete_models});
-    tokio::fs::write(&sentinel, payload.to_string()).await?;
-
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
-            let _ = entry.delete_credential();
-        }
-    })
-    .await;
+    // Do not schedule a destructive reset until credential cleanup succeeds.
+    let settings = persistence::AppSettingsRepository::new(state.db_pool.clone());
+    let _credential_mutation = crate::credentials::MUTATIONS.lock().await;
+    prepare_reset_marker(
+        &sentinel,
+        delete_models,
+        crate::credentials::remove_api_key(&settings),
+    )
+    .await?;
 
     info!("reset requested — restarting application");
     app.request_restart();
 
     Ok(serde_json::json!({"restarting": true}))
+}
+
+async fn prepare_reset_marker(
+    sentinel: &std::path::Path,
+    delete_models: bool,
+    credential_cleanup: impl std::future::Future<Output = Result<bool, AppError>>,
+) -> Result<(), AppError> {
+    credential_cleanup.await?;
+    let payload = serde_json::json!({"delete_models": delete_models});
+    tokio::fs::write(sentinel, payload.to_string()).await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -157,7 +172,9 @@ pub async fn open_external_url(url: String) -> Result<(), AppError> {
     }
     tokio::task::spawn_blocking(move || {
         #[cfg(target_os = "macos")]
-        let res = std::process::Command::new("open").arg(parsed.as_str()).spawn();
+        let res = std::process::Command::new("open")
+            .arg(parsed.as_str())
+            .spawn();
         #[cfg(target_os = "windows")]
         let res = std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", parsed.as_str()])
@@ -192,20 +209,65 @@ mod tests {
     use domain::ErrorCode;
 
     #[tokio::test]
+    async fn failed_credential_cleanup_does_not_schedule_a_reset() {
+        let dir = std::env::temp_dir().join(format!("ragtag-reset-order-{}", uuid::Uuid::now_v7()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let sentinel = dir.join(".reset_pending");
+        let cleanup = async {
+            Err(AppError::storage(
+                "Delete API key",
+                "Test keychain unavailable",
+                "Retry credential cleanup.",
+            ))
+        };
+        let error = prepare_reset_marker(&sentinel, true, cleanup)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Storage);
+        assert!(!tokio::fs::try_exists(&sentinel).await.unwrap());
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_cleanup_writes_the_reset_marker_with_model_choice() {
+        let dir =
+            std::env::temp_dir().join(format!("ragtag-reset-success-{}", uuid::Uuid::now_v7()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let sentinel = dir.join(".reset_pending");
+        prepare_reset_marker(&sentinel, false, async { Ok(false) })
+            .await
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&sentinel).await.unwrap()).unwrap();
+        assert_eq!(payload, serde_json::json!({"delete_models":false}));
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_and_unsafe_external_urls() {
-        let err = open_external_url("not a url".to_string()).await.unwrap_err();
+        let err = open_external_url("not a url".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
-        let err = open_external_url("javascript:alert(1)".to_string()).await.unwrap_err();
+        let err = open_external_url("javascript:alert(1)".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
-        let err = open_external_url("file:///etc/passwd".to_string()).await.unwrap_err();
+        let err = open_external_url("file:///etc/passwd".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
-        let err = open_external_url("data:text/html,bad".to_string()).await.unwrap_err();
+        let err = open_external_url("data:text/html,bad".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
 
-        let err = open_external_url("http://user:pass@example.com".to_string()).await.unwrap_err();
+        let err = open_external_url("http://user:pass@example.com".to_string())
+            .await
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 }

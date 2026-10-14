@@ -87,15 +87,13 @@ pub async fn process_document(
         )
     })??;
     let (tokenizer, embedding_token_limit) = {
-        let model = embedder
-            .lock()
-            .map_err(|e| {
-                AppError::internal(
-                    "Lock embedder",
-                    format!("Embedder lock poisoned: {e}"),
-                    "Restart the application to reset model state.",
-                )
-            })?;
+        let model = embedder.lock().map_err(|e| {
+            AppError::internal(
+                "Lock embedder",
+                format!("Embedder lock poisoned: {e}"),
+                "Restart the application to reset model state.",
+            )
+        })?;
         let embedding_token_limit = model
             .tokenizer
             .get_truncation()
@@ -198,13 +196,15 @@ pub async fn process_document(
                             "Restart the application to reset model state.",
                         )
                     })?;
-                    model.embed(texts, Some(EMBEDDING_BATCH_SIZE)).map_err(|e| {
-                        AppError::internal(
-                            "Generate chunk embeddings",
-                            format!("Embedding failed: {e}"),
-                            "Verify embedding model files or restart the application.",
-                        )
-                    })?
+                    model
+                        .embed(texts, Some(EMBEDDING_BATCH_SIZE))
+                        .map_err(|e| {
+                            AppError::internal(
+                                "Generate chunk embeddings",
+                                format!("Embedding failed: {e}"),
+                                "Verify embedding model files or restart the application.",
+                            )
+                        })?
                 };
                 validate_embedding_shapes(chunk_batch, &batch_embeddings)?;
                 embeddings.extend(batch_embeddings);
@@ -303,7 +303,9 @@ fn bounded_embedding_input_bytes(
 fn embedding_input_limit_error() -> AppError {
     AppError::invalid_input(
         "Validate embedding input size",
-        format!("Document embedding input exceeds the {MAX_EMBEDDING_INPUT_BYTES}-byte indexing limit"),
+        format!(
+            "Document embedding input exceeds the {MAX_EMBEDDING_INPUT_BYTES}-byte indexing limit"
+        ),
         "Split the document into smaller files before ingesting.",
     )
 }
@@ -451,16 +453,13 @@ pub fn embed_query(
             "Verify embedding model state or restart the application.",
         )
     })?;
-    let embedding = embeddings
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            AppError::internal(
-                "Embed query",
-                "No embedding returned",
-                "Verify embedding model output.",
-            )
-        })?;
+    let embedding = embeddings.into_iter().next().ok_or_else(|| {
+        AppError::internal(
+            "Embed query",
+            "No embedding returned",
+            "Verify embedding model output.",
+        )
+    })?;
     if embedding.len() != EMBEDDING_DIMENSION {
         return Err(AppError::internal(
             "Embed query",
@@ -559,7 +558,9 @@ mod tests {
         assert!(prompt.contains("[Source 1: manual.pdf, Page 3]\nFirst excerpt\n\n"));
         assert!(prompt.contains("[Source 2: spec.docx, Page 1]\nSecond excerpt\n\n"));
         assert!(prompt.contains("User question: How does it work?"));
-        assert!(prompt.contains("Instructions: Answer the question using ONLY the provided excerpts."));
+        assert!(
+            prompt.contains("Instructions: Answer the question using ONLY the provided excerpts.")
+        );
     }
 
     #[test]

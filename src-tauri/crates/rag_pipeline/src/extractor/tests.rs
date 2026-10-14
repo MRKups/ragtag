@@ -23,6 +23,144 @@ use std::{
 };
 use zip::{ZipWriter, write::SimpleFileOptions};
 
+fn synthetic_pdf(content: &[u8], compressed: bool) -> Vec<u8> {
+    let filter = if compressed {
+        "/Filter /FlateDecode "
+    } else {
+        ""
+    };
+    let mut stream = format!("<< {filter}/Length {} >>\nstream\n", content.len()).into_bytes();
+    stream.extend_from_slice(content);
+    stream.extend_from_slice(b"\nendstream");
+    let objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+        stream,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+    ];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    pdf
+}
+
+fn zlib_compressed(content: &[u8]) -> Vec<u8> {
+    let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file(
+            "stream",
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+    writer.write_all(content).unwrap();
+    let archive = writer.finish().unwrap().into_inner();
+    let mut zip = zip::ZipArchive::new(Cursor::new(&archive)).unwrap();
+    let file = zip.by_name("stream").unwrap();
+    let start =
+        usize::try_from(file.data_start().expect("fixture has a local ZIP header")).unwrap();
+    let length = usize::try_from(file.compressed_size()).unwrap();
+    let mut zlib = vec![0x78, 0x9C];
+    zlib.extend_from_slice(&archive[start..start + length]);
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in content {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    zlib.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    zlib
+}
+
+#[test]
+fn extracts_a_real_synthetic_pdf_and_rejects_truncated_input() {
+    let path = std::env::temp_dir().join(format!("ragtag-parser-{}.pdf", std::process::id()));
+    let pdf = synthetic_pdf(
+        b"BT /F1 12 Tf 72 720 Td (Synthetic technical evidence.) Tj ET",
+        false,
+    );
+    std::fs::write(&path, &pdf).unwrap();
+    let pages = extract_pages(&path, "pdf", |_, _| {}).unwrap();
+    assert_eq!(pages.pages[0].0, 1);
+    assert!(pages.pages[0].1.contains("Synthetic technical evidence."));
+    std::fs::write(&path, b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog").unwrap();
+    let error = extract_pages(&path, "pdf", |_, _| {})
+        .err()
+        .expect("truncated PDF must fail");
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn highly_compressed_pdf_text_respects_the_existing_output_limit() {
+    let path = std::env::temp_dir().join(format!(
+        "ragtag-compressed-parser-{}.pdf",
+        std::process::id()
+    ));
+    let content = format!(
+        "BT /F1 12 Tf 72 720 Td ({}) Tj ET",
+        "x".repeat(super::pdf::PDF_MAX_PAGE_TEXT_BYTES + 1024)
+    );
+    let compressed = zlib_compressed(content.as_bytes());
+    assert!(compressed.len() < content.len() / 100);
+    std::fs::write(&path, synthetic_pdf(&compressed, true)).unwrap();
+    let error = extract_pages(&path, "pdf", |_, _| {})
+        .err()
+        .expect("oversized extracted PDF text must fail");
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
+    assert!(error.detail.contains("extracted text"));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn rejects_namespace_floods_and_preserves_normal_docx_body_content() {
+    let mut xml = String::from(
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"",
+    );
+    // quick-xml 0.42 limits all in-scope bindings to 128, including `w`.
+    for index in 0..127 {
+        xml.push_str(&format!(" xmlns:n{index}=\"urn:synthetic:{index}\""));
+    }
+    xml.push_str(
+        "><w:body><w:p><w:r><w:t>bounded namespace fixture</w:t></w:r></w:p></w:body></w:document>",
+    );
+    assert!(xml.len() < DOCX_XML_MAX_BYTES);
+    assert_eq!(
+        docx_body_text(xml.as_bytes(), false).unwrap(),
+        "bounded namespace fixture\n"
+    );
+    let over_limit = xml.replacen("<w:document ", "<w:document xmlns:extra=\"urn:extra\" ", 1);
+    let error = docx_body_text(over_limit.as_bytes(), false).unwrap_err();
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
+    assert!(error.detail.contains("namespace bindings"));
+    let flood = xml.replacen(
+        "<w:document ",
+        &format!(
+            "<w:document {} ",
+            (128..8192)
+                .map(|index| format!("xmlns:n{index}=\"urn:synthetic:{index}\" "))
+                .collect::<String>()
+        ),
+        1,
+    );
+    assert!(flood.len() < DOCX_XML_MAX_BYTES);
+    let error = docx_body_text(flood.as_bytes(), false).unwrap_err();
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
+    assert!(error.detail.contains("namespace bindings"));
+}
+
 #[test]
 fn preserves_physical_page_numbers_when_pdf_pages_are_blank() {
     let pages = pages_from_page_texts(
@@ -118,6 +256,25 @@ fn preserves_cdata_inside_docx_text_elements() {
 }
 
 #[test]
+fn preserves_unicode_and_numeric_references_in_docx_text_and_cdata() {
+    let xml = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Łódź &#x20AC; &#128512;<![CDATA[ café & <text>]]></w:t></w:r></w:p></w:body></w:document>";
+    assert_eq!(
+        docx_body_text(xml.as_bytes(), false).unwrap(),
+        "Łódź € 😀 café & <text>\n"
+    );
+}
+
+#[test]
+fn rejects_invalid_utf8_docx_cdata_but_keeps_a_bounded_preview() {
+    let mut xml = br#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t><![CDATA[valid "#.to_vec();
+    xml.push(0xFF);
+    xml.extend_from_slice(b"]]></w:t></w:r></w:p></w:body></w:document>");
+    let error = docx_body_text(&xml, false).unwrap_err();
+    assert_eq!(error.code, domain::ErrorCode::InvalidInput);
+    assert_eq!(docx_body_text(&xml, true).unwrap(), "valid \u{FFFD}\n");
+}
+
+#[test]
 fn decodes_utf16_docx_xml_before_parsing() {
     let xml = r#"<?xml version="1.0" encoding="UTF-16"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>UTF-16 text</w:t></w:r></w:p></w:body></w:document>"#;
     let mut utf16 = vec![0xFF, 0xFE];
@@ -147,10 +304,7 @@ fn preserves_accumulated_text_when_docx_preview_ends_with_truncated_multibyte_ut
             .as_slice(),
     );
     truncated.extend_from_slice(&[0xE2, 0x82]);
-    assert_eq!(
-        docx_body_text(&truncated, true).unwrap(),
-        "Price: \u{FFFD}"
-    );
+    assert_eq!(docx_body_text(&truncated, true).unwrap(), "Price: \u{FFFD}");
     assert!(docx_body_text(&truncated, false).is_err());
 }
 
@@ -224,9 +378,7 @@ fn previews_a_truncated_docx_with_accumulated_text() {
         b'x',
         TEXT_PREVIEW_MAX_BYTES - xml.len() + 1,
     ));
-    xml.extend(
-        br#"--><w:p><w:r><w:t>Unreached paragraph</w:t></w:r></w:p></w:body></w:document>"#,
-    );
+    xml.extend(br#"--><w:p><w:r><w:t>Unreached paragraph</w:t></w:r></w:p></w:body></w:document>"#);
 
     {
         let file = File::create(&path).unwrap();
@@ -389,9 +541,7 @@ fn inline_text(inlines: &[MarkdownInline]) -> String {
     inlines
         .iter()
         .map(|inline| match inline {
-            MarkdownInline::Text { content } | MarkdownInline::Code { content } => {
-                content.clone()
-            }
+            MarkdownInline::Text { content } | MarkdownInline::Code { content } => content.clone(),
             MarkdownInline::Emphasis { content }
             | MarkdownInline::Strong { content }
             | MarkdownInline::Strikethrough { content }
@@ -670,5 +820,3 @@ fn safe_link_href_accepts_case_insensitive_schemes_and_rejects_unsafe() {
     assert_eq!(safe_link_href("data:text/html,<h1>bad</h1>"), None);
     assert_eq!(safe_link_href("file:///etc/passwd"), None);
 }
-
-

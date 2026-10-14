@@ -1,6 +1,7 @@
 {
   "name": "mrk-ragtag",
-  "version": "1.0.0",
+  "version": "0.1.0",
+  "private": true,
   "description": "A localized, zero-configuration desktop application for querying technical manuals and other documents. It acts as an intelligent, personalized brain for technical manuals, allowing users to ask questions in natural language and receive synthesized answers with precise page citations.",
   "engines": {
     "node": ">=24 <25"
@@ -12,9 +13,12 @@
     "dev": "npm run dev --prefix frontend",
     "build": "npm run build --prefix frontend",
     "check": "npm run check --prefix frontend",
+    "check:release": "node scripts/check-release.mjs",
+    "licenses:generate": "node scripts/license-inventory.mjs",
+    "test:release": "node --test scripts/*.test.mjs",
     "test:errors": "npm run test:errors --prefix frontend",
     "test:state": "npm run test:state --prefix frontend",
-    "test": "npm run test:errors --prefix frontend && npm run test:state --prefix frontend && task test-native"
+    "test": "npm run test:release && npm run test:errors --prefix frontend && npm run test:state --prefix frontend && task test-native"
   },
   "repository": {
     "type": "git",

@@ -83,7 +83,9 @@ pub fn ensure_pdf_page_count_within_limit(page_count: usize) -> Result<(), AppEr
     if page_count > PDF_MAX_PAGES {
         return Err(AppError::invalid_input(
             "Extract PDF document",
-            format!("PDF has {page_count} pages, exceeding the {PDF_MAX_PAGES}-page extraction limit"),
+            format!(
+                "PDF has {page_count} pages, exceeding the {PDF_MAX_PAGES}-page extraction limit"
+            ),
             "Split the document into sections containing at most 10,000 pages.",
         ));
     }

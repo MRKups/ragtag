@@ -29,7 +29,10 @@ pub fn managed_file_size(path: &std::path::Path) -> Result<u64, AppError> {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
             Err(AppError::storage(
                 "Inspect managed file",
-                format!("Managed storage path is not a regular file: {}", path.display()),
+                format!(
+                    "Managed storage path is not a regular file: {}",
+                    path.display()
+                ),
                 "Verify file integrity in the storage directory.",
             ))
         }
@@ -37,7 +40,10 @@ pub fn managed_file_size(path: &std::path::Path) -> Result<u64, AppError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(error) => Err(AppError::storage(
             "Inspect managed file",
-            format!("Could not inspect managed storage file {}: {error}", path.display()),
+            format!(
+                "Could not inspect managed storage file {}: {error}",
+                path.display()
+            ),
             "Verify file permissions for the storage file.",
         )),
     }
@@ -50,7 +56,10 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
         Err(error) => {
             return Err(AppError::storage(
                 "Inspect directory size",
-                format!("Could not inspect managed storage directory {}: {error}", path.display()),
+                format!(
+                    "Could not inspect managed storage directory {}: {error}",
+                    path.display()
+                ),
                 "Check folder permissions for the directory.",
             ));
         }
@@ -67,7 +76,10 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
     let entries = std::fs::read_dir(path).map_err(|error| {
         AppError::storage(
             "Read directory entries",
-            format!("Could not read managed storage directory {}: {error}", path.display()),
+            format!(
+                "Could not read managed storage directory {}: {error}",
+                path.display()
+            ),
             "Check disk permissions for the directory.",
         )
     })?;
@@ -82,7 +94,10 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
         let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
             AppError::storage(
                 "Inspect entry metadata",
-                format!("Could not inspect managed storage entry {}: {error}", entry.path().display()),
+                format!(
+                    "Could not inspect managed storage entry {}: {error}",
+                    entry.path().display()
+                ),
                 "Check disk permissions for the file.",
             )
         })?;
@@ -96,7 +111,10 @@ pub fn dir_size(path: &std::path::Path) -> Result<u64, AppError> {
         } else {
             return Err(AppError::storage(
                 "Calculate storage size",
-                format!("Managed storage entry is not a regular file or directory: {}", entry.path().display()),
+                format!(
+                    "Managed storage entry is not a regular file or directory: {}",
+                    entry.path().display()
+                ),
                 "Ensure only regular files and folders reside in application storage.",
             ));
         };
@@ -259,8 +277,8 @@ pub fn complete_pending_reset(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::documents::{document_storage_path, managed_storage_filename};
+    use super::*;
 
     #[test]
     fn removes_non_fastembed_model_entries() {

@@ -39,15 +39,13 @@ pub fn chunk_pages_with_progress(
     on_page_chunked: impl Fn(i32, usize, usize),
 ) -> Result<Vec<Chunk>, AppError> {
     let mut tokenizer = tokenizer;
-    tokenizer
-        .with_truncation(None)
-        .map_err(|e| {
-            AppError::internal(
-                "Configure tokenizer",
-                format!("Failed to disable tokenizer truncation: {e}"),
-                "Restart the application or verify the embedding model installation.",
-            )
-        })?;
+    tokenizer.with_truncation(None).map_err(|e| {
+        AppError::internal(
+            "Configure tokenizer",
+            format!("Failed to disable tokenizer truncation: {e}"),
+            "Restart the application or verify the embedding model installation.",
+        )
+    })?;
     let max_tokens = max_tokens.max(1);
     let mut chunks = Vec::new();
 
@@ -80,15 +78,13 @@ fn append_page_chunks(
     overlap_tokens: usize,
     tokenizer: &Tokenizer,
 ) -> Result<(), AppError> {
-    let source_tokens = tokenizer
-        .encode(text, false)
-        .map_err(|e| {
-            AppError::invalid_input(
-                "Tokenize document text",
-                format!("Failed to tokenize document text: {e}"),
-                "Ensure document content contains valid text characters.",
-            )
-        })?;
+    let source_tokens = tokenizer.encode(text, false).map_err(|e| {
+        AppError::invalid_input(
+            "Tokenize document text",
+            format!("Failed to tokenize document text: {e}"),
+            "Ensure document content contains valid text characters.",
+        )
+    })?;
     let offsets = source_tokens
         .get_offsets()
         .iter()
@@ -168,7 +164,9 @@ fn append_page_chunks(
         if !emitted {
             return Err(AppError::invalid_input(
                 "Chunk document page",
-                format!("Embedding token limit ({max_tokens}) is too small for text on page {page}"),
+                format!(
+                    "Embedding token limit ({max_tokens}) is too small for text on page {page}"
+                ),
                 "Increase max_chunk_tokens in settings or inspect the page for unusually long indivisible tokens.",
             ));
         }

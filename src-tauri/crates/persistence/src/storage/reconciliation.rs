@@ -33,15 +33,13 @@ pub async fn finish_document_deletion(
     if let Some(source_path) = source_candidate {
         match tokio::fs::symlink_metadata(&source_path).await {
             Ok(metadata) if metadata.file_type().is_file() => {
-                tokio::fs::remove_file(source_path)
-                    .await
-                    .map_err(|error| {
-                        AppError::storage(
-                            "Delete document file",
-                            error.to_string(),
-                            "Verify filesystem permissions in the documents folder.",
-                        )
-                    })?;
+                tokio::fs::remove_file(source_path).await.map_err(|error| {
+                    AppError::storage(
+                        "Delete document file",
+                        error.to_string(),
+                        "Verify filesystem permissions in the documents folder.",
+                    )
+                })?;
             }
             Ok(_) => {
                 return Err(AppError::storage(
@@ -127,15 +125,13 @@ pub async fn reconcile_orphan_document_sources(
             "Restart Ragtag to reconcile document files.",
         )
     })??;
-    let mut entries = tokio::fs::read_dir(&docs_dir)
-        .await
-        .map_err(|error| {
-            AppError::storage(
-                "Read documents directory",
-                error.to_string(),
-                "Verify folder permissions in application local data.",
-            )
-        })?;
+    let mut entries = tokio::fs::read_dir(&docs_dir).await.map_err(|error| {
+        AppError::storage(
+            "Read documents directory",
+            error.to_string(),
+            "Verify folder permissions in application local data.",
+        )
+    })?;
     let mut removed = 0;
 
     while let Some(entry) = entries.next_entry().await? {

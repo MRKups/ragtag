@@ -466,8 +466,11 @@ mod tests {
     #[test]
     fn accepts_utf8_pdf_filename_in_typed_upload() {
         let pdf = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF";
-        let extension = validate_upload("Dokumentacja techniczna \u{2014} \u{017c}\u{00f3}\u{0142}w.pdf", pdf)
-            .expect("utf-8 filename should be accepted");
+        let extension = validate_upload(
+            "Dokumentacja techniczna \u{2014} \u{017c}\u{00f3}\u{0142}w.pdf",
+            pdf,
+        )
+        .expect("utf-8 filename should be accepted");
         assert_eq!(extension, "pdf");
     }
 
@@ -488,13 +491,23 @@ mod tests {
     #[test]
     fn recognizes_only_managed_document_source_filenames() {
         let valid_id = uuid::Uuid::now_v7().to_string();
-        assert!(is_managed_document_source_filename(&format!("{valid_id}.pdf")));
-        assert!(is_managed_document_source_filename(&format!("{valid_id}.docx")));
-        assert!(is_managed_document_source_filename(&format!("{valid_id}.txt")));
+        assert!(is_managed_document_source_filename(&format!(
+            "{valid_id}.pdf"
+        )));
+        assert!(is_managed_document_source_filename(&format!(
+            "{valid_id}.docx"
+        )));
+        assert!(is_managed_document_source_filename(&format!(
+            "{valid_id}.txt"
+        )));
         assert!(!is_managed_document_source_filename("not-a-uuid.pdf"));
         assert!(!is_managed_document_source_filename(&valid_id));
-        assert!(!is_managed_document_source_filename(&format!("{valid_id}.")));
-        assert!(!is_managed_document_source_filename(&format!("{valid_id}.toolongextension123")));
+        assert!(!is_managed_document_source_filename(&format!(
+            "{valid_id}."
+        )));
+        assert!(!is_managed_document_source_filename(&format!(
+            "{valid_id}.toolongextension123"
+        )));
     }
 
     #[test]
@@ -520,10 +533,16 @@ mod tests {
     #[test]
     fn classifies_utf8_text_and_docx_uploads() {
         let text = "Hello world\nThis is plain text documentation.".as_bytes();
-        assert_eq!(validate_upload("notes.txt", text).expect("text upload"), "text");
+        assert_eq!(
+            validate_upload("notes.txt", text).expect("text upload"),
+            "text"
+        );
 
         let docx_sig = b"PK\x03\x04\x14\x00\x06\x00";
-        assert_eq!(validate_upload("specs.docx", docx_sig).expect("docx upload"), "docx");
+        assert_eq!(
+            validate_upload("specs.docx", docx_sig).expect("docx upload"),
+            "docx"
+        );
 
         let bad_docx = b"NOT_A_ZIP";
         assert!(validate_upload("specs.docx", bad_docx).is_err());

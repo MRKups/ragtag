@@ -1,10 +1,10 @@
-# Vendored from mistral.rs v0.9.3; workspace inheritance resolved without changing dependency requirements.
+# Vendored from mistral.rs v0.9.4; workspace inheritance resolved without changing dependency requirements.
 [package]
 name = "mistralrs-core"
 publish = false
 readme = "README.md"
 authors = ["Eric Buehler"]
-version = "0.9.3"
+version = "0.9.4"
 edition = "2021"
 rust-version = "1.94"
 description = "Fast, flexible LLM inference."
@@ -16,14 +16,14 @@ homepage = "https://github.com/EricLBuehler/mistral.rs"
 
 [dependencies]
 anyhow = { version = "1.0.100" }
-candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "35d7ae7ca5c93e17c77359c3617376b8a72e96a4" }
+candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "66a8cf184a5a519671454066b1b9efd446ec9f5c" }
 metrics = { version = "0.24.6" }
-candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "35d7ae7ca5c93e17c77359c3617376b8a72e96a4" }
+candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "66a8cf184a5a519671454066b1b9efd446ec9f5c" }
 serde = { version = "1.0.228" }
 serde_json = { version = "1.0.149" }
 sha2 = { version = "0.10.9" }
 tempfile = { version = "3" }
-mistralrs-flash-attn = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe", optional = true }
+mistralrs-flash-attn = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", optional = true }
 dirs = { version = "6.0.0" }
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "tokio", "rustls-tls"] }
 thiserror = { version = "2.0.18" }
@@ -68,13 +68,13 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 derive-new = { version = "0.7.0" }
 itertools = { version = "0.14.0" }
 sysinfo = { version = "0.36.1" }
-mistralrs-vision = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
+mistralrs-vision = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
 csv = { version = "1.4.0" }
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
 base64 = { version = "0.22.1" }
 bytemuck_derive = { version = "1.10.2" }
-mistralrs-paged-attn = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe", optional = true }
-mistralrs-quant = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
+mistralrs-paged-attn = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", optional = true }
+mistralrs-quant = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
 uuid = { version = "1.19.0", features = ["v4"] }
 utoipa = { version = "5.4.0", optional = true }
 schemars = { version = "1.2.0" }
@@ -86,7 +86,7 @@ float8 = { version = "0.7.0" }
 llguidance = { version = "1.2.0", default-features = false, features = ["lark"] }
 toktrie_hf_tokenizers = { version = "1.2.0" }
 toktrie = { version = "1.4.0" }
-candle-flash-attn-v3 = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "35d7ae7ca5c93e17c77359c3617376b8a72e96a4", optional = true }
+candle-flash-attn-v3 = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "66a8cf184a5a519671454066b1b9efd446ec9f5c", optional = true }
 safetensors = { version = "0.8.0" }
 serde-big-array = { version = "0.5.1" }
 interprocess = { version = "2.2.3" }
@@ -107,18 +107,18 @@ rustfft = { version = "6.4.1" }
 hound = { version = "3.5.1" }
 apodize = { version = "1.0.0" }
 symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "flac", "vorbis", "wav", "isomp4", "ogg", "pcm"] }
-mistralrs-audio = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
+mistralrs-audio = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
 rust-mcp-schema = { version = "0.9.5", default-features = false, features = ["schema_utils", "latest"] }
-mistralrs-mcp = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe", features = ["utoipa"] }
-mistralrs-code-exec = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
-mistralrs-sandbox = { version = "0.9.3", git = "https://github.com/EricLBuehler/mistral.rs", rev = "24dbf5c256f232176ee5949485ba264049407fbe" }
+mistralrs-mcp = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", features = ["utoipa"] }
+mistralrs-code-exec = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs-sandbox = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
 statrs = { version = "0.18.0" }
 openai-harmony = "0.0.8"
 
 [target.'cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))'.dependencies]
 objc = { version = "0.2.7", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
-candle-metal-kernels = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "35d7ae7ca5c93e17c77359c3617376b8a72e96a4", optional = true }
+candle-metal-kernels = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "66a8cf184a5a519671454066b1b9efd446ec9f5c", optional = true }
 
 [features]
 pyo3_macros = ["pyo3", "mistralrs-mcp/pyo3_macros"]
@@ -155,7 +155,7 @@ code-execution = []
 cudaforge = { version = "=0.1.6", optional = true }
 
 [package.metadata.ragtag]
-upstream-version = "0.9.3"
-upstream-revision = "24dbf5c256f232176ee5949485ba264049407fbe"
+upstream-version = "0.9.4"
+upstream-revision = "4400935451da5e2dc7379a3f92fbbada66557f6c"
 patch-revision = "ragtag.1"
 patch-purpose = "Contiguous batched logits selection for quantized output projection."

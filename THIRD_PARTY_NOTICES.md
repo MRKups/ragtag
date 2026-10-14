@@ -2,7 +2,7 @@
 
 Ragtag is released under the **MIT License**. This application incorporates and depends upon several open-source libraries and frameworks. We gratefully acknowledge the creators and maintainers of these projects.
 
-A complete, machine-readable inventory of all 1,196 direct and transitive dependencies and their declared licenses is maintained in [`docs/third-party-license-inventory.json`](docs/third-party-license-inventory.json).
+Dependency licenses are listed in [`docs/third-party-license-inventory.json`](docs/third-party-license-inventory.json). Update it with `npm run licenses:generate` after dependency changes.
 
 ---
 
@@ -27,7 +27,7 @@ A complete, machine-readable inventory of all 1,196 direct and transitive depend
 ### 4. Local Embedding Generation
 - **Component**: [FastEmbed-rs](https://github.com/Anush008/fastembed-rs) & [ONNX Runtime](https://github.com/microsoft/onnxruntime)
 - **Copyright**: © 2023 Anush Shetty, © Microsoft Corporation
-- **License**: [MIT License](https://github.com/Anush008/fastembed-rs/blob/main/LICENSE) / [Apache-2.0 License](https://github.com/microsoft/onnxruntime/blob/main/LICENSE)
+- **License**: FastEmbed [Apache-2.0](https://github.com/Anush008/fastembed-rs/blob/main/LICENSE) / ONNX Runtime [MIT](https://github.com/microsoft/onnxruntime/blob/main/LICENSE)
 
 ### 5. Embedded Relational Database
 - **Component**: [SQLx](https://github.com/launchbadge/sqlx) & [SQLite](https://www.sqlite.org/)

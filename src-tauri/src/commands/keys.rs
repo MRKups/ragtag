@@ -1,4 +1,4 @@
-use domain::{ApiKeyStatus, ApiKeyStorage, AppError};
+use domain::{ApiKeyStatus, AppError};
 use persistence::AppSettingsRepository;
 
 use crate::model_lifecycle::{
@@ -12,7 +12,9 @@ pub async fn set_api_key(
     state: tauri::State<'_, AppState>,
     key: String,
 ) -> Result<ApiKeyStatus, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let key_to_save = key.trim().to_string();
     if key_to_save.is_empty() {
         return Err(AppError::invalid_input(
@@ -22,46 +24,27 @@ pub async fn set_api_key(
         ));
     }
 
+    let _credential_mutation = crate::credentials::MUTATIONS.lock().await;
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
 
-    let key_for_keychain = key_to_save.clone();
-    let keychain_result = tokio::task::spawn_blocking(move || {
-        let entry = keyring::v1::Entry::new("ragtag", "external_api_key")
-            .map_err(|e| format!("Entry error: {e}"))?;
-        entry.set_password(&key_for_keychain)
-            .map_err(|e| format!("Set password error: {e}"))?;
-        Ok::<(), String>(())
-    })
-    .await;
-
-    let storage = match keychain_result {
-        Ok(Ok(())) => {
-            let _ = repo.delete("external_api_key").await;
-            ApiKeyStorage::Keychain
-        }
-        _ => {
-            log::warn!("System keychain is unavailable; falling back to SQLite storage for API key");
-            repo.set("external_api_key", &key_to_save).await?;
-            ApiKeyStorage::Database
-        }
-    };
+    let status = crate::credentials::save_api_key(&repo, key_to_save).await?;
 
     if should_start {
         request_llm_initialization_from_persisted_state(&app, &state).await?;
     }
 
-    Ok(ApiKeyStatus {
-        has_key: true,
-        storage,
-    })
+    Ok(status)
 }
 
 #[tauri::command]
 pub async fn get_api_key_status(
     state: tauri::State<'_, AppState>,
 ) -> Result<ApiKeyStatus, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _credential_mutation = crate::credentials::MUTATIONS.lock().await;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let has_keychain_key = tokio::task::spawn_blocking(|| {
         let entry = match keyring::v1::Entry::new("ragtag", "external_api_key") {
@@ -76,26 +59,21 @@ pub async fn get_api_key_status(
     .await
     .unwrap_or(false);
 
-    if has_keychain_key {
-        return Ok(ApiKeyStatus {
-            has_key: true,
-            storage: ApiKeyStorage::Keychain,
-        });
-    }
-
-    if let Ok(Some(db_key)) = repo.get("external_api_key").await
-        && !db_key.trim().is_empty()
-    {
-        return Ok(ApiKeyStatus {
-            has_key: true,
-            storage: ApiKeyStorage::Database,
-        });
-    }
-
-    Ok(ApiKeyStatus {
-        has_key: false,
-        storage: ApiKeyStorage::None,
-    })
+    let database_has_key = repo
+        .get("external_api_key")
+        .await
+        .map_err(|_| {
+            AppError::storage(
+                "Inspect API key storage",
+                "The database credential state could not be checked",
+                "Restore database access and refresh the API key status.",
+            )
+        })?
+        .is_some_and(|key| !key.trim().is_empty());
+    Ok(crate::credentials::storage_status(
+        has_keychain_key,
+        database_has_key,
+    ))
 }
 
 #[tauri::command]
@@ -103,21 +81,17 @@ pub async fn delete_api_key(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _credential_mutation = crate::credentials::MUTATIONS.lock().await;
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
 
-    let _ = tokio::task::spawn_blocking(|| {
-        if let Ok(entry) = keyring::v1::Entry::new("ragtag", "external_api_key") {
-            let _ = entry.delete_credential();
-        }
-    })
-    .await;
-
-    let _ = repo.delete("external_api_key").await;
+    let removed = crate::credentials::remove_api_key(&repo).await?;
 
     if should_start {
         request_llm_initialization_from_persisted_state(&app, &state).await?;
     }
-    Ok(true)
+    Ok(removed)
 }

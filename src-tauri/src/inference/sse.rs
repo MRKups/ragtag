@@ -154,9 +154,13 @@ mod tests {
 
     #[test]
     fn joins_multiline_sse_data_and_accepts_metadata_chunks() {
-        let multiline = ": comment\ndata: {\"choices\":[{\"delta\":\ndata: {\"content\":\"joined\"}}]}\n\n";
+        let multiline =
+            ": comment\ndata: {\"choices\":[{\"delta\":\ndata: {\"content\":\"joined\"}}]}\n\n";
         let data = sse_event_data(multiline).unwrap().unwrap();
-        assert_eq!(external_sse_token(&data).unwrap().as_deref(), Some("joined"));
+        assert_eq!(
+            external_sse_token(&data).unwrap().as_deref(),
+            Some("joined")
+        );
 
         let metadata = "data: {\"choices\":[{\"delta\":{}}]}\n\n";
         let data = sse_event_data(metadata).unwrap().unwrap();

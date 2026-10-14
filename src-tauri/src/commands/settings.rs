@@ -3,8 +3,8 @@ use persistence::AppSettingsRepository;
 use std::collections::HashMap;
 
 use crate::inference::{
-    external_model_ids, fetch_external_models, normalize_external_base_url, read_external_api_key,
-    DEFAULT_EXTERNAL_MODEL, ExternalInferenceConfig,
+    DEFAULT_EXTERNAL_MODEL, ExternalInferenceConfig, external_model_ids, fetch_external_models,
+    normalize_external_base_url, read_external_api_key,
 };
 use crate::model_lifecycle::{
     desired_indexing_provenance, enqueue_requeued_documents,
@@ -35,7 +35,9 @@ pub const SETTINGS_KEYS: &[&str] = &[
 pub async fn get_settings(
     state: tauri::State<'_, AppState>,
 ) -> Result<HashMap<String, String>, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let mut all = repo.get_all().await?;
     all.retain(|k, _| SETTINGS_KEYS.contains(&k.as_str()));
@@ -48,7 +50,9 @@ pub async fn test_external_provider(
     base_url: String,
     api_key: Option<String>,
 ) -> Result<ExternalProviderConnection, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let repo = AppSettingsRepository::new(state.db_pool.clone());
     let candidate_api_key = api_key
         .map(|key| key.trim().to_string())
@@ -81,7 +85,9 @@ pub async fn set_external_provider_config(
     base_url: String,
     model: String,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let normalized_base_url = normalize_external_base_url(&base_url)?;
     validate_setting("external_model", &model)?;
     let should_start = invalidate_external_readiness_before_change(&app, &state).await?;
@@ -102,7 +108,9 @@ pub async fn set_setting(
     key: String,
     value: String,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     validate_setting(&key, &value)?;
     if matches!(
         key.as_str(),

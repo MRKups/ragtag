@@ -6,6 +6,6 @@ pub use error::{AppError, ErrorCode};
 pub use events::{Citation, DownloadStage, IngestionProgress, ModelDownloadProgress, TokenEvent};
 pub use models::{
     ApiKeyStatus, ApiKeyStorage, AppLifecycleState, CapacityState, Document, DocumentPreview,
-    DocumentStatus, ExternalProviderConnection, IndexProvenance, MarkdownBlock, MarkdownInline,
-    EXTRACTED_TEXT_MAX_BYTES, MAX_UPLOAD_BYTES,
+    DocumentStatus, EXTRACTED_TEXT_MAX_BYTES, ExternalProviderConnection, IndexProvenance,
+    MAX_UPLOAD_BYTES, MarkdownBlock, MarkdownInline,
 };

@@ -169,10 +169,7 @@ mod tests {
         assert_eq!(json["code"], "invalid_input");
         assert_eq!(json["operation"], "Upload document");
         assert_eq!(json["detail"], "File size exceeds 50 MB");
-        assert_eq!(
-            json["recovery"],
-            "Select a document under 50 MB to upload."
-        );
+        assert_eq!(json["recovery"], "Select a document under 50 MB to upload.");
         assert_eq!(
             json["message"],
             "Upload document: File size exceeds 50 MB. Select a document under 50 MB to upload."
@@ -190,7 +187,8 @@ mod tests {
 
     #[test]
     fn io_error_converts_to_storage_error() {
-        let io_error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let io_error =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
         let app_error = AppError::from(io_error);
 
         assert_eq!(app_error.code, ErrorCode::Storage);

@@ -24,7 +24,7 @@ tasks:
     desc: Install frontend npm dependencies
     dir: '{{.FRONTEND_DIR}}'
     cmds:
-      - npm install
+      - npm ci
 
   setup-rust:
     desc: Verify Rust toolchain is installed
@@ -43,8 +43,16 @@ tasks:
     desc: Run Rust workspace tests and the vendored inference regression
     dir: '{{.TAURI_DIR}}'
     cmds:
-      - cargo test --workspace
+      - cargo test --locked --workspace
       - cargo test --locked -p mistralrs-core --lib pipeline::tests::batched_logits_support_quantized_projection -- --exact
+
+  eval-retrieval:
+    desc: Benchmark synthetic dense/hybrid retrieval (downloads embedding assets at runtime)
+    dir: '{{.TAURI_DIR}}'
+    requires:
+      vars: [EVAL_DIR]
+    cmds:
+      - cargo run --locked -p rag_pipeline --example retrieval_eval -- '{{.EVAL_DIR}}'
 
 
   build:

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use crate::inference::{
-    external_inference_config, forward_inference_events,
-    probe_external_inference_readiness_cancellable, InferenceProvider,
+    InferenceProvider, external_inference_config, forward_inference_events,
+    probe_external_inference_readiness_cancellable,
 };
 use crate::state::AppState;
 use persistence::storage::document_storage_path;
@@ -80,15 +80,13 @@ pub fn register_active_query(
     }
 
     let (sender, receiver) = tokio::sync::watch::channel(false);
-    let mut queries = queries
-        .lock()
-        .map_err(|_| {
-            AppError::internal(
-                "Register active query",
-                "Query cancellation state is poisoned",
-                "Restart the application to reset query state.",
-            )
-        })?;
+    let mut queries = queries.lock().map_err(|_| {
+        AppError::internal(
+            "Register active query",
+            "Query cancellation state is poisoned",
+            "Restart the application to reset query state.",
+        )
+    })?;
     if queries.contains_key(request_id) {
         return Err(AppError::invalid_input(
             "Register active query",
@@ -108,7 +106,9 @@ pub async fn execute_query(
     request_id: String,
     channel: tauri::ipc::Channel<TokenEvent>,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     validate_query_request(&query, &request_id)?;
     let repo = DocumentRepository::new(state.db_pool.clone());
     let cancel_receiver = register_active_query(&state.active_queries, &request_id)?;
@@ -122,14 +122,13 @@ pub async fn execute_query(
         let guard = state.embedder.read().await;
         guard.clone()
     };
-    let embedder = embedder_opt
-        .ok_or_else(|| {
-            AppError::internal(
-                "Embed query",
-                "Embedding model not yet loaded. Please wait.",
-                "Wait for the local embedding model to finish loading before executing queries.",
-            )
-        })?;
+    let embedder = embedder_opt.ok_or_else(|| {
+        AppError::internal(
+            "Embed query",
+            "Embedding model not yet loaded. Please wait.",
+            "Wait for the local embedding model to finish loading before executing queries.",
+        )
+    })?;
     let vector_db = state.vector_db.clone();
     let local_llm = state.local_llm.clone();
 
@@ -157,16 +156,13 @@ pub async fn execute_query(
             })?
     }?;
 
-    let app_local_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
+        AppError::storage(
+            "Resolve storage path",
+            format!("Failed to resolve app local data directory: {e}"),
+            "Verify application local storage permissions.",
+        )
+    })?;
     let citations = {
         let _document_operation = state.document_operations.read().await;
         let indexed_document_ids = repo.get_indexed_ids().await?;
@@ -288,18 +284,17 @@ pub async fn cancel_query(
     state: tauri::State<'_, AppState>,
     request_id: String,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Protected)?;
     validate_query_request_id(&request_id)?;
-    let queries = state
-        .active_queries
-        .lock()
-        .map_err(|_| {
-            AppError::internal(
-                "Cancel query",
-                "Query cancellation state is poisoned",
-                "Restart the application to reset query state.",
-            )
-        })?;
+    let queries = state.active_queries.lock().map_err(|_| {
+        AppError::internal(
+            "Cancel query",
+            "Query cancellation state is poisoned",
+            "Restart the application to reset query state.",
+        )
+    })?;
     if let Some(sender) = queries.get(&request_id) {
         let _ = sender.send(true);
     }

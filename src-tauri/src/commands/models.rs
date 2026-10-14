@@ -1,13 +1,11 @@
 use domain::AppError;
 use log::error;
 use persistence::AppSettingsRepository;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
-use crate::model_lifecycle::{
-    recover_startup_documents_with_retry, request_llm_initialization,
-};
+use crate::model_lifecycle::{recover_startup_documents_with_retry, request_llm_initialization};
 use crate::state::AppState;
 
 static EMBEDDER_INIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -17,7 +15,9 @@ pub async fn begin_first_run_init(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let settings = AppSettingsRepository::new(state.db_pool.clone());
     let mode = settings
         .get("inference_mode")
@@ -114,7 +114,9 @@ pub async fn retry_local_model_initialization(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Ordinary)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let settings = AppSettingsRepository::new(state.db_pool.clone());
     let mode = settings
         .get("inference_mode")
@@ -152,7 +154,9 @@ pub async fn cancel_model_download(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Protected)?;
     crate::model_lifecycle::cancel_active_model_download(&app, &state).await
 }
 
@@ -160,7 +164,9 @@ pub async fn cancel_model_download(
 pub async fn get_app_state(
     state: tauri::State<'_, AppState>,
 ) -> Result<domain::AppLifecycleState, AppError> {
-    let _permit = state.capacity.acquire(crate::capacity::CommandPriority::Protected)?;
+    let _permit = state
+        .capacity
+        .acquire(crate::capacity::CommandPriority::Protected)?;
 
     let embedder_ready = state.embedder.read().await.is_some();
     let is_local_model_ready = state.local_llm.read().await.is_some();
@@ -176,11 +182,7 @@ pub async fn get_app_state(
     let model_download_progress = init.last_download_progress.clone();
     drop(init);
 
-    let active_queries_count = state
-        .active_queries
-        .lock()
-        .map(|q| q.len())
-        .unwrap_or(0);
+    let active_queries_count = state.active_queries.lock().map(|q| q.len()).unwrap_or(0);
 
     let active_doc = state
         .active_document_id

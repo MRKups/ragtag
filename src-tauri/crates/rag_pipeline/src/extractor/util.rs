@@ -49,15 +49,13 @@ pub fn read_bounded_bytes(
 ) -> Result<bool, AppError> {
     let mut buffer = [0u8; 8 * 1024];
     loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|e| {
-                AppError::storage(
-                    "Read document stream",
-                    format!("{operation} failed: {e}"),
-                    "Verify file readability and storage integrity.",
-                )
-            })?;
+        let read = reader.read(&mut buffer).map_err(|e| {
+            AppError::storage(
+                "Read document stream",
+                format!("{operation} failed: {e}"),
+                "Verify file readability and storage integrity.",
+            )
+        })?;
         if read == 0 {
             return Ok(true);
         }
@@ -94,7 +92,10 @@ pub fn utf8_preview(source_path: &Path, operation: &str) -> Result<(String, bool
             "Ensure the source file uses valid UTF-8 encoding.",
         )
     })?;
-    let content = content.strip_prefix('\u{feff}').unwrap_or(&content).to_string();
+    let content = content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(&content)
+        .to_string();
     Ok((content, truncated))
 }
 

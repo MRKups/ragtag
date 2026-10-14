@@ -62,10 +62,7 @@ pub async fn init_pool(app_local_data_dir: &Path) -> Result<SqlitePool, AppError
 }
 
 pub async fn vacuum(pool: &SqlitePool) -> Result<(), AppError> {
-    sqlx::query("VACUUM")
-        .execute(pool)
-        .await
-        .map_err(sql_err)?;
+    sqlx::query("VACUUM").execute(pool).await.map_err(sql_err)?;
     Ok(())
 }
 
@@ -396,10 +393,11 @@ impl DocumentRepository {
         &self,
     ) -> Result<Vec<String>, AppError> {
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
-        let ids = sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
-            .fetch_all(&mut *transaction)
-            .await
-            .map_err(sql_err)?;
+        let ids =
+            sqlx::query_scalar::<_, String>("SELECT id FROM documents WHERE status = 'indexed'")
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(sql_err)?;
         if !ids.is_empty() {
             sqlx::query(
                 "UPDATE documents
@@ -603,12 +601,10 @@ impl AppSettingsRepository {
     }
 
     pub async fn get_all(&self) -> Result<std::collections::HashMap<String, String>, AppError> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM app_settings",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let rows = sqlx::query_as::<_, (String, String)>("SELECT key, value FROM app_settings")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(rows.into_iter().collect())
     }
@@ -631,14 +627,14 @@ impl AppSettingsRepository {
         Ok(())
     }
 
-    pub async fn delete(&self, key: &str) -> Result<(), AppError> {
-        sqlx::query("DELETE FROM app_settings WHERE key = ?")
+    pub async fn delete(&self, key: &str) -> Result<bool, AppError> {
+        let deleted = sqlx::query("DELETE FROM app_settings WHERE key = ?")
             .bind(key)
             .execute(&self.pool)
             .await
             .map_err(sql_err)?;
 
-        Ok(())
+        Ok(deleted.rows_affected() != 0)
     }
 
     pub async fn set_external_inference_config(
@@ -1001,7 +997,10 @@ mod tests {
         let settings = AppSettingsRepository::new(pool.clone());
 
         settings.set("test_key", "test_value").await.unwrap();
-        assert_eq!(settings.get("test_key").await.unwrap().as_deref(), Some("test_value"));
+        assert_eq!(
+            settings.get("test_key").await.unwrap().as_deref(),
+            Some("test_value")
+        );
 
         settings.delete("test_key").await.unwrap();
         assert_eq!(settings.get("test_key").await.unwrap(), None);
