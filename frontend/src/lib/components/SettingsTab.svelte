@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
-  import { DEFAULT_LOCAL_INFERENCE, settingsState } from '$lib/stores/settings.svelte';
+  import { DEFAULT_LOCAL_INFERENCE, settingsState, type InferenceConfiguration } from '$lib/stores/settings.svelte';
   import { api } from '$lib/api';
   import {
     Cpu,
@@ -15,13 +15,12 @@
     AlertCircle,
     Loader2
   } from '@lucide/svelte';
-  import { errorDialog } from '$lib/stores/error-dialog.svelte';
+  import { errorDialog, type ErrorDialogNotice } from '$lib/stores/error-dialog.svelte';
   import { errorMessage, isAppError, isTransientError } from '$lib/error';
   import Toggle from './Toggle.svelte';
   import AppSelect, { type SelectOption } from './AppSelect.svelte';
 
-  type InferenceConfig = 'local' | 'external';
-  import type { ApiKeyStorage } from '$lib/types';
+  import type { ApiKeyStorage, StorageInfo } from '$lib/types';
 
   type ConnectionStatus = {
     kind: 'checking' | 'success' | 'warning' | 'error';
@@ -38,7 +37,7 @@
     { value: 'https', label: 'HTTPS' }
   ];
 
-  let configuringInference = $state<InferenceConfig | null>(null);
+  let configuringInference = $state<InferenceConfiguration | null>(null);
   let isRestoringLocalDefaults = $state(false);
   let externalProtocolDraft = $state('http');
   let externalServerAddressDraft = $state('');
@@ -66,12 +65,7 @@
   }
 
   // Storage management
-  let storageInfo = $state<{
-    database_bytes: number;
-    vector_store_bytes: number;
-    documents_bytes: number;
-    models_bytes: number;
-  } | null>(null);
+  let storageInfo = $state<StorageInfo | null>(null);
   let storageMessage = $state('');
   let showResetConfirm = $state(false);
   let resetDeleteModels = $state(false);
@@ -197,7 +191,7 @@
     return new URL(`${externalProtocolDraft}://${authority}/v1`).toString().replace(/\/$/, '');
   }
 
-  function openInferenceConfiguration(mode: InferenceConfig) {
+  function openInferenceConfiguration(mode: InferenceConfiguration) {
     inferenceFocusOrigin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     configuringInference = mode;
 
@@ -301,15 +295,15 @@
     }
   }
 
-  async function setDefaultInference(mode: InferenceConfig) {
+  async function setDefaultInference(mode: InferenceConfiguration) {
     await settingsState.updateInferenceMode(mode);
     if (mode === 'external' && !settingsState.external_base_url) {
       openInferenceConfiguration('external');
     }
   }
 
-  function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfig) {
-    let nextMode: InferenceConfig | null = null;
+  function handleInferenceSelectionKeydown(event: KeyboardEvent, mode: InferenceConfiguration) {
+    let nextMode: InferenceConfiguration | null = null;
 
     if (event.key === 'Home') nextMode = 'local';
     else if (event.key === 'End') nextMode = 'external';
@@ -509,38 +503,38 @@
     }
   }
 
-  async function doCompact() {
+  async function runStorageMaintenance(
+    operation: () => Promise<{ status: string }>,
+    successMessage: string,
+    failureNotice: ErrorDialogNotice
+  ) {
     try {
-      await api.compactVectorStore();
-      storageMessage = 'Vector store compacted.';
+      await operation();
+      storageMessage = successMessage;
       await loadStorageInfo();
     } catch {
       storageMessage = '';
-      errorDialog.report({
-        dedupeKey: 'vector-store-compact',
-        title: 'Vector store was not compacted',
-        message: 'Ragtag could not compact the local vector store.',
-        guidance: 'Try again. Your indexed documents remain available.'
-      });
+      errorDialog.report(failureNotice);
     }
     if (storageMessage) setTimeout(() => (storageMessage = ''), 3000);
   }
 
-  async function doVacuum() {
-    try {
-      await api.vacuumDatabase();
-      storageMessage = 'Database vacuumed.';
-      await loadStorageInfo();
-    } catch {
-      storageMessage = '';
-      errorDialog.report({
-        dedupeKey: 'database-vacuum',
-        title: 'Database was not vacuumed',
-        message: 'Ragtag could not optimize the local database.',
-        guidance: 'Try again. Your documents and settings remain unchanged.'
-      });
-    }
-    if (storageMessage) setTimeout(() => (storageMessage = ''), 3000);
+  function doCompact() {
+    return runStorageMaintenance(api.compactVectorStore, 'Vector store compacted.', {
+      dedupeKey: 'vector-store-compact',
+      title: 'Vector store was not compacted',
+      message: 'Ragtag could not compact the local vector store.',
+      guidance: 'Try again. Your indexed documents remain available.'
+    });
+  }
+
+  function doVacuum() {
+    return runStorageMaintenance(api.vacuumDatabase, 'Database vacuumed.', {
+      dedupeKey: 'database-vacuum',
+      title: 'Database was not vacuumed',
+      message: 'Ragtag could not optimize the local database.',
+      guidance: 'Try again. Your documents and settings remain unchanged.'
+    });
   }
 
   async function doReset() {
@@ -1355,21 +1349,6 @@
     gap: 0.75rem;
   }
 
-  .provider-endpoint-fields label span {
-    color: var(--text-subtle);
-    font-weight: 500;
-  }
-
-
-  .field-label {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    color: var(--text);
-    font-size: 0.8125rem;
-    font-weight: 600;
-  }
-
   .restore-defaults {
     display: flex;
     align-items: center;
@@ -1383,7 +1362,8 @@
     max-width: 24rem;
   }
 
-  .config-modal-overlay {
+  .config-modal-overlay,
+  .reset-modal-overlay {
     position: fixed;
     inset: 0;
     z-index: 90;
@@ -1393,7 +1373,8 @@
     background: var(--overlay);
   }
 
-  .config-modal-backdrop {
+  .config-modal-backdrop,
+  .reset-modal-backdrop {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -1417,7 +1398,8 @@
     box-shadow: var(--shadow-modal);
   }
 
-  .config-modal h4 {
+  .config-modal h4,
+  .reset-modal h4 {
     margin-bottom: 0.5rem;
     color: var(--text-strong);
     font-size: 1.25rem;
@@ -1441,6 +1423,7 @@
     border-top: 1px solid var(--border);
   }
 
+  .field-label,
   label {
     display: flex;
     align-items: center;
@@ -1450,6 +1433,7 @@
     font-weight: 600;
   }
 
+  .provider-endpoint-fields label span,
   .pipeline-fields label span {
     color: var(--text-subtle);
     font-weight: 500;
@@ -1770,27 +1754,6 @@
   }
 
 
-  .reset-modal-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 90;
-    display: grid;
-    place-items: center;
-    padding: 1rem;
-    background: var(--overlay);
-  }
-
-  .reset-modal-backdrop {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    padding: 0;
-    cursor: default;
-    background: transparent;
-    border: 0;
-  }
-
   .reset-modal-backdrop:focus-visible {
     outline: 2px solid var(--primary-ring);
     outline-offset: -0.5rem;
@@ -1805,14 +1768,6 @@
     border: 1px solid var(--danger-border-strong);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-modal);
-  }
-
-  .reset-modal h4 {
-    margin-bottom: 0.5rem;
-    color: var(--text-strong);
-    font-size: 1.25rem;
-    font-weight: 650;
-    letter-spacing: -0.02em;
   }
 
   .reset-modal > p:not(.modal-eyebrow) {

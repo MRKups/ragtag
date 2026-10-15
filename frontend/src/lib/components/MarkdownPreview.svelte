@@ -92,17 +92,18 @@
     {:else if block.kind === 'block_quote'}
       <blockquote>{@render renderBlocks(block.blocks)}</blockquote>
     {:else if block.kind === 'list'}
+      {#snippet renderListItems()}
+        {#each block.items as item}
+          <li>{@render renderBlocks(item)}</li>
+        {/each}
+      {/snippet}
       {#if block.start === null}
         <ul>
-          {#each block.items as item}
-            <li>{@render renderBlocks(item)}</li>
-          {/each}
+          {@render renderListItems()}
         </ul>
       {:else}
         <ol start={block.start}>
-          {#each block.items as item}
-            <li>{@render renderBlocks(item)}</li>
-          {/each}
+          {@render renderListItems()}
         </ol>
       {/if}
     {:else if block.kind === 'code_block'}

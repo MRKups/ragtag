@@ -14,7 +14,7 @@ const EMBEDDING_MAX_TOKENS: usize = 2_048;
 const EMBEDDING_BATCH_SIZE: usize = 32;
 const EMBEDDING_DIMENSION: usize = 768;
 const MAX_DOCUMENT_CHUNKS: usize = 8_192;
-const PASSAGE_PREFIX: &str = "passage: ";
+pub(crate) const PASSAGE_PREFIX: &str = "passage: ";
 // Chunker caps overlap at half a chunk. Two times the 16 MiB extraction cap,
 // plus one prefix per bounded chunk, leaves headroom beneath the 50 MiB upload
 // envelope while bounding all model input constructed for one document.
@@ -87,13 +87,7 @@ pub async fn process_document(
         )
     })??;
     let (tokenizer, embedding_token_limit) = {
-        let model = embedder.lock().map_err(|e| {
-            AppError::internal(
-                "Lock embedder",
-                format!("Embedder lock poisoned: {e}"),
-                "Restart the application to reset model state.",
-            )
-        })?;
+        let model = embedder.lock().map_err(embedder_lock_error)?;
         let embedding_token_limit = model
             .tokenizer
             .get_truncation()
@@ -189,13 +183,7 @@ pub async fn process_document(
                     .map(|chunk| format!("{PASSAGE_PREFIX}{}", chunk.content))
                     .collect::<Vec<_>>();
                 let batch_embeddings = {
-                    let mut model = embedder.lock().map_err(|e| {
-                        AppError::internal(
-                            "Lock embedder",
-                            format!("Embedder lock poisoned: {e}"),
-                            "Restart the application to reset model state.",
-                        )
-                    })?;
+                    let mut model = embedder.lock().map_err(embedder_lock_error)?;
                     model
                         .embed(texts, Some(EMBEDDING_BATCH_SIZE))
                         .map_err(|e| {
@@ -434,18 +422,20 @@ fn build_record_batch(
     })
 }
 
+fn embedder_lock_error<T>(error: std::sync::PoisonError<T>) -> AppError {
+    AppError::internal(
+        "Lock embedder",
+        format!("Embedder lock poisoned: {error}"),
+        "Restart the application to reset model state.",
+    )
+}
+
 pub fn embed_query(
     embedder: &Arc<std::sync::Mutex<TextEmbedding>>,
     query: &str,
 ) -> Result<Vec<f32>, AppError> {
     let query_text = format!("query: {}", query);
-    let mut model = embedder.lock().map_err(|e| {
-        AppError::internal(
-            "Lock embedder",
-            format!("Embedder lock poisoned: {e}"),
-            "Restart the application to reset model state.",
-        )
-    })?;
+    let mut model = embedder.lock().map_err(embedder_lock_error)?;
     let embeddings = model.embed(vec![query_text.as_str()], None).map_err(|e| {
         AppError::internal(
             "Embed query",

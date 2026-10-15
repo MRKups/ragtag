@@ -12,7 +12,7 @@ Source-only. Tested primarily on Apple Silicon. macOS 15+ or later.
 
 ## Run from source
 
-Requires Node.js 24, Rust 1.98, Xcode with Metal tools, Protobuf, Tauri CLI v2, and [Task](https://taskfile.dev/).
+Requires Node.js 24, Rust 1.99, Xcode with Metal tools, Protobuf, Tauri CLI v2, and [Task](https://taskfile.dev/).
 
 ```sh
 task setup

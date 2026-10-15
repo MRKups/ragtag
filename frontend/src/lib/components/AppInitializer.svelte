@@ -34,11 +34,13 @@
             aria-valuemax="100"
             aria-valuenow={appState.downloadIsIndeterminate ? undefined : appState.downloadProgress}
           >
-            {#if appState.downloadIsIndeterminate}
-              <div class="progress-bar-fill indeterminate"></div>
-            {:else}
-              <div class="progress-bar-fill" style="width: {appState.downloadProgress}%"></div>
-            {/if}
+            {#key appState.downloadIsIndeterminate}
+              <div
+                class="progress-bar-fill"
+                class:indeterminate={appState.downloadIsIndeterminate}
+                style={appState.downloadIsIndeterminate ? undefined : `width: ${appState.downloadProgress}%`}
+              ></div>
+            {/key}
           </div>
           <p class="progress-text">{appState.downloadMessage || 'Downloading model...'}</p>
           <button

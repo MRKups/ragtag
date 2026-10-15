@@ -13,13 +13,7 @@ pub async fn get_storage_info(
     let _permit = state
         .capacity
         .acquire(crate::capacity::CommandPriority::Ordinary)?;
-    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
-        AppError::storage(
-            "Resolve storage path",
-            format!("Failed to resolve app local data directory: {e}"),
-            "Verify application local storage permissions.",
-        )
-    })?;
+    let app_local_data = crate::paths::app_local_data_dir(&app)?;
 
     let (db_size, lancedb_size, docs_size, models_size) =
         tokio::task::spawn_blocking(move || storage_sizes(&app_local_data))
@@ -72,13 +66,7 @@ pub async fn reset_all_data(
         .capacity
         .acquire(crate::capacity::CommandPriority::Ordinary)?;
     let _doc_op = state.document_operations.write().await;
-    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
-        AppError::storage(
-            "Resolve storage path",
-            format!("Failed to resolve app local data directory: {e}"),
-            "Verify application local storage permissions.",
-        )
-    })?;
+    let app_local_data = crate::paths::app_local_data_dir(&app)?;
 
     let sentinel = app_local_data.join(".reset_pending");
     tokio::task::spawn_blocking({

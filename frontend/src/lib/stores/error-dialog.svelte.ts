@@ -16,6 +16,16 @@ export interface ErrorDialogNotice {
   action?: ErrorDialogAction;
 }
 
+export function documentProcessingFailureNotice(documentId: string, action?: ErrorDialogAction): ErrorDialogNotice {
+  return {
+    dedupeKey: `document-processing-${documentId}`,
+    title: 'Document processing failed',
+    message: 'Ragtag could not finish indexing a document.',
+    guidance: 'Review the document status, then remove and upload a new copy if needed.',
+    ...(action ? { action } : {})
+  };
+}
+
 export class ErrorDialogState {
   active = $state<ErrorDialogNotice | null>(null);
   queue = $state<ErrorDialogNotice[]>([]);

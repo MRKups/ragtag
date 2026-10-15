@@ -1,5 +1,5 @@
 import type { Document, IngestionProgress } from '$lib/types';
-import { errorDialog } from './error-dialog.svelte.ts';
+import { documentProcessingFailureNotice, errorDialog } from './error-dialog.svelte.ts';
 
 export class DocumentProgressState {
   byDocument = $state<Record<string, IngestionProgress>>({});
@@ -18,12 +18,7 @@ export class DocumentProgressState {
     };
 
     if (progress.type === 'error') {
-      errorDialog.report({
-        dedupeKey: `document-processing-${progress.document_id}`,
-        title: 'Document processing failed',
-        message: 'Ragtag could not finish indexing a document.',
-        guidance: 'Review the document status, then remove and upload a new copy if needed.'
-      });
+      errorDialog.report(documentProcessingFailureNotice(progress.document_id));
     }
   }
 

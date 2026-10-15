@@ -8,15 +8,10 @@
   import AppInitializer from '$lib/components/AppInitializer.svelte';
   import ErrorDialog from '$lib/components/ErrorDialog.svelte';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
-  import { router, type Route } from '$lib/router.svelte';
+  import { router } from '$lib/router.svelte';
   import QueryPage from './pages/QueryPage.svelte';
   import DocumentsPage from './pages/DocumentsPage.svelte';
   import SettingsPage from './pages/SettingsPage.svelte';
-
-
-  function navTo(route: Route) {
-    router.navigate(route);
-  }
 
   function reportUnexpectedClientError() {
     errorDialog.report({
@@ -80,7 +75,7 @@
     <header class="header">
       <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
       <div class="brand">
-        <button class="logo-link" onclick={() => navTo('query')}>
+        <button class="logo-link" onclick={() => router.navigate('query')}>
           <img src={rtLogoUrl} alt="Ragtag" class="logo-img" width="36" height="36" />
           <h1>Ragtag</h1>
         </button>
@@ -90,7 +85,7 @@
         <button
           class="nav-btn"
           class:active={router.current === 'query'}
-          onclick={() => navTo('query')}
+          onclick={() => router.navigate('query')}
         >
           <MessageSquare size={18} />
           <span>Query</span>
@@ -98,7 +93,7 @@
         <button
           class="nav-btn"
           class:active={router.current === 'documents'}
-          onclick={() => navTo('documents')}
+          onclick={() => router.navigate('documents')}
         >
           <Files size={18} />
           <span>Documents</span>
@@ -106,7 +101,7 @@
         <button
           class="nav-btn"
           class:active={router.current === 'settings'}
-          onclick={() => navTo('settings')}
+          onclick={() => router.navigate('settings')}
         >
           <SettingsIcon size={18} />
           <span>Settings</span>
@@ -326,11 +321,6 @@
   .header-actions {
     position: relative;
     z-index: 1;
-  }
-
-  .brand,
-  .nav-menu,
-  .header-actions {
     pointer-events: none;
   }
 

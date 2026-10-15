@@ -1,6 +1,6 @@
 // Manages global application lifecycle state, model download progress, and external inference readiness.
 import { api } from '$lib/api';
-import { errorDialog } from '$lib/stores/error-dialog.svelte';
+import { documentProcessingFailureNotice, errorDialog } from '$lib/stores/error-dialog.svelte';
 import { router } from '$lib/router.svelte';
 import { settingsState } from '$lib/stores/settings.svelte';
 import type { ModelDownloadProgress } from '$lib/types';
@@ -156,16 +156,10 @@ export class AppState {
 
       this.#unlistenFns.push(
         await api.listen<{ document_id: string }>('document_failed', (event) => {
-          errorDialog.report({
-            dedupeKey: `document-processing-${event.payload.document_id}`,
-            title: 'Document processing failed',
-            message: 'Ragtag could not finish indexing a document.',
-            guidance: 'Review the document status, then remove and upload a new copy if needed.',
-            action: {
-              label: 'Open documents',
-              run: () => router.navigate('documents')
-            }
-          });
+          errorDialog.report(documentProcessingFailureNotice(event.payload.document_id, {
+            label: 'Open documents',
+            run: () => router.navigate('documents')
+          }));
         })
       );
 

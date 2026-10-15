@@ -9,13 +9,18 @@ use tokio::sync::{Mutex, RwLock, mpsc::Sender, watch};
 #[derive(Default)]
 pub struct LlmInitializationState {
     pub generation: u64,
-    pub in_progress: bool,
     pub in_progress_generation: Option<u64>,
     pub restart_requested: bool,
     pub download_cancellation: Option<watch::Sender<bool>>,
     pub last_download_progress: Option<domain::ModelDownloadProgress>,
     pub external_ready: bool,
     pub inference_mode: String,
+}
+
+impl LlmInitializationState {
+    pub fn is_in_progress(&self) -> bool {
+        self.in_progress_generation.is_some()
+    }
 }
 
 pub struct IngestionJob {

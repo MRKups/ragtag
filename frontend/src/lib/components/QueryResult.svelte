@@ -2,6 +2,7 @@
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import type { Citation } from '$lib/types';
+  import { citationSelection, type CitationSelection } from '$lib/citations';
   import { api } from '$lib/api';
   import CitationList from './CitationList.svelte';
 
@@ -9,12 +10,12 @@
     text = '',
     citations = [] as Citation[],
     isStreaming = false,
-    onCitationClick = (_citation: { filename: string; storagePath: string; documentId: string; page: number }) => {}
+    onCitationClick = (_citation: CitationSelection) => {}
   } = $props<{
     text?: string;
     citations?: Citation[];
     isStreaming?: boolean;
-    onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
+    onCitationClick?: (citation: CitationSelection) => void;
   }>();
 
   function transformCitations(html: string, citationsList: Citation[]): string {
@@ -114,12 +115,7 @@
       const idx = parseInt(citationBtn.getAttribute('data-citation-id') || '', 10);
       const citation = citations[idx];
       if (citation) {
-        onCitationClick({
-          filename: citation.filename,
-          storagePath: citation.storage_path,
-          documentId: citation.document_id,
-          page: citation.page
-        });
+        onCitationClick(citationSelection(citation));
       }
       return;
     }
@@ -172,7 +168,6 @@
     padding: 2rem;
     border: 1px solid var(--border-card, #2e2e33);
     box-sizing: border-box;
-    width: 100%;
     min-width: 0;
   }
 

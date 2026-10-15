@@ -10,6 +10,7 @@ import type {
   ExternalProviderConnection,
   IngestionProgress,
   Platform,
+  StorageInfo,
   TokenEvent
 } from './types';
 
@@ -75,12 +76,7 @@ export const api = {
 
   deleteApiKey: () => invoke<boolean>('delete_api_key'),
 
-  getStorageInfo: () => invoke<{
-    database_bytes: number;
-    vector_store_bytes: number;
-    documents_bytes: number;
-    models_bytes: number;
-  }>('get_storage_info'),
+  getStorageInfo: () => invoke<StorageInfo>('get_storage_info'),
 
   compactVectorStore: () => invoke<{ status: string }>('compact_vector_store'),
 

@@ -5,6 +5,37 @@ use sqlx::{
 };
 use std::path::Path;
 
+const DOCUMENT_SELECT: &str = "SELECT
+    id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
+    chunk_count, embedding_model, embedding_attempts,
+    CAST(created_at AS TEXT) AS created_at,
+    CAST(processing_started_at AS TEXT) AS processing_started_at,
+    CAST(indexed_at AS TEXT) AS indexed_at,
+    indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
+    error_message, retry_count
+    FROM documents";
+
+// Retain successful indexing provenance until replacement indexing succeeds.
+const INDEXED_RESET: &str = "UPDATE documents
+    SET status = 'queued',
+        chunk_count = NULL,
+        embedding_model = NULL,
+        embedding_attempts = 0,
+        processing_started_at = NULL,
+        indexed_at = NULL,
+        error_message = NULL,
+        retry_count = 0";
+
+const STALE_INDEXED_PREDICATE: &str = "status = 'indexed'
+    AND (
+        indexed_extraction_version IS NULL
+        OR indexed_extraction_version != ?
+        OR indexed_chunk_size IS NULL
+        OR indexed_chunk_size != ?
+        OR indexed_chunk_overlap IS NULL
+        OR indexed_chunk_overlap != ?
+    )";
+
 fn sql_err(e: sqlx::Error) -> AppError {
     AppError::storage(
         "Database operation",
@@ -191,22 +222,14 @@ impl DocumentRepository {
     }
 
     pub async fn get_by_id(&self, id: &str) -> Result<Option<Document>, AppError> {
-        let row = sqlx::query_as::<_, DocumentRow>(
-            r#"SELECT
-                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
-                chunk_count, embedding_model, embedding_attempts,
-                CAST(created_at AS TEXT) AS created_at,
-                CAST(processing_started_at AS TEXT) AS processing_started_at,
-                CAST(indexed_at AS TEXT) AS indexed_at,
-                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
-                error_message, retry_count
-            FROM documents
-            WHERE id = ?"#,
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let mut query = sqlx::QueryBuilder::new(DOCUMENT_SELECT);
+        let row = query
+            .push(" WHERE id = ")
+            .push_bind(id)
+            .build_query_as::<DocumentRow>()
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(row.map(DocumentRow::into_domain))
     }
@@ -247,21 +270,13 @@ impl DocumentRepository {
     }
 
     pub async fn list_all(&self) -> Result<Vec<Document>, AppError> {
-        let rows = sqlx::query_as::<_, DocumentRow>(
-            r#"SELECT
-                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
-                chunk_count, embedding_model, embedding_attempts,
-                CAST(created_at AS TEXT) AS created_at,
-                CAST(processing_started_at AS TEXT) AS processing_started_at,
-                CAST(indexed_at AS TEXT) AS indexed_at,
-                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
-                error_message, retry_count
-            FROM documents
-            ORDER BY created_at DESC"#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let mut query = sqlx::QueryBuilder::new(DOCUMENT_SELECT);
+        let rows = query
+            .push(" ORDER BY created_at DESC")
+            .build_query_as::<DocumentRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(rows.into_iter().map(DocumentRow::into_domain).collect())
     }
@@ -290,22 +305,14 @@ impl DocumentRepository {
     }
 
     pub async fn find_by_hash(&self, hash: &[u8]) -> Result<Option<Document>, AppError> {
-        let row = sqlx::query_as::<_, DocumentRow>(
-            r#"SELECT
-                id, filename, file_type, file_size_bytes, file_hash, storage_path, status,
-                chunk_count, embedding_model, embedding_attempts,
-                CAST(created_at AS TEXT) AS created_at,
-                CAST(processing_started_at AS TEXT) AS processing_started_at,
-                CAST(indexed_at AS TEXT) AS indexed_at,
-                indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap,
-                error_message, retry_count
-            FROM documents
-            WHERE file_hash = ?"#,
-        )
-        .bind(hash)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(sql_err)?;
+        let mut query = sqlx::QueryBuilder::new(DOCUMENT_SELECT);
+        let row = query
+            .push(" WHERE file_hash = ")
+            .push_bind(hash)
+            .build_query_as::<DocumentRow>()
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql_err)?;
 
         Ok(row.map(DocumentRow::into_domain))
     }
@@ -399,21 +406,13 @@ impl DocumentRepository {
                 .await
                 .map_err(sql_err)?;
         if !ids.is_empty() {
-            sqlx::query(
-                "UPDATE documents
-                 SET status = 'queued',
-                     chunk_count = NULL,
-                     embedding_model = NULL,
-                     embedding_attempts = 0,
-                     processing_started_at = NULL,
-                     indexed_at = NULL,
-                     error_message = NULL,
-                     retry_count = 0
-                 WHERE status = 'indexed'",
-            )
-            .execute(&mut *transaction)
-            .await
-            .map_err(sql_err)?;
+            let mut query = sqlx::QueryBuilder::new(INDEXED_RESET);
+            query
+                .push(" WHERE status = 'indexed'")
+                .build()
+                .execute(&mut *transaction)
+                .await
+                .map_err(sql_err)?;
         }
         transaction.commit().await.map_err(sql_err)?;
         Ok(ids)
@@ -434,22 +433,15 @@ impl DocumentRepository {
         }
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
         for id in ids {
-            sqlx::query(
-                "UPDATE documents
-                 SET status = 'queued',
-                     chunk_count = NULL,
-                     embedding_model = NULL,
-                     embedding_attempts = 0,
-                     processing_started_at = NULL,
-                     indexed_at = NULL,
-                     error_message = NULL,
-                     retry_count = 0
-                 WHERE id = ? AND status = 'indexed'",
-            )
-            .bind(id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(sql_err)?;
+            let mut query = sqlx::QueryBuilder::new(INDEXED_RESET);
+            query
+                .push(" WHERE id = ")
+                .push_bind(id)
+                .push(" AND status = 'indexed'")
+                .build()
+                .execute(&mut *transaction)
+                .await
+                .map_err(sql_err)?;
         }
         transaction.commit().await.map_err(sql_err)?;
         Ok(())
@@ -460,55 +452,50 @@ async fn requeue_stale_indexed_documents(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     desired_provenance: &IndexProvenance,
 ) -> Result<Vec<String>, AppError> {
-    let ids = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM documents
-         WHERE status = 'indexed'
-           AND (
-               indexed_extraction_version IS NULL
-               OR indexed_extraction_version != ?
-               OR indexed_chunk_size IS NULL
-               OR indexed_chunk_size != ?
-               OR indexed_chunk_overlap IS NULL
-               OR indexed_chunk_overlap != ?
-           )",
-    )
-    .bind(&desired_provenance.extraction_version)
-    .bind(desired_provenance.chunk_size)
-    .bind(desired_provenance.chunk_overlap)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(sql_err)?;
-
-    if !ids.is_empty() {
-        sqlx::query(
-            "UPDATE documents
-             SET status = 'queued',
-                 chunk_count = NULL,
-                 embedding_model = NULL,
-                 embedding_attempts = 0,
-                 processing_started_at = NULL,
-                 indexed_at = NULL,
-                 error_message = NULL,
-                 retry_count = 0
-             WHERE status = 'indexed'
-               AND (
-                   indexed_extraction_version IS NULL
-                   OR indexed_extraction_version != ?
-                   OR indexed_chunk_size IS NULL
-                   OR indexed_chunk_size != ?
-                   OR indexed_chunk_overlap IS NULL
-                   OR indexed_chunk_overlap != ?
-               )",
-        )
+    let mut select = sqlx::QueryBuilder::new("SELECT id FROM documents WHERE ");
+    let ids = select
+        .push(STALE_INDEXED_PREDICATE)
+        .build_query_scalar::<String>()
         .bind(&desired_provenance.extraction_version)
         .bind(desired_provenance.chunk_size)
         .bind(desired_provenance.chunk_overlap)
-        .execute(&mut **transaction)
+        .fetch_all(&mut **transaction)
         .await
         .map_err(sql_err)?;
+
+    if !ids.is_empty() {
+        let mut update = sqlx::QueryBuilder::new(INDEXED_RESET);
+        update
+            .push(" WHERE ")
+            .push(STALE_INDEXED_PREDICATE)
+            .build()
+            .bind(&desired_provenance.extraction_version)
+            .bind(desired_provenance.chunk_size)
+            .bind(desired_provenance.chunk_overlap)
+            .execute(&mut **transaction)
+            .await
+            .map_err(sql_err)?;
     }
 
     Ok(ids)
+}
+
+async fn upsert_setting_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    key: &str,
+    value: &str,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO app_settings (key, value)
+         VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut **transaction)
+    .await
+    .map_err(sql_err)?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -610,6 +597,7 @@ impl AppSettingsRepository {
     }
 
     pub async fn set(&self, key: &str, value: &str) -> Result<(), AppError> {
+        // Keep this literal independently checked by SQLx's offline metadata.
         sqlx::query!(
             r#"
             INSERT INTO app_settings (key, value)
@@ -644,27 +632,8 @@ impl AppSettingsRepository {
     ) -> Result<(), AppError> {
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
 
-        sqlx::query(
-            "INSERT INTO app_settings (key, value)
-             VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind("external_base_url")
-        .bind(base_url)
-        .execute(&mut *transaction)
-        .await
-        .map_err(sql_err)?;
-
-        sqlx::query(
-            "INSERT INTO app_settings (key, value)
-             VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind("external_model")
-        .bind(model)
-        .execute(&mut *transaction)
-        .await
-        .map_err(sql_err)?;
+        upsert_setting_in_transaction(&mut transaction, "external_base_url", base_url).await?;
+        upsert_setting_in_transaction(&mut transaction, "external_model", model).await?;
 
         transaction.commit().await.map_err(sql_err)?;
         Ok(())
@@ -677,16 +646,7 @@ impl AppSettingsRepository {
         desired_provenance: &IndexProvenance,
     ) -> Result<Vec<String>, AppError> {
         let mut transaction = self.pool.begin().await.map_err(sql_err)?;
-        sqlx::query(
-            "INSERT INTO app_settings (key, value)
-             VALUES (?, ?)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&mut *transaction)
-        .await
-        .map_err(sql_err)?;
+        upsert_setting_in_transaction(&mut transaction, key, value).await?;
 
         let ids = requeue_stale_indexed_documents(&mut transaction, desired_provenance).await?;
         transaction.commit().await.map_err(sql_err)?;
@@ -723,6 +683,13 @@ mod tests {
         }
     }
 
+    fn assert_document_matches(actual: &Document, expected: &Document) {
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+
     async fn temporary_pool() -> (sqlx::SqlitePool, std::path::PathBuf) {
         let sequence = TEST_DATABASE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -733,6 +700,240 @@ mod tests {
             .await
             .expect("temporary database should migrate");
         (pool, path)
+    }
+
+    #[tokio::test]
+    async fn document_queries_share_full_field_and_legacy_null_semantics() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let provenance = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let mut full = indexed_document("full", provenance.clone());
+        full.file_size_bytes = Some(1234);
+        full.file_hash = Some(vec![1, 2, 3]);
+        full.chunk_count = Some(7);
+        full.embedding_attempts = 2;
+        full.created_at = Some("2026-01-03 00:00:00".to_string());
+        full.processing_started_at = Some("2026-01-03 00:01:00".to_string());
+        full.indexed_at = Some("2026-01-03 00:02:00".to_string());
+        full.error_message = Some("retained diagnostic".to_string());
+        full.retry_count = 3;
+
+        let mut nullable = indexed_document("nullable", provenance.clone());
+        nullable.status = DocumentStatus::Queued;
+        nullable.file_size_bytes = None;
+        nullable.file_hash = Some(vec![4, 5, 6]);
+        nullable.chunk_count = None;
+        nullable.embedding_model = None;
+        nullable.embedding_attempts = 0;
+        nullable.indexing_provenance = None;
+        let mut no_hash = nullable.clone();
+        no_hash.id = "no-hash".to_string();
+        no_hash.filename = "no-hash.pdf".to_string();
+        no_hash.storage_path = "no-hash.pdf".to_string();
+        no_hash.file_hash = None;
+
+        let mut partial = indexed_document("partial", provenance);
+        partial.file_hash = Some(vec![7, 8, 9]);
+        partial.created_at = Some("2026-01-02 00:00:00".to_string());
+        for document in [&full, &nullable, &no_hash, &partial] {
+            documents.insert(document).await.unwrap();
+        }
+        sqlx::query(
+            "UPDATE documents SET embedding_attempts = NULL, retry_count = NULL
+             WHERE id IN ('nullable', 'no-hash')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE documents SET indexed_chunk_overlap = NULL WHERE id = 'partial'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        partial.indexing_provenance = None;
+
+        let listed = documents.list_all().await.unwrap();
+        assert_eq!(listed.len(), 4);
+        assert_eq!(listed[0].id, "full");
+        assert_eq!(listed[1].id, "partial");
+        for expected in [&full, &nullable, &no_hash, &partial] {
+            let by_id = documents.get_by_id(&expected.id).await.unwrap().unwrap();
+            assert_document_matches(&by_id, expected);
+            let from_list = listed.iter().find(|row| row.id == expected.id).unwrap();
+            assert_document_matches(from_list, expected);
+            if let Some(hash) = &expected.file_hash {
+                let by_hash = documents.find_by_hash(hash).await.unwrap().unwrap();
+                assert_document_matches(&by_hash, expected);
+            }
+        }
+        assert!(documents.get_by_id("missing").await.unwrap().is_none());
+        assert!(documents.find_by_hash(&[]).await.unwrap().is_none());
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn indexed_reset_paths_share_assignments_and_preserve_status_guards() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let original = IndexProvenance {
+            extraction_version: "token-aware-v1".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let desired = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            ..original.clone()
+        };
+        let mut guards = Vec::new();
+        for (id, status) in [
+            ("queued", DocumentStatus::Queued),
+            ("embedding", DocumentStatus::Embedding),
+            ("deleting", DocumentStatus::Deleting),
+            ("failed", DocumentStatus::Failed),
+        ] {
+            let mut guard = indexed_document(id, original.clone());
+            guard.status = status;
+            documents.insert(&guard).await.unwrap();
+            guards.push(guard);
+        }
+
+        for reset_path in ["by-ids", "vector-loss", "stale-provenance"] {
+            let mut expected = indexed_document(reset_path, original.clone());
+            expected.file_hash = Some(reset_path.as_bytes().to_vec());
+            expected.created_at = Some("2026-01-01 00:00:00".to_string());
+            expected.processing_started_at = Some("2026-01-01 00:01:00".to_string());
+            expected.indexed_at = Some("2026-01-01 00:02:00".to_string());
+            expected.error_message = Some("old failure".to_string());
+            expected.retry_count = 3;
+            documents.insert(&expected).await.unwrap();
+
+            match reset_path {
+                "by-ids" => {
+                    let mut ids: Vec<String> =
+                        guards.iter().map(|guard| guard.id.clone()).collect();
+                    ids.push(expected.id.clone());
+                    ids.push("missing".to_string());
+                    documents
+                        .requeue_indexed_documents_by_ids(&ids)
+                        .await
+                        .unwrap();
+                }
+                "vector-loss" => assert_eq!(
+                    documents
+                        .requeue_indexed_documents_after_vector_loss()
+                        .await
+                        .unwrap(),
+                    vec![expected.id.clone()]
+                ),
+                "stale-provenance" => assert_eq!(
+                    documents
+                        .requeue_indexed_with_stale_provenance(&desired)
+                        .await
+                        .unwrap(),
+                    vec![expected.id.clone()]
+                ),
+                _ => unreachable!(),
+            }
+
+            expected.status = DocumentStatus::Queued;
+            expected.chunk_count = None;
+            expected.embedding_model = None;
+            expected.embedding_attempts = 0;
+            expected.processing_started_at = None;
+            expected.indexed_at = None;
+            expected.error_message = None;
+            expected.retry_count = 0;
+            assert_document_matches(
+                &documents.get_by_id(&expected.id).await.unwrap().unwrap(),
+                &expected,
+            );
+            for guard in &guards {
+                assert_document_matches(
+                    &documents.get_by_id(&guard.id).await.unwrap().unwrap(),
+                    guard,
+                );
+            }
+        }
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_provenance_selection_matches_reset_for_each_missing_or_changed_field() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let desired = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let cases = [
+            (
+                "changed-version",
+                Some("token-aware-v1"),
+                Some(512),
+                Some(80),
+            ),
+            ("changed-size", Some("token-aware-v2"), Some(640), Some(80)),
+            (
+                "changed-overlap",
+                Some("token-aware-v2"),
+                Some(512),
+                Some(64),
+            ),
+            ("missing-version", None, Some(512), Some(80)),
+            ("missing-size", Some("token-aware-v2"), None, Some(80)),
+            ("missing-overlap", Some("token-aware-v2"), Some(512), None),
+        ];
+        for (id, version, size, overlap) in cases {
+            documents
+                .insert(&indexed_document(id, desired.clone()))
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE documents SET indexed_extraction_version = ?,
+                 indexed_chunk_size = ?, indexed_chunk_overlap = ? WHERE id = ?",
+            )
+            .bind(version)
+            .bind(size)
+            .bind(overlap)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let mut ids = documents
+            .requeue_indexed_with_stale_provenance(&desired)
+            .await
+            .unwrap();
+        ids.sort();
+        let mut expected_ids: Vec<String> = cases.iter().map(|case| case.0.to_string()).collect();
+        expected_ids.sort();
+        assert_eq!(ids, expected_ids);
+        for (id, version, size, overlap) in cases {
+            let document = documents.get_by_id(id).await.unwrap().unwrap();
+            assert_eq!(document.status, DocumentStatus::Queued);
+            assert_eq!(document.chunk_count, None);
+            let retained = sqlx::query_as::<_, (Option<String>, Option<i32>, Option<i32>)>(
+                "SELECT indexed_extraction_version, indexed_chunk_size, indexed_chunk_overlap
+                 FROM documents WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(retained, (version.map(str::to_string), size, overlap));
+        }
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[tokio::test]
@@ -985,6 +1186,101 @@ mod tests {
         assert_eq!(
             settings.get("external_model").await.unwrap().as_deref(),
             Some("model-a")
+        );
+        settings
+            .set_external_inference_config("https://replacement.example/v1", "model-b")
+            .await
+            .unwrap();
+        assert_eq!(
+            settings.get("external_base_url").await.unwrap().as_deref(),
+            Some("https://replacement.example/v1")
+        );
+        assert_eq!(
+            settings.get("external_model").await.unwrap().as_deref(),
+            Some("model-b")
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_inference_config_rolls_back_when_second_upsert_fails() {
+        let (pool, path) = temporary_pool().await;
+        let settings = AppSettingsRepository::new(pool.clone());
+        settings
+            .set("external_base_url", "original-url")
+            .await
+            .unwrap();
+        settings
+            .set("external_model", "original-model")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_external_model_update
+             BEFORE UPDATE ON app_settings WHEN NEW.key = 'external_model'
+             BEGIN SELECT RAISE(ABORT, 'test model update failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = settings
+            .set_external_inference_config("replacement-url", "replacement-model")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, domain::ErrorCode::Storage);
+        assert_eq!(
+            settings.get("external_base_url").await.unwrap().as_deref(),
+            Some("original-url")
+        );
+        assert_eq!(
+            settings.get("external_model").await.unwrap().as_deref(),
+            Some("original-model")
+        );
+
+        pool.close().await;
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn indexing_setting_rolls_back_when_document_requeue_fails() {
+        let (pool, path) = temporary_pool().await;
+        let documents = DocumentRepository::new(pool.clone());
+        let settings = AppSettingsRepository::new(pool.clone());
+        let original = IndexProvenance {
+            extraction_version: "token-aware-v2".to_string(),
+            chunk_size: 512,
+            chunk_overlap: 80,
+        };
+        let desired = IndexProvenance {
+            chunk_size: 640,
+            ..original.clone()
+        };
+        let document = indexed_document("document", original);
+        documents.insert(&document).await.unwrap();
+        settings.set("chunk_size", "512").await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_document_requeue
+             BEFORE UPDATE ON documents WHEN NEW.status = 'queued'
+             BEGIN SELECT RAISE(ABORT, 'test requeue failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = settings
+            .set_indexing_setting_and_requeue_stale_documents("chunk_size", "640", &desired)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, domain::ErrorCode::Storage);
+        assert_eq!(
+            settings.get("chunk_size").await.unwrap().as_deref(),
+            Some("512")
+        );
+        assert_document_matches(
+            &documents.get_by_id(&document.id).await.unwrap().unwrap(),
+            &document,
         );
 
         pool.close().await;

@@ -20,19 +20,19 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 | **Client Routing & Navigation** | UI Navigation & Router | `frontend/src/lib/router.svelte.ts`<br>`frontend/src/App.svelte` |
 | **Document Upload & Source Validation** | Ingestion Entry & Sandboxed Source Storage | `frontend/src/pages/DocumentsPage.svelte`<br>`frontend/src/lib/components/DocumentUpload.svelte`<br>`src-tauri/src/commands/documents.rs`<br>`src-tauri/crates/persistence/src/storage/documents.rs` |
 | **Document Content Extraction** | Format-Specific Text Extraction | `src-tauri/crates/rag_pipeline/src/extractor/mod.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/pdf.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/docx.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/text.rs`<br>`src-tauri/crates/rag_pipeline/src/extractor/markdown.rs` |
-| **Token Chunking & Instruction Prefixing** | Document Chunking Pipeline | `src-tauri/crates/rag_pipeline/src/chunker.rs` |
+| **Token Chunking & Instruction Prefixing** | Document Chunking Pipeline | `src-tauri/crates/rag_pipeline/src/chunker.rs`<br>`src-tauri/crates/rag_pipeline/src/lib.rs` |
 | **Text Embedding & Model Execution** | Embedding Engine | `src-tauri/crates/rag_pipeline/src/lib.rs` |
 | **Document Ingestion Worker & Pipeline Coordination** | Background Ingestion Pipeline | `frontend/src/lib/stores/document-progress.svelte.ts`<br>`src-tauri/src/workers/ingestion.rs` |
 | **Vector Storage, Indexing & Hybrid Search** | Vector & Lexical Persistence | `src-tauri/crates/persistence/src/lancedb.rs`<br>`src-tauri/src/model_lifecycle/recovery.rs` |
 | **Document Registry & Metadata Management** | Relational Persistence (SQLite) | `src-tauri/crates/persistence/src/sqlite.rs`<br>`src-tauri/crates/domain/src/models.rs` |
 | **Document Management & Inventory UI** | Document Management | `frontend/src/pages/DocumentsPage.svelte`<br>`frontend/src/lib/components/DocumentList.svelte`<br>`src-tauri/src/commands/documents.rs` |
 | **Document Deletion & Garbage Collection** | Storage Reconciliation | `src-tauri/crates/persistence/src/storage/reconciliation.rs`<br>`src-tauri/src/commands/documents.rs` |
-| **Document Inspection & Preview** | Document Viewer & Rendering | `frontend/src/lib/components/DocumentViewer.svelte`<br>`frontend/src/lib/components/PdfViewer.svelte`<br>`frontend/src/lib/components/PdfPage.svelte`<br>`frontend/src/lib/components/MarkdownPreview.svelte`<br>`frontend/src/lib/pdf-init.ts`<br>`src-tauri/crates/rag_pipeline/src/extractor/preview.rs`<br>`src-tauri/src/commands/documents.rs` |
+| **Document Inspection & Preview** | Document Viewer & Rendering | `frontend/src/lib/components/DocumentViewer.svelte`<br>`frontend/src/lib/components/PdfViewer.svelte`<br>`frontend/src/lib/components/PdfPage.svelte`<br>`frontend/src/lib/components/MarkdownPreview.svelte`<br>`frontend/src/lib/pdf-init.ts`<br>`src-tauri/crates/rag_pipeline/src/extractor/mod.rs`<br>`src-tauri/src/commands/documents.rs` |
 | **RAG Query Execution & Coordination** | Query Orchestration | `frontend/src/pages/QueryPage.svelte`<br>`frontend/src/lib/stores/query.svelte.ts`<br>`frontend/src/lib/components/QueryInput.svelte`<br>`src-tauri/src/commands/query.rs` |
 | **Local Model Inference** | Local In-Process Generation | `src-tauri/src/inference/local.rs`<br>`src-tauri/src/inference/mod.rs` |
 | **External Model Inference** | Remote / OpenAI-Compatible Streaming | `src-tauri/src/inference/external.rs`<br>`src-tauri/src/inference/sse.rs`<br>`src-tauri/src/inference/mod.rs` |
 | **Answer Streaming & Token Rendering** | Answer Presentation | `frontend/src/lib/components/QueryResult.svelte`<br>`frontend/src/lib/stores/query.svelte.ts` |
-| **Grounding Citations & Relevance Display** | Grounded Citations | `frontend/src/lib/components/CitationList.svelte`<br>`frontend/src/lib/components/ConfidenceBadge.svelte`<br>`src-tauri/crates/domain/src/models.rs` |
+| **Grounding Citations & Relevance Display** | Grounded Citations | `frontend/src/lib/citations.ts`<br>`frontend/src/lib/components/CitationList.svelte`<br>`frontend/src/lib/components/ConfidenceBadge.svelte`<br>`src-tauri/crates/domain/src/models.rs` |
 | **Model Download & Readiness Coordination** | Model Lifecycle Coordination | `frontend/src/lib/stores/app-state.svelte.ts`<br>`src-tauri/src/model_lifecycle/coordinator.rs`<br>`src-tauri/src/model_download.rs`<br>`src-tauri/src/commands/models.rs` |
 | **Application & Provider Settings Management** | Configuration & Preferences | `frontend/src/pages/SettingsPage.svelte`<br>`frontend/src/lib/stores/settings.svelte.ts`<br>`frontend/src/lib/components/SettingsTab.svelte`<br>`frontend/src/lib/components/Toggle.svelte`<br>`frontend/src/lib/components/AppSelect.svelte`<br>`src-tauri/src/commands/settings.rs`<br>`src-tauri/crates/persistence/src/sqlite.rs` |
 | **Secure API Key Management** | OS Keychain & Fallback Security | `src-tauri/src/commands/keys.rs`<br>`src-tauri/src/credentials.rs`<br>`src-tauri/crates/persistence/src/sqlite.rs` |
@@ -50,7 +50,8 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `main.ts`: Application bootstrap, mounts `App.svelte` into DOM root.
   - `App.svelte`: Top-level desktop layout, macOS titlebar handling, navigation routing, global error listeners.
 - **Contracts & Bridges:**
-  - `lib/types.ts`: TypeScript interfaces for IPC payloads (documents, status, progress, settings, tokens, citations).
+  - `lib/types.ts`: TypeScript interfaces for IPC payloads (documents, status, progress, settings, tokens, citations, storage metrics).
+  - `lib/citations.ts`: Citation-to-viewer selection mapping and shared selection types.
   - `lib/api.ts`: Typed IPC wrapper enforcing strict isolation around `@tauri-apps/api/core`.
   - `lib/error.ts`: Error formatting helper converting errors into human-readable text.
   - `lib/router.svelte.ts`: Hash-based SPA router with view transition integration.
@@ -79,7 +80,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `PdfViewer.svelte`: Virtualized PDF document viewer with zoom controls.
   - `QueryInput.svelte`: Auto-resizing query prompt input with submit/cancel hotkeys.
   - `QueryResult.svelte`: Sanitized streaming answer renderer with markdown tokens and citations.
-  - `SettingsTab.svelte`: Tab bar for settings navigation.
+  - `SettingsTab.svelte`: Provider configuration, pipeline settings, and storage maintenance controls.
   - `Toggle.svelte`: Accessible binary toggle switch.
 
 ### 2.2 Core Backend Library Crates (`src-tauri/crates/`)
@@ -87,7 +88,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 - **Domain Crate (`crates/domain/`):**
   - `Cargo.toml`: Zero-dependency domain definition (`serde`, `thiserror`).
   - `src/lib.rs`: Crate root re-exporting shared models and errors.
-  - `src/error.rs`: Typed `AppError` enum and `{ kind, message }` serialization.
+  - `src/error.rs`: Structured `AppError` and `ErrorCode`; see the [error payload contract](data-schema.md#error-payload).
   - `src/events.rs`: Streaming channel event contracts (`TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`).
   - `src/models.rs`: Primary entity structs (`Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`).
 - **Persistence Crate (`crates/persistence/`):**
@@ -96,7 +97,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `src/sqlite.rs`: SQLite WAL pool, migration runner, document registry, settings repository, and fallback API key storage.
   - `src/lancedb.rs`: LanceDB embedded vector store, Arrow schema builder (768-d Float32), serialized `merge_insert` upserts, FTS index creation, and hybrid search.
   - `src/storage/`: Managed source storage, validation, and maintenance:
-    - `mod.rs`: Module exports and facade re-exports.
+    - `mod.rs`: Shared application-directory validation and module re-exports.
     - `documents.rs`: Sandboxed managed file storage, path traversal protection, magic byte validation, and atomic writes.
     - `reconciliation.rs`: Orphan file cleanup and deletion finalization.
     - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
@@ -104,22 +105,23 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
   - `Cargo.toml`: Document extraction, tokenization, and FastEmbed dependencies.
   - `src/lib.rs`: `TextEmbedder` initializing EmbeddingGemma and computing embeddings with `passage: ` and `query: ` prefixes.
   - `src/chunker.rs`: Page-aware tokenizer chunking with token budgets, prefix reservations, and overlap windows.
-  - `src/extractor/mod.rs`: Format detection and extraction router.
+  - `src/extractor/mod.rs`: Format dispatch for extraction and typed document previews.
   - `src/extractor/pdf.rs`: PDF extractor preserving physical page provenance.
   - `src/extractor/docx.rs`: Streaming XML extractor for DOCX documents (`word/document.xml`) with memory limits.
   - `src/extractor/text.rs`: Plain text extractor validating UTF-8 and stripping BOMs.
   - `src/extractor/markdown.rs`: Markdown AST parser sanitizing HTML for safe preview rendering.
-  - `src/extractor/preview.rs`: Document preview generator producing truncated plain text and structured blocks.
+  - `src/extractor/util.rs`: Bounded source readers, preview truncation, and aggregate extraction limits.
 
 ### 2.3 Tauri Application Shell (`src-tauri/src/`)
 
 - **Composition & App State:**
   - `main.rs`: Native entry point delegating to `mrk_ragtag_app::run()`.
   - `lib.rs`: Bootstrap root, handles pending resets, opens databases, reconciles state, spawns ingestion worker, registers commands.
-  - `state.rs`: Shared `AppState` struct holding connection pools, vector stores, channels, and model slots.
-  - `model_download.rs`: Hugging Face download progress listener emitting channel updates.
+  - `state.rs`: Shared application state and generation-owned initialization activity.
+  - `paths.rs`: Shared typed application-data and model-directory resolution.
+  - `model_download.rs`: Cancellable GGUF downloads, cache reuse, integrity verification, and lifecycle progress reporting.
 - **IPC Command Handlers (`commands/`):**
-  - `mod.rs`: Module exports and handler registration.
+  - `mod.rs`: Command module exports; `lib.rs` registers the handlers.
   - `documents.rs`: Document uploads, library queries, preview fetching, asset path resolution, and deletion triggers.
   - `query.rs`: RAG query orchestration and query stream cancellation.
   - `models.rs`: Model status inspection, local model downloads, download cancellation, and external provider probing.
@@ -134,7 +136,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 - **Model Lifecycle (`model_lifecycle/`):**
   - `mod.rs`: Module exports.
   - `coordinator.rs`: Generational state coordinator coalescing download and initialization requests.
-  - `recovery.rs`: Startup database validator reconciling LanceDB tables and stale indexing records.
+  - `recovery.rs`: Shared vector-registry reconciliation and recovery of stale or interrupted indexing work.
 - **Background Workers (`workers/`):**
   - `mod.rs`: Module exports.
   - `ingestion.rs`: Background worker processing document extraction, chunking, embedding, and indexing with exponential backoff retries.
@@ -185,8 +187,8 @@ frontend: DocumentUpload.svelte ──(IPC: upload_document)──► src-tauri:
 3. **Registry Record:** SQLite creates a document record with status `queued`.
 4. **Queue Dispatch:** The job is sent to `workers/ingestion.rs` via a bounded `mpsc` channel. If the queue is saturated, a typed queue-full error returns immediately.
 5. **Extraction:** The worker invokes `rag_pipeline/src/extractor/` to stream text while preserving page provenance.
-6. **Chunking:** `rag_pipeline/src/chunker.rs` breaks text into chunks within the 512-token limit, prepending the `passage: ` instruction prefix.
-7. **Embedding:** `rag_pipeline/src/lib.rs` embeds chunks via FastEmbed EmbeddingGemma (768 dimensions).
+6. **Chunking:** `rag_pipeline/src/chunker.rs` applies the configured token budget, reserving space for the embedding prefix and special tokens. Stored chunk content remains unprefixed.
+7. **Embedding:** `rag_pipeline/src/lib.rs` adds the shared `passage: ` prefix and embeds chunks via FastEmbed EmbeddingGemma (768 dimensions).
 8. **Vector Upsert:** `persistence/src/lancedb.rs` writes vectors using `merge_insert` on the composite key `(document_id, page, chunk_index)`.
 9. **Finalization:** SQLite updates status to `indexed` with chunk count and provenance. The progress channel emits a terminal completion event.
 
@@ -220,28 +222,26 @@ frontend: QueryPage.svelte ──────(IPC: execute_query)─────
                                                         (Streamed to QueryResult.svelte)
                                                                      │
                                                                      ▼
-                                                        Channel: TokenEvent::Complete
+                                                        Channel: TokenEvent::Done
                                                         (Grounded Citations from Retrieved Chunks)
 ```
 
-1. **Submission:** User enters a question in `QueryInput.svelte`. IPC command `execute_query` passes a request-scoped channel and cancellation token.
+1. **Submission:** User enters a question in `QueryInput.svelte`. IPC command `execute_query` receives the question, request ID, and answer channel. `cancel_query` addresses the same request ID.
 2. **Embedding:** The query is formatted with the `query: ` prefix and embedded into a 768-dimensional vector.
-3. **Retrieval:** `persistence/src/lancedb.rs` performs hybrid retrieval (vector similarity + BM25 full-text search) restricted exclusively to documents with status `indexed`. If hybrid search fails, it degrades to vector-only search and emits a `Degraded` event.
-4. **Exclusion Check:** Unusable or low-scoring excerpts are filtered out. If no usable chunks remain, the query terminates without invoking the LLM.
+3. **Retrieval:** `persistence/src/lancedb.rs` searches registry-indexed documents using hybrid vector/full-text retrieval. Vector-only fallback produces a `TokenEvent::Warning` through query orchestration.
+4. **Exclusion Check:** Missing, no-longer-indexed, or blank excerpts are excluded. If no usable chunks remain, the query terminates without invoking the LLM.
 5. **Prompt Assembly:** Grounded context chunks, system instructions, and the user prompt are assembled.
 6. **Streaming Generation:**
    - **Local Mode:** `inference/local.rs` feeds the request to `mistralrs` and streams generated tokens across the channel.
    - **External Mode:** `inference/external.rs` issues a streaming HTTP POST request to the configured OpenAI-compatible endpoint, decoding tokens via `inference/sse.rs`.
-7. **Citations:** Upon completion, the provider emits `TokenEvent::Complete` containing citations derived directly from retrieved chunk metadata (document ID, document title, physical page number).
+7. **Citations:** Inference forwarding sends `TokenEvent::Done` with retrieval-grounded citations. `lib/citations.ts` maps a selected citation to viewer fields without deriving page numbers from model output.
 
 ### 3.3 Model Lifecycle Coordination Flow
 
-1. **Readiness Probe:** Frontend boots and queries `get_model_status`.
-2. **First-Run Onboarding:**
-   - Embedder model is initialized first, unlocking document ingestion.
-   - Local model download is initiated on demand or explicitly by the user.
-3. **Coalesced Requests:** `model_lifecycle/coordinator.rs` maintains a generational state machine. If multiple requests trigger model downloads simultaneously, they share the single in-flight download future.
-4. **Progress Forwarding:** Download progress is pushed over a dedicated channel to `app-state.svelte.ts`.
+1. **Readiness Probe:** Frontend boots and queries `get_app_state` for a readiness and download-progress snapshot.
+2. **Staged Availability:** Initialization starts the embedder and configured generation route. Embedder readiness unlocks ingestion; querying requires readiness of the selected inference provider.
+3. **Coalesced Requests:** `model_lifecycle/coordinator.rs` tracks one active generation and coalesces repeated initialization requests.
+4. **Progress Forwarding:** Lifecycle events deliver model-download progress to `app-state.svelte.ts`; the readiness probe includes the retained progress snapshot.
 5. **Model Instantiation:** Once download completes, `mistralrs` initializes the model in-process (using Metal acceleration on Apple Silicon) and stores the instance in `AppState.local_model`.
 
 ---

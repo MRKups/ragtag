@@ -51,25 +51,17 @@ pub async fn upload_document(
     }
     let repo = DocumentRepository::new(state.db_pool.clone());
 
-    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
-        AppError::storage(
-            "Resolve storage path",
-            format!("Failed to resolve app local data directory: {e}"),
-            "Verify application local storage permissions.",
-        )
-    })?;
-    let docs_dir = tokio::task::spawn_blocking({
-        let app_local_data = app_local_data.clone();
-        move || managed_documents_directory(&app_local_data, true)
-    })
-    .await
-    .map_err(|error| {
-        AppError::internal(
-            "Access documents directory",
-            format!("Managed document directory task panicked: {error}"),
-            "Restart the application and retry uploading.",
-        )
-    })??;
+    let app_local_data = crate::paths::app_local_data_dir(&app)?;
+    let docs_dir =
+        tokio::task::spawn_blocking(move || managed_documents_directory(&app_local_data, true))
+            .await
+            .map_err(|error| {
+                AppError::internal(
+                    "Access documents directory",
+                    format!("Managed document directory task panicked: {error}"),
+                    "Restart the application and retry uploading.",
+                )
+            })??;
 
     let file_size_bytes = i64::try_from(file_bytes.len()).map_err(|_| {
         AppError::invalid_input(
@@ -78,19 +70,16 @@ pub async fn upload_document(
             "Upload a smaller file within supported platform limits.",
         )
     })?;
-    let (hash, file_bytes) = tokio::task::spawn_blocking(move || {
-        let mut hasher = Sha512::new();
-        hasher.update(&file_bytes);
-        (hasher.finalize().to_vec(), file_bytes)
-    })
-    .await
-    .map_err(|e| {
-        AppError::internal(
-            "Hash document",
-            format!("Hashing failed: {e}"),
-            "Retry uploading the document.",
-        )
-    })?;
+    let (hash, file_bytes) =
+        tokio::task::spawn_blocking(move || (Sha512::digest(&file_bytes).to_vec(), file_bytes))
+            .await
+            .map_err(|e| {
+                AppError::internal(
+                    "Hash document",
+                    format!("Hashing failed: {e}"),
+                    "Retry uploading the document.",
+                )
+            })?;
 
     if let Some(existing) = repo.find_by_hash(&hash).await? {
         return Err(AppError::duplicate_document(
@@ -155,7 +144,7 @@ pub async fn upload_document(
         })
         .is_err()
     {
-        if let Err(cleanup_error) = repo.delete_by_id(&doc_id).await {
+        let detail = if let Err(cleanup_error) = repo.delete_by_id(&doc_id).await {
             warn!(
                 "queue-full upload rollback could not delete document {doc_id}; scheduling durable enqueue: {cleanup_error}"
             );
@@ -169,16 +158,14 @@ pub async fn upload_document(
                     log::error!("queue-full upload recovery producer stopped: {send_error}");
                 }
             });
-            return Err(AppError::queue_full(
-                "Queue document ingestion",
-                "Document queue is full; scheduling durable background ingestion",
-                "Wait for active document indexing jobs to complete before enqueuing additional work.",
-            ));
-        }
-        let _ = tokio::fs::remove_file(&storage_path).await;
+            "Document queue is full; scheduling durable background ingestion"
+        } else {
+            let _ = tokio::fs::remove_file(&storage_path).await;
+            "Document queue is full"
+        };
         return Err(AppError::queue_full(
             "Queue document ingestion",
-            "Document queue is full",
+            detail,
             "Wait for active document indexing jobs to complete before enqueuing additional work.",
         ));
     }
@@ -214,13 +201,7 @@ pub async fn get_document_preview(
     })?;
     validate_document_preview_document(&document)?;
 
-    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
-        AppError::storage(
-            "Resolve storage path",
-            format!("Failed to resolve app local data directory: {e}"),
-            "Verify application local storage permissions.",
-        )
-    })?;
+    let app_local_data = crate::paths::app_local_data_dir(&app)?;
     let storage_path = document.storage_path;
     let file_type = document.file_type;
     let filename = document.filename;
@@ -261,13 +242,7 @@ pub async fn delete_document(
     let repo = DocumentRepository::new(state.db_pool.clone());
     let document = repo.get_by_id(&id).await?;
     if let Some(document) = document {
-        let app_local_data = app.path().app_local_data_dir().map_err(|error| {
-            AppError::storage(
-                "Resolve storage path",
-                format!("Failed to resolve app local data directory: {error}"),
-                "Verify application local storage permissions.",
-            )
-        })?;
+        let app_local_data = crate::paths::app_local_data_dir(&app)?;
         let check_data = app_local_data.clone();
         let check_storage_path = document.storage_path.clone();
         tokio::task::spawn_blocking(move || {

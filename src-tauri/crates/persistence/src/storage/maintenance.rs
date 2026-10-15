@@ -1,20 +1,7 @@
 use domain::AppError;
 
 pub fn storage_sizes(app_local_data: &std::path::Path) -> Result<(u64, u64, u64, u64), AppError> {
-    let metadata = std::fs::symlink_metadata(app_local_data).map_err(|error| {
-        AppError::storage(
-            "Inspect application data directory",
-            format!("Could not inspect app data directory: {error}"),
-            "Check that the application local data directory exists and is accessible.",
-        )
-    })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(AppError::storage(
-            "Inspect application data directory",
-            "App data directory must be a real directory, not a symlink",
-            "Ensure the application data directory is a regular folder.",
-        ));
-    }
+    super::validate_app_data_directory(app_local_data)?;
 
     Ok((
         managed_file_size(&app_local_data.join("app.db"))?,

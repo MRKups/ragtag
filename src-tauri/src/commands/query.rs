@@ -3,7 +3,6 @@ use persistence::lancedb::RetrievalMode;
 use persistence::{AppSettingsRepository, DocumentRepository};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::Manager;
 
 use crate::inference::{
     InferenceProvider, external_inference_config, forward_inference_events,
@@ -114,7 +113,7 @@ pub async fn execute_query(
     let cancel_receiver = register_active_query(&state.active_queries, &request_id)?;
     let _active_query = ActiveQuery {
         queries: state.active_queries.clone(),
-        request_id: request_id.clone(),
+        request_id,
     };
     let settings_repo = AppSettingsRepository::new(state.db_pool.clone());
 
@@ -130,7 +129,6 @@ pub async fn execute_query(
         )
     })?;
     let vector_db = state.vector_db.clone();
-    let local_llm = state.local_llm.clone();
 
     let use_query_enhancement = settings_repo
         .get("use_query_enhancement")
@@ -143,7 +141,6 @@ pub async fn execute_query(
     };
 
     let query_embedding = {
-        let embedder = embedder.clone();
         let retrieval_query = retrieval_query.clone();
         tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&embedder, &retrieval_query))
             .await
@@ -156,13 +153,7 @@ pub async fn execute_query(
             })?
     }?;
 
-    let app_local_data = app.path().app_local_data_dir().map_err(|e| {
-        AppError::storage(
-            "Resolve storage path",
-            format!("Failed to resolve app local data directory: {e}"),
-            "Verify application local storage permissions.",
-        )
-    })?;
+    let app_local_data = crate::paths::app_local_data_dir(&app)?;
     let citations = {
         let _document_operation = state.document_operations.read().await;
         let indexed_document_ids = repo.get_indexed_ids().await?;
@@ -190,7 +181,7 @@ pub async fn execute_query(
                 continue;
             }
 
-            let doc_storage_path = doc.storage_path.clone();
+            let doc_storage_path = doc.storage_path;
             let app_data = app_local_data.clone();
             let storage_path = tokio::task::spawn_blocking(move || {
                 document_storage_path(&app_data, &doc_storage_path)
@@ -263,7 +254,7 @@ pub async fn execute_query(
         }
     } else {
         let model = {
-            let guard = local_llm.read().await;
+            let guard = state.local_llm.read().await;
             guard.clone()
         };
         match model {

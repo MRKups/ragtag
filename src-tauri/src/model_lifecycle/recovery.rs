@@ -14,10 +14,29 @@ pub const DEFAULT_CHUNK_SIZE: usize = 512;
 pub const DEFAULT_CHUNK_OVERLAP: usize = 80;
 pub const EXTRACTION_VERSION: &str = "token-aware-v2";
 
-pub async fn requeue_indexed_documents_after_vector_loss(
+pub async fn reconcile_indexed_vectors(
     repo: &DocumentRepository,
+    vector_db: &VectorDb,
 ) -> Result<Vec<String>, AppError> {
-    repo.requeue_indexed_documents_after_vector_loss().await
+    let (requeued, reason) = if !vector_db.chunks_table_exists().await? {
+        (
+            repo.requeue_indexed_documents_after_vector_loss().await?,
+            "after chunks table loss",
+        )
+    } else {
+        let counts = vector_db.indexed_chunk_counts().await?;
+        (
+            requeue_indexed_documents_with_chunk_count_mismatches(repo, &counts).await?,
+            "with mismatched chunk counts",
+        )
+    };
+    if !requeued.is_empty() {
+        info!(
+            "startup vector recovery — re-queued {} indexed documents {reason}",
+            requeued.len()
+        );
+    }
+    Ok(requeued)
 }
 
 pub fn indexed_chunk_count_mismatch(
@@ -138,15 +157,7 @@ pub async fn recover_startup_documents(
     let _document_operation = document_operations.write().await;
     let mut recovered_ids = HashSet::new();
 
-    if !vector_db.chunks_table_exists().await? {
-        recovered_ids.extend(requeue_indexed_documents_after_vector_loss(&repo).await?);
-    } else {
-        let indexed_chunk_counts = vector_db.indexed_chunk_counts().await?;
-        recovered_ids.extend(
-            requeue_indexed_documents_with_chunk_count_mismatches(&repo, &indexed_chunk_counts)
-                .await?,
-        );
-    }
+    recovered_ids.extend(reconcile_indexed_vectors(&repo, vector_db).await?);
 
     let settings = AppSettingsRepository::new(pool.clone());
     let desired_provenance = desired_indexing_provenance(&settings).await?;
@@ -320,6 +331,47 @@ mod tests {
         drop(vector_db);
         pool.close().await;
         std::fs::remove_dir_all(app_local_data).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shared_vector_reconciliation_handles_empty_tables_idempotently() {
+        let directory = std::env::temp_dir().join(format!(
+            "ragtag-vector-reconciliation-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let pool = persistence::init_pool(&directory).await.unwrap();
+        let repo = DocumentRepository::new(pool.clone());
+        let document = indexed_text_document("missing-chunks.txt");
+        repo.insert(&document).await.unwrap();
+        let mut deleting = document.clone();
+        deleting.id = "deleting-document".into();
+        deleting.status = DocumentStatus::Deleting;
+        repo.insert(&deleting).await.unwrap();
+        let vectors = VectorDb::init(&directory.join(".lancedb")).await.unwrap();
+        vectors.get_or_create_table().await.unwrap();
+
+        assert_eq!(
+            reconcile_indexed_vectors(&repo, &vectors).await.unwrap(),
+            vec![document.id.clone()]
+        );
+        assert!(
+            reconcile_indexed_vectors(&repo, &vectors)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repo.get_by_id(&document.id).await.unwrap().unwrap().status,
+            DocumentStatus::Queued
+        );
+        assert_eq!(
+            repo.get_by_id(&deleting.id).await.unwrap().unwrap().status,
+            DocumentStatus::Deleting
+        );
+
+        drop(vectors);
+        pool.close().await;
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]

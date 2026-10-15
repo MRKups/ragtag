@@ -126,24 +126,15 @@
 
   async function listenForDocumentEvents() {
     const listeners: Array<() => void> = [];
-    const registrations = [
-      () => api.listen<{ document_id: string }>('document_indexed', (event) => {
-        documentProgressState.finalize(event.payload.document_id);
-        void fetchDocuments(true);
-      }),
-      () => api.listen<{ document_id: string }>('document_failed', (event) => {
-        documentProgressState.finalize(event.payload.document_id);
-        void fetchDocuments(true);
-      }),
-      () => api.listen<{ document_id: string }>('document_deleted', (event) => {
-        documentProgressState.finalize(event.payload.document_id);
-        void fetchDocuments(true);
-      }),
-    ];
+    const eventNames = ['document_indexed', 'document_failed', 'document_deleted'];
+    const handleDocumentEvent = (event: { payload: { document_id: string } }) => {
+      documentProgressState.finalize(event.payload.document_id);
+      void fetchDocuments(true);
+    };
 
     try {
-      for (const register of registrations) {
-        const unlisten = await register();
+      for (const eventName of eventNames) {
+        const unlisten = await api.listen<{ document_id: string }>(eventName, handleDocumentEvent);
         if (!isMounted) {
           unlisten();
           for (const registeredUnlisten of listeners) registeredUnlisten();
@@ -533,23 +524,6 @@
     to { transform: rotate(360deg); }
   }
   
-  .content::-webkit-scrollbar {
-    width: 6px;
-  }
-  
-  .content::-webkit-scrollbar-track {
-    background: transparent; 
-  }
-  
-  .content::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb); 
-    border-radius: 9999px;
-  }
-  
-  .content::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover); 
-  }
-
   .confirm-overlay {
     position: absolute;
     inset: 0;

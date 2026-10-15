@@ -3,7 +3,8 @@ use super::{
     docx::{DOCX_XML_MAX_BYTES, bounded_docx_xml, docx_body_text, normalized_docx_xml},
     extract_pages,
     markdown::{
-        InlineEnd, MARKDOWN_MAX_NESTING, markdown_blocks, markdown_preview_blocks, parse_inlines,
+        InlineEnd, MARKDOWN_MAX_NESTING, flatten_block, flatten_inlines, markdown_blocks,
+        markdown_preview_blocks, parse_blocks, parse_inlines, parse_list_item, push_plain_inline,
     },
     pdf::{
         BoundedPdfText, PDF_MAX_PAGES, PDF_MAX_RETAINED_TEXT_BYTES, PDF_MAX_SOURCE_BYTES,
@@ -16,7 +17,7 @@ use super::{
     },
 };
 use domain::{DocumentPreview, MarkdownBlock, MarkdownInline};
-use pulldown_cmark::{Event as MarkdownEvent, Tag, TagEnd};
+use pulldown_cmark::{Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use std::{
     fs::File,
     io::{Cursor, Write},
@@ -483,6 +484,188 @@ fn preserves_direct_text_in_tight_list_items() {
                     && strong_content == &vec![MarkdownInline::Text { content: "item".into() }]
             )
     ));
+}
+
+#[test]
+fn converts_markdown_leaf_events_equally_in_normal_and_flattened_paths() {
+    let leaves = vec![
+        MarkdownEvent::Text("plain".into()),
+        MarkdownEvent::Code("code".into()),
+        MarkdownEvent::SoftBreak,
+        MarkdownEvent::HardBreak,
+        MarkdownEvent::TaskListMarker(true),
+        MarkdownEvent::TaskListMarker(false),
+        MarkdownEvent::FootnoteReference("note".into()),
+        MarkdownEvent::InlineMath("x".into()),
+        MarkdownEvent::DisplayMath("y".into()),
+        MarkdownEvent::InlineHtml("<script>hidden</script>".into()),
+        MarkdownEvent::Html("<div>hidden</div>".into()),
+    ];
+    let expected = vec![
+        MarkdownInline::Text {
+            content: "plain".into(),
+        },
+        MarkdownInline::Code {
+            content: "code".into(),
+        },
+        MarkdownInline::Break,
+        MarkdownInline::Break,
+        MarkdownInline::Text {
+            content: "☑ ".into(),
+        },
+        MarkdownInline::Text {
+            content: "☐ ".into(),
+        },
+        MarkdownInline::Text {
+            content: "[note]".into(),
+        },
+        MarkdownInline::Code {
+            content: "x".into(),
+        },
+        MarkdownInline::Code {
+            content: "y".into(),
+        },
+    ];
+    let mut plain = Vec::new();
+    for event in leaves.clone() {
+        push_plain_inline(&mut plain, event);
+    }
+    assert_eq!(plain, expected);
+
+    let mut normal = leaves.clone();
+    normal.push(MarkdownEvent::End(TagEnd::Paragraph));
+    let mut normal = normal.into_iter().peekable();
+    assert_eq!(
+        parse_inlines(&mut normal, InlineEnd::Paragraph, 0),
+        expected
+    );
+
+    let mut flattened = leaves.clone();
+    flattened.push(MarkdownEvent::End(TagEnd::Emphasis));
+    let mut flattened = flattened.into_iter().peekable();
+    assert_eq!(
+        flatten_inlines(&mut flattened, InlineEnd::Emphasis),
+        expected
+    );
+
+    let mut block = leaves.clone();
+    block.push(MarkdownEvent::End(TagEnd::BlockQuote(None)));
+    let mut block = block.into_iter().peekable();
+    assert_eq!(flatten_block(&mut block), expected);
+
+    let mut capped = vec![MarkdownEvent::Start(Tag::Emphasis)];
+    capped.extend(leaves);
+    capped.push(MarkdownEvent::End(TagEnd::Emphasis));
+    capped.push(MarkdownEvent::End(TagEnd::Paragraph));
+    capped.push(MarkdownEvent::Text("after".into()));
+    let mut capped = capped.into_iter().peekable();
+    assert_eq!(
+        parse_inlines(&mut capped, InlineEnd::Paragraph, MARKDOWN_MAX_NESTING),
+        expected
+    );
+    assert_eq!(capped.next(), Some(MarkdownEvent::Text("after".into())));
+}
+
+#[test]
+fn dispatches_blocks_equally_at_top_level_and_inside_list_items() {
+    let source = "# Heading\n\nParagraph [safe](https://example.test) [unsafe](javascript:alert) ![alt](file:///private).\n\n> quote\n>\n> - nested **item**\n\n3. ordered\n\n```rust extra\nlet value = 1;\n```\n\n| head | other |\n| --- | --- |\n| cell | `code` |\n\n<div>hidden</div>\n\n---\n";
+    let options =
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    let events = Parser::new_ext(source, options).collect::<Vec<_>>();
+    for nesting in [0, MARKDOWN_MAX_NESTING - 1, MARKDOWN_MAX_NESTING] {
+        let mut top_level = events.clone().into_iter().peekable();
+        let expected = parse_blocks(&mut top_level, None, nesting);
+        assert!(top_level.next().is_none());
+        assert!(!block_text(&expected).contains("hidden"));
+        assert!(block_text(&expected).contains("unsafe"));
+        assert!(block_text(&expected).contains("alt"));
+        assert!(max_block_nesting(&expected) <= MARKDOWN_MAX_NESTING - nesting);
+        assert!(
+            expected
+                .iter()
+                .any(|block| matches!(block, MarkdownBlock::Table { .. }))
+        );
+        assert!(matches!(
+            expected.last(),
+            Some(MarkdownBlock::ThematicBreak)
+        ));
+
+        let mut item = vec![MarkdownEvent::Text("before".into())];
+        item.extend(events.clone());
+        item.push(MarkdownEvent::Text("after".into()));
+        item.push(MarkdownEvent::End(TagEnd::Item));
+        item.push(MarkdownEvent::Text("outside".into()));
+        let mut item = item.into_iter().peekable();
+        let actual = parse_list_item(&mut item, nesting);
+        let mut expected_item = vec![MarkdownBlock::Paragraph {
+            content: vec![MarkdownInline::Text {
+                content: "before".into(),
+            }],
+        }];
+        expected_item.extend(expected);
+        expected_item.push(MarkdownBlock::Paragraph {
+            content: vec![MarkdownInline::Text {
+                content: "after".into(),
+            }],
+        });
+        assert_eq!(actual, expected_item);
+        assert_eq!(item.next(), Some(MarkdownEvent::Text("outside".into())));
+    }
+}
+
+#[test]
+fn flushes_tight_list_text_before_each_recognized_block() {
+    for source in [
+        "# heading\n",
+        "paragraph\n",
+        "> quote\n",
+        "3. ordered\n",
+        "```rust\ncode\n```\n",
+        "| head |\n| --- |\n| cell |\n",
+        "<div>hidden</div>\n",
+        "---\n",
+    ] {
+        let events = Parser::new_ext(source, Options::ENABLE_TABLES).collect::<Vec<_>>();
+        let mut item = vec![MarkdownEvent::Text("before".into())];
+        item.extend(events);
+        item.push(MarkdownEvent::Text("after".into()));
+        item.push(MarkdownEvent::End(TagEnd::Item));
+        let mut item = item.into_iter().peekable();
+        let actual = parse_list_item(&mut item, 0);
+        let mut expected = vec![MarkdownBlock::Paragraph {
+            content: vec![MarkdownInline::Text {
+                content: "before".into(),
+            }],
+        }];
+        expected.extend(markdown_blocks(source));
+        expected.push(MarkdownBlock::Paragraph {
+            content: vec![MarkdownInline::Text {
+                content: "after".into(),
+            }],
+        });
+        assert_eq!(actual, expected, "tight-list preflush for {source:?}");
+    }
+}
+
+#[test]
+fn preserves_equivalent_tight_and_loose_nested_list_structure() {
+    let tight = markdown_blocks("- parent **bold**\n  - child `code`\n- sibling\n\nOutside\n");
+    let loose = markdown_blocks("- parent **bold**\n\n  - child `code`\n\n- sibling\n\nOutside\n");
+    assert_eq!(tight, loose);
+    let [
+        MarkdownBlock::List { items, .. },
+        MarkdownBlock::Paragraph { content },
+    ] = tight.as_slice()
+    else {
+        panic!("the outer list must terminate before the following paragraph");
+    };
+    assert_eq!(inline_text(content), "Outside");
+    assert!(matches!(
+        items[0].as_slice(),
+        [MarkdownBlock::Paragraph { .. }, MarkdownBlock::List { .. }]
+    ));
+    assert_eq!(block_text(&items[0]), "parent boldchild code");
+    assert_eq!(block_text(&items[1]), "sibling");
 }
 
 fn max_block_nesting(blocks: &[MarkdownBlock]) -> usize {

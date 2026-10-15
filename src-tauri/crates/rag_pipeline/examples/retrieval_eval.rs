@@ -1,7 +1,7 @@
 //! Synthetic retrieval baseline. Requires runtime embedding assets, never an LLM.
 //! Usage: cargo run --locked -p rag_pipeline --example retrieval_eval -- <new-directory>
 
-use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, StringArray};
+use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray};
 use persistence::VectorDb;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
@@ -80,15 +80,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let db = VectorDb::init(&directory.join("vectors")).await?;
     let flat = vectors.into_iter().flatten().collect::<Vec<_>>();
-    let vector = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
-        flat.as_chunks::<768>()
-            .0
-            .iter()
-            .map(|chunk| Some(chunk.iter().copied().map(Some))),
+    let schema = VectorDb::schema();
+    let arrow_schema::DataType::FixedSizeList(inner_field, _) = schema.field(0).data_type() else {
+        return Err("Schema vector field must be FixedSizeList".into());
+    };
+    let vector = FixedSizeListArray::try_new(
+        inner_field.clone(),
         768,
-    );
+        Arc::new(Float32Array::from(flat)),
+        None,
+    )?;
     let batch = RecordBatch::try_new(
-        VectorDb::schema(),
+        schema,
         vec![
             Arc::new(vector),
             Arc::new(StringArray::from(ids.clone())),
@@ -108,19 +111,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let text = query.to_string();
         let vector =
             tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&model, &text)).await??;
-        let model = Arc::clone(&embedder);
         let enhanced = rag_pipeline::enhance_query(query);
-        let enhanced_text = enhanced.clone();
-        let enhanced_vector =
-            tokio::task::spawn_blocking(move || rag_pipeline::embed_query(&model, &enhanced_text))
-                .await??;
+        let enhanced_vector = if enhanced == *query {
+            None
+        } else {
+            let model = Arc::clone(&embedder);
+            let enhanced_text = enhanced.clone();
+            Some(
+                tokio::task::spawn_blocking(move || {
+                    rag_pipeline::embed_query(&model, &enhanced_text)
+                })
+                .await??,
+            )
+        };
+        let enhanced_vector = enhanced_vector.as_ref().unwrap_or(&vector);
         for (index, metrics) in modes.iter_mut().enumerate() {
             let start = Instant::now();
             let result = match index {
                 0 => db.vector_search(&vector, &ids, 3).await?,
                 1 => db.hybrid_search(query, &vector, &ids, 3).await?,
                 _ => {
-                    db.hybrid_search(&enhanced, &enhanced_vector, &ids, 3)
+                    db.hybrid_search(&enhanced, enhanced_vector, &ids, 3)
                         .await?
                 }
             };

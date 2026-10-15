@@ -95,6 +95,13 @@ export interface ApiKeyStatus {
   storage: ApiKeyStorage;
 }
 
+export interface StorageInfo {
+  database_bytes: number;
+  vector_store_bytes: number;
+  documents_bytes: number;
+  models_bytes: number;
+}
+
 
 export type IngestionProgress =
   | {
@@ -166,5 +173,4 @@ export interface AppLifecycleState {
   active_document_id: string | null;
   capacity: CapacityState;
 }
-
 

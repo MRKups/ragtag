@@ -1,3 +1,4 @@
+use crate::PASSAGE_PREFIX;
 use domain::AppError;
 use tokenizers::Tokenizer;
 
@@ -11,8 +12,6 @@ pub struct Chunk {
     pub chunk_index: i32,
     pub content: String,
 }
-
-const PASSAGE_PREFIX: &str = "passage: ";
 
 /// Caps overlap so every successive window makes meaningful progress even when
 /// callers bypass settings validation.

@@ -13,6 +13,14 @@ pub use domain::{DownloadStage, ModelDownloadProgress};
 
 pub type ProgressEmitter = Arc<dyn Fn(ModelDownloadProgress) + Send + Sync>;
 
+fn download_cancelled_error() -> AppError {
+    AppError::internal(
+        "Download model file",
+        "Model download was cancelled by the user",
+        "Retry local model initialization when you are ready to download.",
+    )
+}
+
 #[derive(Clone)]
 struct ProgressReporter {
     emit_progress: ProgressEmitter,
@@ -100,11 +108,7 @@ pub async fn download_model(
     mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Result<PathBuf, AppError> {
     if *cancellation.borrow() {
-        return Err(AppError::internal(
-            "Download model file",
-            "Model download was cancelled by the user",
-            "Retry local model initialization when you are ready to download.",
-        ));
+        return Err(download_cancelled_error());
     }
 
     tokio::fs::create_dir_all(cache_dir).await?;
@@ -142,11 +146,7 @@ pub async fn download_model(
     } else {
         loop {
             if *cancellation.borrow() {
-                return Err(AppError::internal(
-                    "Download model file",
-                    "Model download was cancelled by the user",
-                    "Retry local model initialization when you are ready to download.",
-                ));
+                return Err(download_cancelled_error());
             }
             attempts += 1;
 
@@ -167,11 +167,7 @@ pub async fn download_model(
                 biased;
                 changed = cancellation.changed() => {
                     if changed.is_err() || *cancellation.borrow() {
-                        return Err(AppError::internal(
-                            "Download model file",
-                            "Model download was cancelled by the user",
-                            "Retry local model initialization when you are ready to download.",
-                        ));
+                        return Err(download_cancelled_error());
                     }
                     continue;
                 }
@@ -328,6 +324,21 @@ fn model_integrity_error(detail: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_cancellation_error_preserves_its_payload() {
+        let error = download_cancelled_error();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            serde_json::json!({
+                "code": "internal",
+                "operation": "Download model file",
+                "detail": "Model download was cancelled by the user",
+                "recovery": "Retry local model initialization when you are ready to download.",
+                "message": "Download model file: Model download was cancelled by the user. Retry local model initialization when you are ready to download.",
+            })
+        );
+    }
 
     #[tokio::test]
     async fn cached_models_resolve_with_an_unreachable_hub_endpoint() {

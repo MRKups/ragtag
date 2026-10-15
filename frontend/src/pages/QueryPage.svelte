@@ -6,6 +6,7 @@
   import { queryState } from '$lib/stores/query.svelte';
   import { appState } from '$lib/stores/app-state.svelte';
   import type { AppErrorPayload, TokenEvent } from '$lib/types';
+  import type { CitationSelection } from '$lib/citations';
   import { errorDialog } from '$lib/stores/error-dialog.svelte';
   import { errorMessage, isAppError, isTransientError } from '$lib/error';
   import { router } from '$lib/router.svelte';
@@ -61,7 +62,7 @@
   }
 
   $effect(() => {
-    if (chatScrollArea && (queryState.isStreaming || queryState.isLoading)) {
+    if (chatScrollArea && queryState.isStreaming) {
       const _ = queryState.text;
       if (!userScrolledUp) {
         chatScrollArea.scrollTop = chatScrollArea.scrollHeight;
@@ -79,8 +80,6 @@
     queryState.currentRequestId = requestId;
     queryState.queryText = text;
     queryState.submittedQuery = text;
-    queryState.isLoading = true;
-    queryState.isStreaming = true;
 
     try {
       await api.executeQuery(text, requestId, (event: TokenEvent) => {
@@ -94,9 +93,7 @@
         } else if (event.type === 'error') {
           reportQueryFailure(true, false, event.message);
           queryState.citations = event.citations;
-          queryState.currentRequestId = null;
-          queryState.isStreaming = false;
-          queryState.isLoading = false;
+          queryState.stopGenerating();
         }
       });
     } catch (error) {
@@ -107,9 +104,7 @@
         ? appErr.code === 'inference' && appErr.detail.includes('No usable document excerpts')
         : message.includes('No usable document excerpts were retrieved');
       reportQueryFailure(false, noEvidence, message, appErr);
-      queryState.currentRequestId = null;
-      queryState.isStreaming = false;
-      queryState.isLoading = false;
+      queryState.stopGenerating();
     }
   }
 
@@ -129,33 +124,32 @@
     };
   });
 
-  function handleCitationClick(detail: { filename: string; storagePath: string; documentId: string; page: number }) {
+  function handleCitationClick(detail: CitationSelection) {
     queryState.selectedDocument = detail;
   }
 
 </script>
 
+{#snippet questionCard()}
+  {#if queryState.submittedQuery}
+    <div class="user-query-card">
+      <span class="user-query-label">Question</span>
+      <p class="user-query-text">{queryState.submittedQuery}</p>
+    </div>
+  {/if}
+{/snippet}
+
 <div class="page-container">
   <div class="panel left-panel">
     <div class="chat-scroll-area" bind:this={chatScrollArea} onscroll={handleScroll}>
       {#if queryState.isLoading && !queryState.text}
-        {#if queryState.submittedQuery}
-          <div class="user-query-card">
-            <span class="user-query-label">Question</span>
-            <p class="user-query-text">{queryState.submittedQuery}</p>
-          </div>
-        {/if}
+        {@render questionCard()}
         <div class="loading-state">
           <div class="spinner"></div>
           <p>Searching manuals...</p>
         </div>
       {:else if queryState.text || queryState.citations.length > 0 || queryState.retrievalWarning}
-        {#if queryState.submittedQuery}
-          <div class="user-query-card">
-            <span class="user-query-label">Question</span>
-            <p class="user-query-text">{queryState.submittedQuery}</p>
-          </div>
-        {/if}
+        {@render questionCard()}
         {#if queryState.retrievalWarning}
           <p class="retrieval-warning" role="status">{queryState.retrievalWarning}</p>
         {/if}

@@ -90,43 +90,67 @@ pub fn parse_blocks(
             break;
         }
 
-        match event {
-            MarkdownEvent::Start(Tag::Paragraph) => blocks.push(MarkdownBlock::Paragraph {
-                content: parse_inlines(events, InlineEnd::Paragraph, 0),
-            }),
-            MarkdownEvent::Start(Tag::Heading { level, .. }) => {
-                blocks.push(MarkdownBlock::Heading {
-                    level: level as u8,
-                    content: parse_inlines(events, InlineEnd::Heading, 0),
-                });
-            }
-            MarkdownEvent::Start(Tag::BlockQuote(_)) => {
-                if nesting < MARKDOWN_MAX_NESTING {
-                    blocks.push(MarkdownBlock::BlockQuote {
-                        blocks: parse_blocks(events, Some(BlockEnd::BlockQuote), nesting + 1),
-                    });
-                } else {
-                    push_flattened_block(events, &mut blocks);
-                }
-            }
-            MarkdownEvent::Start(Tag::List(start)) => {
-                if nesting < MARKDOWN_MAX_NESTING {
-                    blocks.push(parse_list(events, start, nesting + 1));
-                } else {
-                    push_flattened_block(events, &mut blocks);
-                }
-            }
-            MarkdownEvent::Start(Tag::CodeBlock(kind)) => {
-                blocks.push(parse_code_block(events, kind));
-            }
-            MarkdownEvent::Start(Tag::Table(_)) => blocks.push(parse_table(events)),
-            MarkdownEvent::Start(Tag::HtmlBlock) => skip_until(events, TagEnd::HtmlBlock),
-            MarkdownEvent::Rule => blocks.push(MarkdownBlock::ThematicBreak),
-            _ => {}
-        }
+        push_block(event, events, &mut blocks, nesting);
     }
 
     blocks
+}
+
+fn is_block_event(event: &MarkdownEvent<'_>) -> bool {
+    matches!(
+        event,
+        MarkdownEvent::Start(
+            Tag::Paragraph
+                | Tag::Heading { .. }
+                | Tag::BlockQuote(_)
+                | Tag::List(_)
+                | Tag::CodeBlock(_)
+                | Tag::Table(_)
+                | Tag::HtmlBlock
+        ) | MarkdownEvent::Rule
+    )
+}
+
+fn push_block(
+    event: MarkdownEvent<'_>,
+    events: &mut MarkdownEvents<'_>,
+    blocks: &mut Vec<MarkdownBlock>,
+    nesting: usize,
+) {
+    match event {
+        MarkdownEvent::Start(Tag::Paragraph) => blocks.push(MarkdownBlock::Paragraph {
+            content: parse_inlines(events, InlineEnd::Paragraph, 0),
+        }),
+        MarkdownEvent::Start(Tag::Heading { level, .. }) => {
+            blocks.push(MarkdownBlock::Heading {
+                level: level as u8,
+                content: parse_inlines(events, InlineEnd::Heading, 0),
+            });
+        }
+        MarkdownEvent::Start(Tag::BlockQuote(_)) => {
+            if nesting < MARKDOWN_MAX_NESTING {
+                blocks.push(MarkdownBlock::BlockQuote {
+                    blocks: parse_blocks(events, Some(BlockEnd::BlockQuote), nesting + 1),
+                });
+            } else {
+                push_flattened_block(events, blocks);
+            }
+        }
+        MarkdownEvent::Start(Tag::List(start)) => {
+            if nesting < MARKDOWN_MAX_NESTING {
+                blocks.push(parse_list(events, start, nesting + 1));
+            } else {
+                push_flattened_block(events, blocks);
+            }
+        }
+        MarkdownEvent::Start(Tag::CodeBlock(kind)) => {
+            blocks.push(parse_code_block(events, kind));
+        }
+        MarkdownEvent::Start(Tag::Table(_)) => blocks.push(parse_table(events)),
+        MarkdownEvent::Start(Tag::HtmlBlock) => skip_until(events, TagEnd::HtmlBlock),
+        MarkdownEvent::Rule => blocks.push(MarkdownBlock::ThematicBreak),
+        _ => {}
+    }
 }
 
 pub fn matches_block_end(tag_end: &TagEnd, expected: Option<BlockEnd>) -> bool {
@@ -164,52 +188,9 @@ pub fn parse_list_item(events: &mut MarkdownEvents<'_>, nesting: usize) -> Vec<M
                 push_tight_list_text(&mut blocks, &mut inline_events);
                 break;
             }
-            MarkdownEvent::Start(Tag::Paragraph) => {
+            event if is_block_event(&event) => {
                 push_tight_list_text(&mut blocks, &mut inline_events);
-                blocks.push(MarkdownBlock::Paragraph {
-                    content: parse_inlines(events, InlineEnd::Paragraph, 0),
-                });
-            }
-            MarkdownEvent::Start(Tag::Heading { level, .. }) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                blocks.push(MarkdownBlock::Heading {
-                    level: level as u8,
-                    content: parse_inlines(events, InlineEnd::Heading, 0),
-                });
-            }
-            MarkdownEvent::Start(Tag::BlockQuote(_)) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                if nesting < MARKDOWN_MAX_NESTING {
-                    blocks.push(MarkdownBlock::BlockQuote {
-                        blocks: parse_blocks(events, Some(BlockEnd::BlockQuote), nesting + 1),
-                    });
-                } else {
-                    push_flattened_block(events, &mut blocks);
-                }
-            }
-            MarkdownEvent::Start(Tag::List(start)) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                if nesting < MARKDOWN_MAX_NESTING {
-                    blocks.push(parse_list(events, start, nesting + 1));
-                } else {
-                    push_flattened_block(events, &mut blocks);
-                }
-            }
-            MarkdownEvent::Start(Tag::CodeBlock(kind)) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                blocks.push(parse_code_block(events, kind));
-            }
-            MarkdownEvent::Start(Tag::Table(_)) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                blocks.push(parse_table(events));
-            }
-            MarkdownEvent::Start(Tag::HtmlBlock) => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                skip_until(events, TagEnd::HtmlBlock);
-            }
-            MarkdownEvent::Rule => {
-                push_tight_list_text(&mut blocks, &mut inline_events);
-                blocks.push(MarkdownBlock::ThematicBreak);
+                push_block(event, events, &mut blocks, nesting);
             }
             event => inline_events.push(event),
         }
@@ -353,30 +334,6 @@ pub fn parse_inlines(
         }
 
         match event {
-            MarkdownEvent::Text(text) => content.push(MarkdownInline::Text {
-                content: text.into_string(),
-            }),
-            MarkdownEvent::Code(text) => content.push(MarkdownInline::Code {
-                content: text.into_string(),
-            }),
-            MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
-                content.push(MarkdownInline::Break);
-            }
-            MarkdownEvent::TaskListMarker(checked) => content.push(MarkdownInline::Text {
-                content: if checked {
-                    "☑ ".into()
-                } else {
-                    "☐ ".into()
-                },
-            }),
-            MarkdownEvent::FootnoteReference(label) => content.push(MarkdownInline::Text {
-                content: format!("[{label}]"),
-            }),
-            MarkdownEvent::InlineMath(value) | MarkdownEvent::DisplayMath(value) => {
-                content.push(MarkdownInline::Code {
-                    content: value.into_string(),
-                });
-            }
             MarkdownEvent::Start(Tag::Emphasis) => {
                 if nesting < MARKDOWN_MAX_NESTING {
                     content.push(MarkdownInline::Emphasis {
@@ -430,7 +387,7 @@ pub fn parse_inlines(
                     content.extend(flatten_inlines(events, InlineEnd::Image));
                 }
             }
-            _ => {}
+            event => push_plain_inline(&mut content, event),
         }
     }
 

@@ -112,13 +112,7 @@ export class SettingsState {
 
   async toggleTheme() {
     const nextTheme: Theme = this.theme === 'dark' ? 'light' : 'dark';
-    this.theme = nextTheme;
-    if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', nextTheme);
-    }
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('ragtag_theme', nextTheme);
-    }
+    this.applySettingValue('theme', nextTheme);
     void this.update('theme', nextTheme);
   }
 

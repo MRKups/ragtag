@@ -1,11 +1,14 @@
 <script lang="ts">
   let { score }: { score: number } = $props<{ score: number }>();
 
-  let label = $derived(score >= 0.8 ? 'High' : score >= 0.5 ? 'Medium' : 'Low');
-  let cls = $derived(score >= 0.8 ? 'high' : score >= 0.5 ? 'medium' : 'low');
+  let classification = $derived(score >= 0.8
+    ? { label: 'High', cls: 'high' }
+    : score >= 0.5
+      ? { label: 'Medium', cls: 'medium' }
+      : { label: 'Low', cls: 'low' });
 </script>
 
-<span class="confidence-badge {cls}">{label}</span>
+<span class="confidence-badge {classification.cls}">{classification.label}</span>
 
 <style>
   .confidence-badge {

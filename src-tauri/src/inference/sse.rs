@@ -38,9 +38,8 @@ pub fn sse_output_exceeds_limit(total_output_bytes: usize, token: &str) -> bool 
     total_output_bytes.saturating_add(token.len()) > MAX_SSE_OUTPUT_BYTES
 }
 
-pub fn sse_event_data(event: &str) -> Result<Option<String>, AppError> {
+pub fn sse_event_data(event: &str) -> Option<String> {
     let mut data_lines = Vec::new();
-    let mut saw_data = false;
 
     for line in event.lines() {
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -51,12 +50,11 @@ pub fn sse_event_data(event: &str) -> Result<Option<String>, AppError> {
         let (field, value) = line.split_once(':').unwrap_or((line, ""));
         let value = value.strip_prefix(' ').unwrap_or(value);
         if field == "data" {
-            saw_data = true;
             data_lines.push(value);
         }
     }
 
-    Ok(saw_data.then(|| data_lines.join("\n")))
+    (!data_lines.is_empty()).then(|| data_lines.join("\n"))
 }
 
 pub fn external_sse_token(data: &str) -> Result<Option<String>, AppError> {
@@ -121,12 +119,12 @@ mod tests {
     fn decodes_sse_only_after_complete_utf8_event() {
         let complete = "data: {\"choices\":[{\"delta\":{\"content\":\"test\"}}]}\n\n";
         assert_eq!(sse_event_boundary(complete.as_bytes()), Some((48, 2)));
-        let data = sse_event_data(complete).unwrap().unwrap();
+        let data = sse_event_data(complete).unwrap();
         assert_eq!(external_sse_token(&data).unwrap().as_deref(), Some("test"));
 
         let crlf = "data: {\"choices\":[{\"delta\":{\"content\":\"crlf\"}}]}\r\n\r\n";
         assert_eq!(sse_event_boundary(crlf.as_bytes()), Some((48, 4)));
-        let data = sse_event_data(crlf).unwrap().unwrap();
+        let data = sse_event_data(crlf).unwrap();
         assert_eq!(external_sse_token(&data).unwrap().as_deref(), Some("crlf"));
     }
 
@@ -156,14 +154,40 @@ mod tests {
     fn joins_multiline_sse_data_and_accepts_metadata_chunks() {
         let multiline =
             ": comment\ndata: {\"choices\":[{\"delta\":\ndata: {\"content\":\"joined\"}}]}\n\n";
-        let data = sse_event_data(multiline).unwrap().unwrap();
+        let data = sse_event_data(multiline).unwrap();
         assert_eq!(
             external_sse_token(&data).unwrap().as_deref(),
             Some("joined")
         );
 
         let metadata = "data: {\"choices\":[{\"delta\":{}}]}\n\n";
-        let data = sse_event_data(metadata).unwrap().unwrap();
+        let data = sse_event_data(metadata).unwrap();
         assert_eq!(external_sse_token(&data).unwrap(), None);
+    }
+
+    #[test]
+    fn distinguishes_absent_data_from_bare_and_empty_data_fields() {
+        assert_eq!(sse_event_data(""), None);
+        assert_eq!(
+            sse_event_data(": keepalive\nevent: message\nid: 1\nretry: 1000"),
+            None
+        );
+        for event in ["data", "data:", "data: ", "event: message\r\ndata:\r\n"] {
+            assert_eq!(sse_event_data(event), Some(String::new()));
+        }
+        assert_eq!(sse_event_data("data:\ndata"), Some("\n".into()));
+        assert_eq!(sse_event_data("data:  "), Some(" ".into()));
+    }
+
+    #[test]
+    fn empty_data_is_not_a_metadata_payload_and_provider_errors_remain_errors() {
+        assert!(external_sse_token("").is_err());
+        assert_eq!(external_sse_token(r#"{"choices":[]}"#).unwrap(), None);
+        assert_eq!(
+            external_sse_token(r#"{"choices":[{"delta":{"content":""}}]}"#).unwrap(),
+            None
+        );
+        let error = external_sse_token(r#"{"error":{"message":"quota exhausted"}}"#).unwrap_err();
+        assert_eq!(error.detail, "External provider error: quota exhausted");
     }
 }

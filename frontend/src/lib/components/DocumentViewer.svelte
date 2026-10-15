@@ -82,13 +82,12 @@
         <p class="text-preview-status">Ragtag could not read this source preview.</p>
       {:else if documentPreview === null}
         <p class="text-preview-status">Loading source preview…</p>
-      {:else if documentPreview.kind === 'plain_text'}
-        <pre>{documentPreview.content}</pre>
-        {#if documentPreview.truncated}
-          <p class="text-preview-status">Preview is limited to the first 1 MiB of this source.</p>
-        {/if}
       {:else}
-        <MarkdownPreview blocks={documentPreview.blocks} />
+        {#if documentPreview.kind === 'plain_text'}
+          <pre>{documentPreview.content}</pre>
+        {:else}
+          <MarkdownPreview blocks={documentPreview.blocks} />
+        {/if}
         {#if documentPreview.truncated}
           <p class="text-preview-status">Preview is limited to the first 1 MiB of this source.</p>
         {/if}

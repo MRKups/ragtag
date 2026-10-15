@@ -1,23 +1,19 @@
 <script lang="ts">
   import { FileText, BookOpen } from '@lucide/svelte';
   import type { Citation } from '$lib/types';
+  import { citationSelection, type CitationSelection } from '$lib/citations';
   import ConfidenceBadge from './ConfidenceBadge.svelte';
 
   let {
     citations = [] as Citation[],
-    onCitationClick = (_citation: { filename: string; storagePath: string; documentId: string; page: number }) => {}
+    onCitationClick = (_citation: CitationSelection) => {}
   } = $props<{
     citations?: Citation[];
-    onCitationClick?: (citation: { filename: string; storagePath: string; documentId: string; page: number }) => void;
+    onCitationClick?: (citation: CitationSelection) => void;
   }>();
 
   function handleClick(citation: Citation) {
-    onCitationClick({
-      filename: citation.filename,
-      storagePath: citation.storage_path,
-      documentId: citation.document_id,
-      page: citation.page
-    });
+    onCitationClick(citationSelection(citation));
   }
 </script>
 

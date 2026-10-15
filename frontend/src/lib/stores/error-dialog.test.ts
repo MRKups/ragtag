@@ -5,12 +5,23 @@ const runtime = globalThis as { $state?: <T>(value: T) => T };
 runtime.$state = <T>(value: T) => value;
 
 // The shim must exist before this Svelte rune module evaluates.
-const { ErrorDialogState } = await import('./error-dialog.svelte.ts');
+const { documentProcessingFailureNotice, ErrorDialogState } = await import('./error-dialog.svelte.ts');
 
 const dialog = new ErrorDialogState();
 const activeTitle = () => dialog.active?.title;
 const queuedCount = () => dialog.queue.length;
 const currentNotice = () => dialog.active;
+
+const action = { label: 'Open documents', run() {} };
+const channelNotice = documentProcessingFailureNotice('document-1');
+const lifecycleNotice = documentProcessingFailureNotice('document-1', action);
+if (channelNotice.dedupeKey !== lifecycleNotice.dedupeKey
+    || channelNotice.title !== lifecycleNotice.title
+    || channelNotice.message !== lifecycleNotice.message
+    || channelNotice.guidance !== lifecycleNotice.guidance
+    || 'action' in channelNotice || lifecycleNotice.action !== action) {
+  throw new Error('Document failure notices must share their content while retaining caller actions.');
+}
 
 dialog.report({ dedupeKey: 'upload', title: 'Upload rejected', message: 'Invalid source' });
 dialog.report({ dedupeKey: 'upload', title: 'Duplicate', message: 'Must be ignored' });
@@ -50,4 +61,3 @@ dialog.reportError(new Error('Unexpected network glitch'), 'Network Request');
 if (currentNotice()?.code !== 'internal' || currentNotice()?.title !== 'Network Request' || !currentNotice()?.message.includes('Unexpected network glitch')) {
   throw new Error('reportError did not correctly map fallback error properties.');
 }
-

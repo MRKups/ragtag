@@ -1,4 +1,3 @@
-use domain::AppError;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -10,20 +9,20 @@ pub async fn stream_local_inference(
     context: String,
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
     events: &mpsc::Sender<InferenceEvent>,
-) -> Result<(), AppError> {
+) {
     if *cancellation.borrow() {
-        return Ok(());
+        return;
     }
     let request = mistralrs::RequestBuilder::new()
         .add_message(mistralrs::TextMessageRole::System, system_prompt)
         .add_message(mistralrs::TextMessageRole::User, context);
     let stream_result = tokio::select! {
         biased;
-        _ = cancellation.changed() => return Ok(()),
+        _ = cancellation.changed() => return,
         result = model.stream_chat_request(request) => result,
     };
     if *cancellation.borrow() {
-        return Ok(());
+        return;
     }
     let stream = match stream_result {
         Ok(stream) => stream,
@@ -34,7 +33,7 @@ pub async fn stream_local_inference(
                 InferenceEvent::StreamError(format!("LLM request failed: {error}")),
             )
             .await;
-            return Ok(());
+            return;
         }
     };
 
@@ -45,21 +44,21 @@ pub async fn forward_local_responses(
     mut stream: impl futures_util::Stream<Item = mistralrs::Response> + Unpin,
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
     events: &mpsc::Sender<InferenceEvent>,
-) -> Result<(), AppError> {
+) {
     use futures_util::StreamExt;
 
     if *cancellation.borrow() {
-        return Ok(());
+        return;
     }
 
-    loop {
+    let terminal = loop {
         let response = tokio::select! {
             biased;
-            _ = cancellation.changed() => return Ok(()),
+            _ = cancellation.changed() => return,
             response = stream.next() => response,
         };
         if *cancellation.borrow() {
-            return Ok(());
+            return;
         }
         match response {
             Some(mistralrs::Response::Chunk(chunk)) => {
@@ -68,47 +67,32 @@ pub async fn forward_local_responses(
                         && !send_inference_event(cancellation, events, InferenceEvent::Token(token))
                             .await
                     {
-                        return Ok(());
+                        return;
                     }
                     if choice.finish_reason.is_some() {
-                        send_inference_event(cancellation, events, InferenceEvent::Done).await;
-                        return Ok(());
+                        break InferenceEvent::Done;
                     }
                 }
             }
             Some(mistralrs::Response::Done(_)) => {
-                send_inference_event(cancellation, events, InferenceEvent::Done).await;
-                return Ok(());
+                break InferenceEvent::Done;
             }
             Some(mistralrs::Response::ModelError(message, _)) => {
-                send_inference_event(cancellation, events, InferenceEvent::StreamError(message))
-                    .await;
-                return Ok(());
+                break InferenceEvent::StreamError(message);
             }
             Some(mistralrs::Response::InternalError(error))
             | Some(mistralrs::Response::ValidationError(error)) => {
-                send_inference_event(
-                    cancellation,
-                    events,
-                    InferenceEvent::StreamError(error.to_string()),
-                )
-                .await;
-                return Ok(());
+                break InferenceEvent::StreamError(error.to_string());
             }
             None => {
-                send_inference_event(
-                    cancellation,
-                    events,
-                    InferenceEvent::StreamError(
-                        "Local inference stream ended before completion.".into(),
-                    ),
-                )
-                .await;
-                return Ok(());
+                break InferenceEvent::StreamError(
+                    "Local inference stream ended before completion.".into(),
+                );
             }
             Some(_) => {}
         }
-    }
+    };
+    send_inference_event(cancellation, events, terminal).await;
 }
 
 #[cfg(test)]
@@ -149,9 +133,7 @@ mod tests {
         ]);
         let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
         let (events, mut receiver) = mpsc::channel(4);
-        forward_local_responses(stream, &mut cancellation, &events)
-            .await
-            .unwrap();
+        forward_local_responses(stream, &mut cancellation, &events).await;
         drop(events);
 
         assert!(matches!(
@@ -174,9 +156,7 @@ mod tests {
         ]);
         let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
         let (events, mut receiver) = mpsc::channel(3);
-        forward_local_responses(stream, &mut cancellation, &events)
-            .await
-            .unwrap();
+        forward_local_responses(stream, &mut cancellation, &events).await;
         drop(events);
 
         assert!(matches!(
@@ -192,9 +172,7 @@ mod tests {
         let stream = futures_util::stream::iter([local_chunk(Some("partial"), None)]);
         let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
         let (events, mut receiver) = mpsc::channel(3);
-        forward_local_responses(stream, &mut cancellation, &events)
-            .await
-            .unwrap();
+        forward_local_responses(stream, &mut cancellation, &events).await;
         drop(events);
 
         assert!(matches!(
@@ -206,5 +184,90 @@ mod tests {
             Some(InferenceEvent::StreamError(message)) if message == "Local inference stream ended before completion."
         ));
         assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_stream_ignores_empty_content_and_forwards_one_terminal_error() {
+        for error in [
+            mistralrs::Response::InternalError(Box::new(std::io::Error::other("engine failed"))),
+            mistralrs::Response::ValidationError(Box::new(std::io::Error::other("engine failed"))),
+        ] {
+            let stream = futures_util::stream::iter([
+                local_chunk(Some(""), None),
+                error,
+                local_chunk(Some("must not appear"), Some("stop")),
+            ]);
+            let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
+            let (events, mut receiver) = mpsc::channel(3);
+            forward_local_responses(stream, &mut cancellation, &events).await;
+            drop(events);
+
+            assert!(matches!(
+                receiver.recv().await,
+                Some(InferenceEvent::StreamError(message)) if message == "engine failed"
+            ));
+            assert!(receiver.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn local_stream_cancellation_and_watch_closure_are_silent() {
+        for cancelled in [false, true] {
+            let stream =
+                futures_util::stream::iter([local_chunk(Some("must not appear"), Some("stop"))]);
+            let (cancel, mut cancellation) = tokio::sync::watch::channel(cancelled);
+            drop(cancel);
+            let (events, mut receiver) = mpsc::channel(2);
+            forward_local_responses(stream, &mut cancellation, &events).await;
+            drop(events);
+            assert!(receiver.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn local_stream_cancellation_interrupts_a_pending_response() {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let mut started_sender = Some(started_sender);
+        let stream = futures_util::stream::poll_fn(move |_| {
+            if let Some(sender) = started_sender.take() {
+                sender.send(()).unwrap();
+            }
+            std::task::Poll::<Option<mistralrs::Response>>::Pending
+        });
+        let (cancel, mut cancellation) = tokio::sync::watch::channel(false);
+        let (events, mut receiver) = mpsc::channel(2);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(
+                forward_local_responses(stream, &mut cancellation, &events),
+                async {
+                    started_receiver.await.unwrap();
+                    cancel.send(true).unwrap();
+                }
+            );
+        })
+        .await
+        .unwrap();
+        drop(events);
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_stream_stops_polling_when_the_event_receiver_closes() {
+        let polls = std::cell::Cell::new(0);
+        let stream = futures_util::stream::poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            std::task::Poll::Ready(Some(local_chunk(Some("unobserved"), None)))
+        });
+        let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
+        let (events, receiver) = mpsc::channel(1);
+        drop(receiver);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            forward_local_responses(stream, &mut cancellation, &events),
+        )
+        .await
+        .unwrap();
+        assert_eq!(polls.get(), 1);
     }
 }

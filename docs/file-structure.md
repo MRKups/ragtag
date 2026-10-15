@@ -48,6 +48,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `SettingsPage.svelte`: Model provider selection, RAG pipeline parameters, and storage maintenance controls.
 - `src/lib/api.ts`: Sole frontend boundary allowed to import Tauri APIs (`@tauri-apps/api/core`).
 - `src/lib/types.ts`: TypeScript contracts mirroring Rust IPC payloads and event types.
+- `src/lib/citations.ts`: Shared citation-selection types and retrieval-to-viewer field mapping.
 - `src/lib/router.svelte.ts`: Hash router with View Transitions API integration.
 - `src/lib/error.ts`: Standardized error extraction and formatting.
 - `src/lib/pdf-init.ts`: Local bundled PDF.js worker initializer.
@@ -71,7 +72,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `PdfViewer.svelte`: Virtualized PDF reader with zoom controls.
   - `QueryInput.svelte`: Auto-resizing query prompt input with submit/cancel keybindings.
   - `QueryResult.svelte`: Sanitized streaming answer renderer with markdown tokens and citations.
-  - `SettingsTab.svelte`: Tab bar for settings navigation.
+  - `SettingsTab.svelte`: Provider configuration, pipeline settings, and storage maintenance controls.
   - `Toggle.svelte`: Accessible switch toggle component.
 - `src/lib/assets/`: Bundled frontend assets and icons.
 - `src/lib/*.test.ts` and `src/lib/stores/*.test.ts`: Maintained frontend test suites.
@@ -87,10 +88,11 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `src/lib.rs`: Application composition, builder setup, pending data resets, and background worker initialization.
 - `src/capacity.rs`: Dual-semaphore command capacity manager prioritizing interactive cancellations and probes over ordinary operations.
 - `src/state.rs`: Central `AppState` holding pools, stores, embedders, capacity semaphores, active tracking, and worker channels.
+- `src/paths.rs`: Shared Tauri application-data and model-directory resolution with typed errors.
 - `src/credentials.rs`: Credential save/removal coordination, partial-failure reporting, and isolated adapter regressions.
 - `src/model_download.rs`: Model download streamer supporting real-time progress emissions and Tokio watch cancellation.
 - `src/commands/`: Focused Tauri IPC command modules:
-  - `mod.rs`: Module exports and command handler registration.
+  - `mod.rs`: Command module exports; `src/lib.rs` registers the handlers.
   - `documents.rs`: Document uploads, library queries, preview fetching, asset path resolution, and deletion.
   - `query.rs`: RAG query orchestration and query cancellation.
   - `models.rs`: Model status inspection, atomic lifecycle state probe, local model downloads, download cancellation, and external provider probing.
@@ -105,7 +107,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `src/model_lifecycle/`: Model lifecycle management:
   - `mod.rs`: Module exports.
   - `coordinator.rs`: Generational state coordinator coalescing download, cancellation, and initialization requests.
-  - `recovery.rs`: Startup database validator reconciling LanceDB tables and stale indexing records.
+  - `recovery.rs`: Shared vector-registry reconciliation and recovery of stale or interrupted indexing work.
 - `src/workers/`: Background workers:
   - `mod.rs`: Module exports.
   - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries and active job tracking.
@@ -124,6 +126,7 @@ Relational, vector, and managed source storage:
 - `sqlite.rs`: SQLite connection pool configuration, migrations (`0001_initial_schema.sql`), `DocumentRepository`, and `AppSettingsRepository`.
 - `lancedb.rs`: Embedded `LanceDbVectorStore` with 768-d Float32 Arrow record batches and hybrid FTS search.
 - `storage/`: Managed source storage, validation, and maintenance:
+  - `mod.rs`: Shared application-directory validation and storage module exports.
   - `documents.rs`: Sandboxed source validation, magic-byte checking, atomic writes, and integrity hashing.
   - `reconciliation.rs`: Deletion finalization and orphan source file cleanup.
   - `maintenance.rs`: Disk footprint calculation and pending reset sentinel management.
@@ -140,7 +143,7 @@ Document extraction, chunking, and embedding:
   - `docx.rs`: Streaming XML extractor for DOCX files.
   - `text.rs`: Plain text extractor with UTF-8 validation and BOM removal.
   - `markdown.rs`: Markdown parser with HTML sanitization.
-  - `preview.rs`: Document preview generator producing truncated plain text and structured blocks.
+  - `util.rs`: Bounded source readers, preview truncation, and aggregate extraction limits.
 
 ## Dependency Direction
 

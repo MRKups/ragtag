@@ -4,6 +4,7 @@ mod credentials;
 mod inference;
 mod model_download;
 mod model_lifecycle;
+mod paths;
 mod state;
 mod workers;
 
@@ -29,9 +30,7 @@ pub fn run() {
             let app_local_data = app
                 .path()
                 .app_local_data_dir()
-                .map_err(|e| Box::new(std::io::Error::other(
-                    e.to_string(),
-                )))?;
+                .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?;
 
             // Complete a requested reset before opening either data store. On any
             // failure the sentinel remains in place so the next launch retries it.
@@ -42,56 +41,21 @@ pub fn run() {
             }
 
             let pool = tauri::async_runtime::block_on(init_pool(&app_local_data))
-                .map_err(|e| Box::new(std::io::Error::other(
-                    e.to_string(),
-                )))?;
+                .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?;
 
-            let embedder: Arc<tokio::sync::RwLock<Option<Arc<std::sync::Mutex<fastembed::TextEmbedding>>>>> =
-                Arc::new(tokio::sync::RwLock::new(None));
+            let embedder: Arc<
+                tokio::sync::RwLock<Option<Arc<std::sync::Mutex<fastembed::TextEmbedding>>>>,
+            > = Arc::new(tokio::sync::RwLock::new(None));
 
             let (tx, rx) = mpsc::channel::<IngestionJob>(32);
 
             let lancedb_dir = app_local_data.join(".lancedb");
             let vector_db = tauri::async_runtime::block_on(VectorDb::init(&lancedb_dir))
-                .map_err(|e| Box::new(std::io::Error::other(
-                    e.to_string(),
-                )))?;
+                .map_err(|e| Box::new(std::io::Error::other(e.to_string())))?;
             let vector_db = Arc::new(vector_db);
-            let chunks_table_exists =
-                tauri::async_runtime::block_on(vector_db.chunks_table_exists()).map_err(|error| {
-                    Box::new(std::io::Error::other(error.to_string()))
-                })?;
             let recovery_repo = DocumentRepository::new(pool.clone());
-            if !chunks_table_exists {
-                let requeued = tauri::async_runtime::block_on(
-                    requeue_indexed_documents_after_vector_loss(&recovery_repo),
-                )
+            tauri::async_runtime::block_on(reconcile_indexed_vectors(&recovery_repo, &vector_db))
                 .map_err(|error| Box::new(std::io::Error::other(error.to_string())))?;
-                if !requeued.is_empty() {
-                    info!(
-                        "startup vector recovery — re-queued {} indexed documents after chunks table loss",
-                        requeued.len()
-                    );
-                }
-            } else {
-                let indexed_chunk_counts =
-                    tauri::async_runtime::block_on(vector_db.indexed_chunk_counts()).map_err(
-                        |error| Box::new(std::io::Error::other(error.to_string())),
-                    )?;
-                let requeued = tauri::async_runtime::block_on(
-                    requeue_indexed_documents_with_chunk_count_mismatches(
-                        &recovery_repo,
-                        &indexed_chunk_counts,
-                    ),
-                )
-                .map_err(|error| Box::new(std::io::Error::other(error.to_string())))?;
-                if !requeued.is_empty() {
-                    info!(
-                        "startup vector recovery — re-queued {} indexed documents with mismatched chunk counts",
-                        requeued.len()
-                    );
-                }
-            }
             let deletion_repo = DocumentRepository::new(pool.clone());
             tauri::async_runtime::block_on(reconcile_pending_deletions(
                 &deletion_repo,
@@ -105,7 +69,9 @@ pub fn run() {
             )) {
                 Ok(0) => {}
                 Ok(removed) => {
-                    info!("startup source reconciliation — removed {removed} orphaned source files");
+                    info!(
+                        "startup source reconciliation — removed {removed} orphaned source files"
+                    );
                 }
                 Err(error) => {
                     error!("startup source reconciliation — failed: {error}");
@@ -120,12 +86,11 @@ pub fn run() {
                     .unwrap_or(None)
                     .unwrap_or_else(|| "local".to_string())
             });
-            let llm_initialization = Arc::new(tokio::sync::Mutex::new(
-                state::LlmInitializationState {
+            let llm_initialization =
+                Arc::new(tokio::sync::Mutex::new(state::LlmInitializationState {
                     inference_mode: initial_inference_mode,
                     ..Default::default()
-                },
-            ));
+                }));
             let document_operations = Arc::new(tokio::sync::RwLock::new(()));
             let active_queries = Arc::new(std::sync::Mutex::new(HashMap::new()));
             let active_document_id = Arc::new(std::sync::Mutex::new(None));

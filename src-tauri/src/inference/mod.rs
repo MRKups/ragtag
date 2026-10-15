@@ -55,7 +55,8 @@ impl InferenceProvider {
                 context,
             } => {
                 stream_local_inference(model, system_prompt, context, &mut cancellation, &events)
-                    .await
+                    .await;
+                Ok(())
             }
             Self::MissingLocal => {
                 send_inference_event(
@@ -135,5 +136,98 @@ pub async fn forward_inference_events(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn sending_an_event_prefers_cancellation_and_watch_closure() {
+        for cancelled in [false, true] {
+            let (cancel, mut cancellation) = tokio::sync::watch::channel(cancelled);
+            drop(cancel);
+            let (events, mut receiver) = mpsc::channel(1);
+            assert!(!send_inference_event(&mut cancellation, &events, InferenceEvent::Done).await);
+            drop(events);
+            assert!(receiver.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn sending_an_event_can_be_cancelled_under_backpressure() {
+        let (cancel, mut cancellation) = tokio::sync::watch::channel(false);
+        let (events, mut receiver) = mpsc::channel(1);
+        assert!(
+            events
+                .send(InferenceEvent::Token("queued".into()))
+                .await
+                .is_ok()
+        );
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (sent, ()) = tokio::join!(
+                async {
+                    started_sender.send(()).unwrap();
+                    send_inference_event(&mut cancellation, &events, InferenceEvent::Done).await
+                },
+                async {
+                    started_receiver.await.unwrap();
+                    cancel.send(true).unwrap();
+                }
+            );
+            assert!(!sent);
+        })
+        .await
+        .unwrap();
+        drop(events);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(InferenceEvent::Token(_))
+        ));
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sending_an_event_returns_false_for_a_closed_receiver() {
+        let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
+        let (events, receiver) = mpsc::channel(1);
+        drop(receiver);
+        assert!(!send_inference_event(&mut cancellation, &events, InferenceEvent::Done).await);
+    }
+
+    #[tokio::test]
+    async fn sending_a_terminal_event_stops_when_a_backpressured_receiver_closes() {
+        let (_cancel, mut cancellation) = tokio::sync::watch::channel(false);
+        let (events, mut receiver) = mpsc::channel(1);
+        assert!(
+            events
+                .send(InferenceEvent::Token("queued".into()))
+                .await
+                .is_ok()
+        );
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let (sent, ()) = tokio::join!(
+                async {
+                    started_sender.send(()).unwrap();
+                    send_inference_event(&mut cancellation, &events, InferenceEvent::Done).await
+                },
+                async {
+                    started_receiver.await.unwrap();
+                    receiver.close();
+                }
+            );
+            assert!(!sent);
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(InferenceEvent::Token(_))
+        ));
+        assert!(receiver.recv().await.is_none());
     }
 }

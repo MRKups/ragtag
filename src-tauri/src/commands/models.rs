@@ -3,7 +3,7 @@ use log::error;
 use persistence::AppSettingsRepository;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 use crate::model_lifecycle::{recover_startup_documents_with_retry, request_llm_initialization};
 use crate::state::AppState;
@@ -37,17 +37,8 @@ pub async fn begin_first_run_init(
         return Ok(());
     }
 
-    let models_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve models directory",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?
-        .join("models");
+    let models_dir =
+        crate::paths::models_dir(&app, "Verify application local storage permissions.")?;
 
     if !embedder_ready && !EMBEDDER_INIT_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         let embedder_state = state.embedder.clone();
@@ -134,17 +125,8 @@ pub async fn retry_local_model_initialization(
         return Ok(());
     }
 
-    let models_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| {
-            AppError::storage(
-                "Resolve models directory",
-                format!("Failed to resolve app local data directory: {e}"),
-                "Verify application local storage permissions.",
-            )
-        })?
-        .join("models");
+    let models_dir =
+        crate::paths::models_dir(&app, "Verify application local storage permissions.")?;
     request_llm_initialization(&app, &state, models_dir).await;
     Ok(())
 }
@@ -178,7 +160,7 @@ pub async fn get_app_state(
     } else {
         init.inference_mode.clone()
     };
-    let model_download_active = init.in_progress;
+    let model_download_active = init.is_in_progress();
     let model_download_progress = init.last_download_progress.clone();
     drop(init);
 

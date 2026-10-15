@@ -21,6 +21,7 @@
 
   // Files are staged together and uploaded sequentially to respect queue backpressure.
   let files: FileStatus[] = $state([]);
+  let eligibleCount = $derived(files.filter(isUploadCandidate).length);
   let nextFileId = 0;
 
   function handleDragOver(e: DragEvent) {
@@ -231,14 +232,14 @@
       <button
         class="upload-btn"
         onclick={uploadAll}
-        disabled={isUploading || !files.some(isUploadCandidate)}
+        disabled={isUploading || eligibleCount === 0}
       >
         {#if isUploading}
           <div class="spinner-xs"></div>
           Uploading...
         {:else}
           <Upload size={16} />
-          Upload {files.filter(isUploadCandidate).length} Files
+          Upload {eligibleCount} Files
         {/if}
       </button>
     </div>
