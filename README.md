@@ -32,3 +32,7 @@ Models download on first use.
 ## License
 
 [MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependencies.
+
+## Acknowledgements
+
+Special thanks to [Mackup.io](https://mackup.io/) for supporting this project.
