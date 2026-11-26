@@ -59,17 +59,3 @@ The MIT license covering this repository applies solely to first-party software 
 | [Qwen3-1.7B tokenizer assets](https://huggingface.co/Qwen/Qwen3-1.7B) | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
 
 These are the defaults reviewed on 2026-11-26. Users selecting other models must review those models' terms separately.
-
-## Screenshot Content
-
-`assets/screenshots/query-citations.webp` displays excerpts and a PDF rendering of [“United Nations” on English Wikipedia](https://en.wikipedia.org/wiki/United_Nations), by [Wikipedia contributors](https://en.wikipedia.org/w/index.php?title=United_Nations&action=history). The reproduced article text is available under [Creative Commons Attribution-ShareAlike 4.0](https://creativecommons.org/licenses/by-sa/4.0/), not the repository's MIT software license. The article is reformatted as a PDF, excerpted, and displayed alongside a generated answer.
-
-Article illustrations retain their individual terms:
-
-- [Membership map](https://commons.wikimedia.org/wiki/File:United_Nations_%28Member_States_and_Territories%29.svg), by Newfraferz87 and subsequent Commons contributors: [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), reduced in the PDF preview.
-- [UN flag](https://commons.wikimedia.org/wiki/File:Flag_of_the_United_Nations.svg) and [UN emblem](https://commons.wikimedia.org/wiki/File:UN_emblem_blue.svg): public-domain design/rendering notices and separate insignia restrictions are recorded on their file pages.
-- [League of Nations photograph](https://commons.wikimedia.org/wiki/File:Emperor_Haile_Selassie_League_of_Nations_speech.png), Bettmann Archive: Commons records public-domain status in the United States; its file page explains jurisdictional limitations.
-
-Ragtag's contributions to this composite query screenshot are also available under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). This does not relicense the software or override the individual terms of third-party material.
-
-Wikipedia/Wikimedia and United Nations names, logos, and emblems remain subject to their respective trademark and emblem-use rules. Their appearance identifies the example source; it does not imply endorsement of Ragtag.

@@ -17,27 +17,13 @@ This is an **experimental, source-only project**, developed to demonstrate RAG w
 
 ## Screenshots
 
-### Answers and page citations
+![Query and citations](assets/screenshots/query-citations.webp)
 
-![Ragtag answering a question with source citations and a side-by-side PDF preview](assets/screenshots/query-citations.webp)
+![Document library](assets/screenshots/document-library.webp)
 
-Inspect retrieved evidence alongside the answer. This example uses [Wikipedia's United Nations article](https://en.wikipedia.org/wiki/United_Nations), by Wikipedia contributors ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). See [screenshot attribution](THIRD_PARTY_NOTICES.md#screenshot-content) for details.
+![Settings in dark mode](assets/screenshots/settings-dark.webp)
 
-### Document library
-
-![Ragtag document library with drag-and-drop uploads and indexed documents](assets/screenshots/document-library.webp)
-
-Upload documents and track their indexing status.
-
-### Settings — dark theme
-
-![Ragtag settings in dark mode, showing inference options, retrieval settings, and local storage management](assets/screenshots/settings-dark.webp)
-
-Configure local or external inference, tune retrieval, and manage local storage.
-
-### Settings — light theme
-
-![Ragtag settings in light mode](assets/screenshots/settings-light.webp)
+![Settings in light mode](assets/screenshots/settings-light.webp)
 
 ## Run from source
 

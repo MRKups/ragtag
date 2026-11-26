@@ -30,7 +30,7 @@ The vendored `mistralrs-core` retains its upstream MIT `LICENSE` and package met
 | Model terms | Documented: [default runtime assets](../THIRD_PARTY_NOTICES.md#machine-learning-models--weights-notice) | Gemma terms for the default embedder and Apache-2.0 for Qwen3 weights/tokenizer assets, separate from first-party MIT. Runtime downloads are not included in source distribution. |
 | Source provenance | Reviewed on 2026-11-26 | Aligned versions, reviewed upstream revision and local patch, and no confirmed private documents or credentials in the source/history scans. Signing or notarizing an app is not required for source publication. |
 | Public-project operations | Open | A security-reporting route and a stated support/contribution policy. GitHub review rules and automation can be added without distributing binaries. |
-| README screenshots | Implemented: [README gallery](../README.md#screenshots) | Four user-supplied screenshots reviewed for visible secrets and personal paths; published copies contain only WebP image data. Article/media attribution and separate content licenses are recorded in [third-party notices](../THIRD_PARTY_NOTICES.md#screenshot-content). |
+| README screenshots | Implemented: [README gallery](../README.md#screenshots) | Four user-supplied screenshots reviewed for visible secrets and personal paths; published copies contain only WebP image data. |
 
 ## Dependency boundary
 
