@@ -35,6 +35,31 @@ test('rejects mismatched versions and accidental npm publishing', () => {
   assert(problems.some((message) => message.includes('private: true')));
 });
 
+test('rejects stale project URLs after a repository rename', () => {
+  const problems = releaseProblems(withJson('package.json', (pkg) => {
+    pkg.repository.url = 'git+https://github.com/MRKups/old-project.git';
+  }));
+  assert(problems.some((message) => message.includes('repository, project name, issues URL, and homepage must agree')));
+  assert(problems.some((message) => message.includes('repository differs from package.json')));
+});
+
+test('rejects a stale native app name after a repository rename', () => {
+  const problems = releaseProblems((file) => {
+    const content = read(file);
+    return file === 'src-tauri/Cargo.toml'
+      ? Buffer.from(content.toString().replace('name = "ragtag-app"', 'name = "old-project-app"'))
+      : content;
+  });
+  assert(problems.some((message) => message.includes('app name must match ragtag-app')));
+});
+
+test('rejects stale Rust inventory names after a package rename', () => {
+  const problems = releaseProblems(withJson('docs/third-party-license-inventory.json', (inventory) => {
+    inventory.components.rust.find((component) => component.path === 'src-tauri').name = 'old-project-app';
+  }));
+  assert(problems.some((message) => message.includes('src-tauri/Cargo.toml inventory declaration is stale')));
+});
+
 test('rejects stale inventory hashes and incorrect counts', () => {
   const problems = releaseProblems(withJson('docs/third-party-license-inventory.json', (inventory) => {
     inventory.sources.rust.lockfile_sha256 = '0'.repeat(64);

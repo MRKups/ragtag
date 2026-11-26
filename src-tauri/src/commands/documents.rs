@@ -110,7 +110,9 @@ pub async fn upload_document(
         )
     })??;
 
-    let created_at = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S").to_string();
+    let created_at = jiff::ZonedDateTime::now()
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string();
 
     let doc = Document {
         id: doc_id.clone(),

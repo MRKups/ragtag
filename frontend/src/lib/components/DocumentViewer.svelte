@@ -10,12 +10,12 @@
     filename = null as string | null,
     storagePath = null as string | null,
     page = 1
-  } = $props<{
+  }: {
     documentId?: string | null;
     filename?: string | null;
     storagePath?: string | null;
     page?: number;
-  }>();
+  } = $props();
 
   let isPdf = $derived(filename?.toLowerCase().endsWith('.pdf') ?? false);
   let sourceUrl = $derived.by(() => {

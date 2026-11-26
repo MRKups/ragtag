@@ -3,7 +3,7 @@ version: '3'
 vars:
   FRONTEND_DIR: frontend
   TAURI_DIR: src-tauri
-  RELEASE_BIN: target/release/mrk-ragtag-app
+  RELEASE_BIN: target/release/ragtag-app
 
 env:
   RUST_BACKTRACE: 1

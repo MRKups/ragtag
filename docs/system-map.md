@@ -86,7 +86,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 ### 2.2 Core Backend Library Crates (`src-tauri/crates/`)
 
 - **Domain Crate (`crates/domain/`):**
-  - `Cargo.toml`: Zero-dependency domain definition (`serde`, `thiserror`).
+  - `Cargo.toml`: Adapter-free domain contracts using `serde` and `thiserror`.
   - `src/lib.rs`: Crate root re-exporting shared models and errors.
   - `src/error.rs`: Structured `AppError` and `ErrorCode`; see the [error payload contract](data-schema.md#error-payload).
   - `src/events.rs`: Streaming channel event contracts (`TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`).
@@ -115,7 +115,7 @@ This document provides a comprehensive mapping of Ragtag's capabilities to their
 ### 2.3 Tauri Application Shell (`src-tauri/src/`)
 
 - **Composition & App State:**
-  - `main.rs`: Native entry point delegating to `mrk_ragtag_app::run()`.
+  - `main.rs`: Native entry point delegating to `ragtag_app::run()`.
   - `lib.rs`: Bootstrap root, handles pending resets, opens databases, reconciles state, spawns ingestion worker, registers commands.
   - `state.rs`: Shared application state and generation-owned initialization activity.
   - `paths.rs`: Shared typed application-data and model-directory resolution.

@@ -5,7 +5,7 @@ edition = "2024"
 description = "Pure domain models, events, and structured error types for Ragtag"
 authors = ["Michal Kups"]
 license = "MIT"
-repository = "https://github.com/MRKups/mrk-ragtag"
+repository = "https://github.com/MRKups/ragtag"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -5,19 +5,19 @@ edition = "2024"
 description = "Document extraction, chunking, and embedding pipeline for Ragtag"
 authors = ["Michal Kups"]
 license = "MIT"
-repository = "https://github.com/MRKups/mrk-ragtag"
+repository = "https://github.com/MRKups/ragtag"
 
 [dependencies]
 domain = { path = "../domain" }
 persistence = { path = "../persistence" }
 pdf-extract = "0.12.1"
-zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
+zip = { version = "=9.8.2", default-features = false, features = ["deflate"] }
 quick-xml = "=0.42.0"
-pulldown-cmark = "=0.13.4"
-fastembed = "=7.1.1"
-tokio = { version = "1.53.3", features = ["full"] }
-arrow-array = "=58.4.0"
-arrow-schema = "=58.4.0"
+pulldown-cmark = "=0.13.6"
+fastembed = "=7.8.0"
+tokio = { version = "1.54.1", features = ["full"] }
+arrow-array = "=58.4.2"
+arrow-schema = "=58.4.2"
 tokenizers = { version = "=0.23.2", default-features = false }
 
 [dev-dependencies]

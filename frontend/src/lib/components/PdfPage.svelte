@@ -15,13 +15,13 @@
     scale = 1.0,
     isCitation = false,
     onError = () => {}
-  } = $props<{
+  }: {
     pdfDoc: PDFDocumentProxy;
     pageNumber: number;
     scale?: number;
     isCitation?: boolean;
     onError?: () => void;
-  }>();
+  } = $props();
 
   let canvas: HTMLCanvasElement;
   let textLayerDiv: HTMLDivElement;

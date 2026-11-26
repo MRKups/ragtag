@@ -1,11 +1,11 @@
 <script lang="ts">
-  let { checked = $bindable(), label = "", description = "", icon = null, onchange = undefined } = $props<{
+  let { checked = $bindable(), label = "", description = "", icon = null, onchange = undefined }: {
     checked: boolean;
     label?: string;
     description?: string;
     icon?: any;
     onchange?: (value: boolean) => void;
-  }>();
+  } = $props();
 
   function toggle() {
     checked = !checked;

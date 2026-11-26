@@ -19,6 +19,16 @@ use crate::state::{AppState, LlmInitializationState};
 
 pub const DEFAULT_TOKENIZER_MODEL: &str = "Qwen/Qwen3-1.7B";
 
+pub fn configure_local_generation(
+    builder: mistralrs::GgufModelBuilder,
+) -> mistralrs::GgufModelBuilder {
+    // v0.9.5 enables paged Metal attention by default. It stalls on this app's
+    // default GGUF; eager Metal generation retains engine-managed concurrency.
+    #[cfg(target_os = "macos")]
+    let builder = builder.without_paged_attn();
+    builder
+}
+
 pub fn is_valid_hugging_face_model_id(value: &str) -> bool {
     value.split_once('/').is_some_and(|(organization, model)| {
         !organization.is_empty()
@@ -577,11 +587,13 @@ pub async fn request_llm_initialization_with_resources(
         };
 
         info!("model downloaded, building mistral.rs pipeline...");
-        let builder = mistralrs::GgufModelBuilder::new(
-            parent_dir.to_string_lossy().to_string(),
-            vec![gguf_filename],
-        )
-        .with_tok_model_id(tokenizer_model);
+        let builder = configure_local_generation(
+            mistralrs::GgufModelBuilder::new(
+                parent_dir.to_string_lossy().to_string(),
+                vec![gguf_filename],
+            )
+            .with_tok_model_id(tokenizer_model),
+        );
 
         match builder.build().await {
             Ok(model) => {

@@ -65,13 +65,17 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Consequences:** Default processing, retrieval, and generation need no model server; external inference crosses the configured provider boundary. Credentials reside in the OS keychain with automatic fallback to SQLite when unavailable; external endpoints support standard HTTP for local servers (Ollama, LM Studio) and HTTPS for cloud providers.
 
-**Dependency source:** Pin `mistral.rs` v0.9.4 to Git revision `4400935451da5e2dc7379a3f92fbbada66557f6c` with Metal acceleration on Apple Silicon. Crates.io's latest SDK remains 0.8.1 at the 2026-10-14 update. Retain the resolved `Cargo.lock`, including upstream's Candle 0.11.0 revision `66a8cf184a5a519671454066b1b9efd446ec9f5c`.
+**Dependency source:** Pin `mistral.rs` v0.9.5 to release-tag Git revision `465191d0b0a7e2432d327b0de06204ab3f94d3a2` with Metal acceleration on Apple Silicon. This is the latest stable upstream release checked on 2026-11-26. Retain the resolved `Cargo.lock`, including upstream's Candle 0.11.0 revision `66a8cf184a5a519671454066b1b9efd446ec9f5c`.
 
 **Maintained deviation:** Override only `mistralrs-core` with the licensed source in `src-tauri/vendor/mistralrs-core`. Patch `ragtag.1` makes narrowed batched logits selections contiguous before quantized projection; it preserves concurrent inference rather than adding a request semaphore. The vendored manifest resolves upstream workspace inheritance and keeps sibling packages on the same Git revision. Its build script reports the upstream revision plus `ragtag.1`, not the enclosing application's Git HEAD. All other upstream source remains unchanged.
 
 **Maintenance boundary:** Keep the imported package and license intact, with the manifest normalization, revision reporting, and selection repair as explicit deviations. Preserve the two original fixtures in the adjacent `vendor/toml-selectors/`; the upstream crate needs them even when compiling a filtered test target. Its focused regression is part of the native test tasks; the rest of the upstream suite is not implicitly part of Ragtag's workspace. Retire the override only after an upstream replacement provides the repair and equivalent regression and real-model qualification pass.
 
-**Qualification:** With v0.9.4, the batched quantized-projection regression and real Metal streaming, concurrent queries, receiver-drop recovery, and cached offline initialization pass. [B189](tracker.md) retains packaged-app acceptance.
+**Qualification:** On 2026-11-26, the v0.9.5 stack compiled with Metal on Rust 1.100.0 and passed 168 workspace tests plus the batched quantized-projection regression. The local patch remains necessary: upstream still narrows batched logits without making them contiguous. The macOS test linker emitted a large `__eh_frame` / compact-unwind warning; no warning was suppressed. The prior v0.9.4 baseline passed real Metal streaming, concurrent queries, receiver-drop recovery, and cached offline initialization. Requalify these scenarios after v0.9.5's Metal paged-attention and memory-management changes. [B189](tracker.md) tracks current development-app acceptance; this repository does not distribute installers.
+
+**macOS execution policy:** The first real desktop query stalled after retrieval, with the inference thread waiting for a Metal command buffer. Isolated tests using the cached default GGUF reproduced 30-second generation timeouts under v0.9.5's new automatic paged-attention default, while eager Metal completed both short and retrieval-sized synthetic contexts. Ragtag therefore calls `without_paged_attn()` on macOS, retaining GPU execution, the shared model, and engine-managed concurrency. Other platforms retain their existing defaults. [B199](tracker.md) tracks qualification before removing this compatibility policy.
+
+**Request control and verification:** Local requests set `enable_thinking(false)` instead of relying on prose instructions to prevent hidden reasoning. The application and real-engine examples share the same builder policy and request helper. The `local_generation_probe` example's `app` mode verified first content at approximately 0.09 seconds for a short source and 3.32 seconds for 128 repeated synthetic passages, with cited answers completing at approximately 0.15 and 3.48 seconds. These are diagnostic timings on one host, not a general performance claim or full desktop acceptance.
 
 ## D008 — Format-specific extraction with page preservation
 
@@ -145,7 +149,7 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Decision:** Support keyless external inference by sending unauthenticated probing requests when the API key is omitted, forward keys in standard `Authorization: Bearer <key>` headers whenever provided (regardless of local or remote endpoint), and provide automatic non-fatal fallback of credential storage to SQLite (`app_settings.external_api_key`) when the OS keychain is inaccessible, displaying explicit UI indicators and warnings for unencrypted database storage.
 
-**Consequences:** Local inference engines connect out-of-the-box without requiring dummy keys. Environments without functional OS keychains can persist external inference credentials with transparent user notification. Cloud providers requiring authentication continue to receive secure authorization headers.
+**Consequences:** Local inference engines connect out-of-the-box without requiring dummy keys. Environments without functional OS keychains can persist external inference credentials with transparent user notification. Configured credentials are sent in Bearer authorization headers; transport confidentiality requires HTTPS.
 
 ## D016 — Modular desktop application architecture
 
@@ -159,23 +163,29 @@ This document records durable choices and tradeoffs. Linked references own curre
 
 **Context:** Application errors previously serialized over IPC as `{ kind, message }`. When operations failed (e.g. queue saturation, missing documents, unconfigured or offline external endpoints, duplicate uploads), error dialogs often displayed raw technical strings without actionable recovery steps, and frontend code could not reliably distinguish transient/retryable failures from permanent user-actionable errors.
 
-**Decision:** Standardize `AppError` and the IPC error payload on `{ code, operation, detail, recovery, message }` following the AGN error standard. Use a typed `ErrorCode` enum serialized as snake_case (`not_found`, `invalid_input`, `queue_full`, `duplicate_document`, `storage`, `vector_db`, `inference`, `internal`). Enforce non-empty active-voice user recovery guidance on every error constructor (`DEV-04` and `DEV-14`). The frontend error dialog renders explicit transient status badges and dedicated suggested-action guidance panels while preserving backwards compatibility through the formatted `message` string field.
+**Decision:** Standardize `AppError` and the IPC error payload on `{ code, operation, detail, recovery, message }`. Use a typed `ErrorCode` enum serialized as snake_case (`not_found`, `invalid_input`, `queue_full`, `duplicate_document`, `storage`, `vector_db`, `inference`, `internal`). Enforce non-empty active-voice user recovery guidance on every error constructor (`DEV-04` and `DEV-14`). The frontend error dialog renders explicit transient status badges and dedicated suggested-action guidance panels while preserving backwards compatibility through the formatted `message` string field.
 
 **Consequences:** Users receive clear diagnostic feedback paired with direct instructions on how to recover from any error. Frontend code deterministically classifies retryable operations (`queue_full`, `inference`, `storage`) from terminal failures. Raw strings and untyped errors across backend and frontend are eliminated.
 
-## D018 — Protected execution capacity and atomic lifecycle probes
+## D018 — Protected execution capacity and memory-only lifecycle probes
 
-**Context:** High-throughput batch operations (such as multi-document ingestion queues or long-running embedding calculations) and active model generation stream tokens and occupy asynchronous execution capacity. Under load, interactive user commands such as cancellation requests (`cancel_query`, `cancel_model_download`) and frontend lifecycle polling could experience scheduling latency or compete for thread execution. Furthermore, frontend components previously relied on fire-and-forget lifecycle events without a synchronous, non-blocking method to probe app readiness on startup or reconnect.
+**Context:** High-throughput batch operations (such as multi-document ingestion queues or long-running embedding calculations) and active model generation occupy execution capacity. Under load, interactive commands such as cancellation requests (`cancel_query`, `cancel_model_download`) and frontend lifecycle polling can compete for that capacity. The frontend also needs a readiness probe on startup or reconnect rather than relying only on lifecycle events.
 
-**Decision:** Adopt AGN's dual-semaphore execution capacity pattern:
+**Decision:** Partition command capacity using two semaphores:
 1. **Partitioned capacity (`ExecutionCapacity`):** Divide Tauri command execution into two dedicated pools:
    - `ORDINARY_COMMAND_CAPACITY` (16 permits): Guards bulk, mutation, and inference commands (`upload_document`, `execute_query`, `delete_document`, `list_documents`, `get_document_preview`, settings, maintenance). Saturated capacity immediately returns `ErrorCode::QueueFull` with active-voice retry guidance.
    - `PROTECTED_COMMAND_CAPACITY` (4 permits): Reserved strictly for high-priority interactive operations (`cancel_query`, `cancel_model_download`, `get_app_state`). Protected commands never queue behind ordinary operations.
-2. **Atomic memory-only lifecycle probe (`get_app_state`):** Expose an instant (<1ms) snapshot command returning embedder readiness, LLM state, in-flight download progress, channel queue depth, and capacity permit availability without acquiring SQLite transactions or storage locks.
+2. **Memory-only lifecycle probe (`get_app_state`):** Return embedder readiness, LLM state, in-flight download progress, active-query/ingestion state, and capacity permit availability without querying SQLite or LanceDB. Fields are read under separate locks; this is not an atomic snapshot or a latency guarantee.
 3. **Cancellable model downloads:** Wrap HTTP download streams in Tokio watch cancellation channels, allowing users to abort multi-gigabyte background downloads immediately and enter the app as soon as document embedding is ready.
 
-**Consequences:** Saturated document queues or active generation loops cannot delay cancellation requests or status queries. Interactive responsiveness is preserved across all system states.
+**Consequences:** Ordinary command saturation does not consume protected permits for cancellation and lifecycle polling. Runtime scheduling and lock contention can still affect response latency.
 
 ## Dependency compatibility
 
-The 2026-10-14 dependency update uses Rust 1.99.0, FastEmbed 7.1.1, and tokenizers 0.23.2. Retain LanceDB 0.37.1: releases 0.38 through 0.40 reference the remote-only `Error::Http` variant in their embedded job decoder and fail to compile without the `remote` feature. Do not enable unused remote dependencies to bypass that upstream defect. Keep Arrow 58.4.0 for LanceDB's record-batch compatibility, SQLx 0.9.0, and FastEmbed's required ONNX Runtime 2.0.0-rc.13 pins. `Cargo.lock` records compatible transitive updates.
+The 2026-11-26 update targets stable Rust 1.100.0, FastEmbed 7.8.0, tokenizers 0.23.2, SQLx 0.9.1, and LanceDB 0.41.0. FastEmbed requires ONNX Runtime 2.0.0-rc.15. Preserve exact pins for this native compatibility group and keep the resolved transitive updates in `Cargo.lock`.
+
+Jiff 1.0.3 renames `Zoned` to `ZonedDateTime`; document creation retains the existing local-time `%Y-%m-%d %H:%M:%S` storage format.
+
+LanceDB 0.41 uses Arrow 58, so direct record-batch types use its latest compatible patch, 58.4.2, rather than Arrow 60. Earlier LanceDB 0.38–0.40 releases failed embedded-only compilation by referencing remote-only `Error::Http`; 0.41 adds a feature-gated runtime-error fallback. Keep embedded-only operation and do not enable unused remote features to bypass such defects.
+
+Frontend dependencies use the latest stable releases checked on that date, except TypeScript: `svelte-check` 4.7.8 declares support for TypeScript 5 and 6, not 7. Retain TypeScript 6.0.3 until its checker supports the newer major; do not override peer checks. Updated Svelte components use typed destructuring with `$props()` and module-script type exports.

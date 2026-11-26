@@ -9,6 +9,8 @@ mod state;
 mod workers;
 
 use commands::*;
+pub use inference::local_generation_request;
+pub use model_lifecycle::configure_local_generation;
 use model_lifecycle::*;
 use persistence::storage::*;
 pub use state::{AppState, IngestionJob};

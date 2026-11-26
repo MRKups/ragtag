@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { score }: { score: number } = $props<{ score: number }>();
+  let { score }: { score: number } = $props();
 
   let classification = $derived(score >= 0.8
     ? { label: 'High', cls: 'high' }

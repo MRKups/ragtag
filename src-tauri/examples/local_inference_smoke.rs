@@ -10,9 +10,10 @@ use std::{
 };
 
 fn request(prompt: &str) -> mistralrs::RequestBuilder {
-    mistralrs::RequestBuilder::new()
-        .add_message(mistralrs::TextMessageRole::System, "Answer only from the supplied evidence. Be concise and cite the source number. Do not output reasoning. /no_think")
-        .add_message(mistralrs::TextMessageRole::User, format!("{prompt}\n/no_think"))
+    ragtag_app::local_generation_request(
+        "Answer only from the supplied evidence. Be concise and cite the source number. Do not output reasoning.".into(),
+        prompt.into(),
+    )
         .set_sampler_temperature(0.0)
         .set_sampler_max_len(256)
 }
@@ -136,13 +137,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok_or("The model cache has no snapshot directory.")?;
     let start = Instant::now();
     let device = mistralrs::Device::new_metal(0)?;
-    let model = mistralrs::GgufModelBuilder::new(
-        parent.to_string_lossy().into_owned(),
-        vec![filename.to_string()],
+    let model = ragtag_app::configure_local_generation(
+        mistralrs::GgufModelBuilder::new(
+            parent.to_string_lossy().into_owned(),
+            vec![filename.to_string()],
+        )
+        .with_device(device)
+        .with_logging()
+        .with_tok_model_id("Qwen/Qwen3-1.7B".to_string()),
     )
-    .with_device(device)
-    .with_logging()
-    .with_tok_model_id("Qwen/Qwen3-1.7B".to_string())
     .build()
     .await?;
     let initialization = start.elapsed().as_secs_f64();

@@ -11,12 +11,12 @@
     citations = [] as Citation[],
     isStreaming = false,
     onCitationClick = (_citation: CitationSelection) => {}
-  } = $props<{
+  }: {
     text?: string;
     citations?: Citation[];
     isStreaming?: boolean;
     onCitationClick?: (citation: CitationSelection) => void;
-  }>();
+  } = $props();
 
   function transformCitations(html: string, citationsList: Citation[]): string {
     if (!citationsList.length || !html.includes('[')) return html;

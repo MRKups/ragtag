@@ -9,11 +9,11 @@
     url = '',
     page = 1,
     contextPages = 3
-  } = $props<{
+  }: {
     url?: string;
     page?: number;
     contextPages?: number;
-  }>();
+  } = $props();
 
   let pdfDoc: PDFDocumentProxy | null = $state(null);
   let loadingTask: PDFDocumentLoadingTask | null = null;

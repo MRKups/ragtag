@@ -3,6 +3,16 @@ use tokio::sync::mpsc;
 
 use super::{InferenceEvent, send_inference_event};
 
+pub fn local_generation_request(
+    system_prompt: String,
+    context: String,
+) -> mistralrs::RequestBuilder {
+    mistralrs::RequestBuilder::new()
+        .add_message(mistralrs::TextMessageRole::System, system_prompt)
+        .add_message(mistralrs::TextMessageRole::User, context)
+        .enable_thinking(false)
+}
+
 pub async fn stream_local_inference(
     model: Arc<mistralrs::Model>,
     system_prompt: String,
@@ -13,9 +23,7 @@ pub async fn stream_local_inference(
     if *cancellation.borrow() {
         return;
     }
-    let request = mistralrs::RequestBuilder::new()
-        .add_message(mistralrs::TextMessageRole::System, system_prompt)
-        .add_message(mistralrs::TextMessageRole::User, context);
+    let request = local_generation_request(system_prompt, context);
     let stream_result = tokio::select! {
         biased;
         _ = cancellation.changed() => return,
@@ -98,6 +106,31 @@ pub async fn forward_local_responses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_request_disables_hidden_thinking_without_changing_source_context() {
+        use mistralrs::RequestLike;
+
+        let mut request = local_generation_request(
+            "Answer using the source citations.".into(),
+            "[Source 1, Page 7]\nRetained evidence.\nQuestion?".into(),
+        );
+        assert_eq!(request.messages_ref().len(), 2);
+        assert_eq!(
+            request.messages_ref()[1]["content"]
+                .as_ref()
+                .left()
+                .map(|content| content.as_str()),
+            Some("[Source 1, Page 7]\nRetained evidence.\nQuestion?")
+        );
+        let mistralrs::RequestMessage::Chat {
+            enable_thinking, ..
+        } = request.take_messages()
+        else {
+            panic!("Local generation must use chat messages");
+        };
+        assert_eq!(enable_thinking, Some(false));
+    }
 
     fn local_chunk(content: Option<&str>, finish_reason: Option<&str>) -> mistralrs::Response {
         mistralrs::Response::Chunk(mistralrs::ChatCompletionChunkResponse {

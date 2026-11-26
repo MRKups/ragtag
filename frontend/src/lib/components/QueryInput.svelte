@@ -9,7 +9,7 @@
     onSubmit = () => {},
     onCancel = () => {},
     text = $bindable('')
-  } = $props<{
+  }: {
     isLoading?: boolean;
     isStreaming?: boolean;
     unavailable?: boolean;
@@ -17,7 +17,7 @@
     onSubmit?: (text: string) => void;
     onCancel?: () => void;
     text?: string;
-  }>();
+  } = $props();
 
   let textarea: HTMLTextAreaElement;
   let disabled = $derived(isLoading || isStreaming || unavailable);

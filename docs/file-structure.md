@@ -11,9 +11,10 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 
 ## Root
 
-- `README.md`: App description, screenshot placeholder, requirements, and run commands.
+- `README.md`: Source-only project introduction, app icon, screenshots, requirements, run/check commands, and privacy limitations.
+- `assets/screenshots/`: Metadata-free WebP screenshots of query/citations, the document library, and dark/light settings for the README.
 - `THIRD_PARTY_NOTICES.md` and `LICENSE`: First-party license and dependency notice summary.
-- `scripts/check-release.mjs` and `scripts/check-release.test.mjs`: Version, publishing, and inventory-freshness checks with regressions.
+- `scripts/check-release.mjs` and `scripts/check-release.test.mjs`: Version, repository identity, publishing, and inventory-freshness checks with regressions.
 - `scripts/license-inventory.mjs`: Locked Rust/npm license-inventory generator.
 - `Taskfile.yml`: Development, checking, build, bundle, and cleanup tasks.
 - `docs/`: Current guides, specifications, and records. Start at [`docs/README.md`](README.md).
@@ -83,9 +84,10 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
 - `tauri.conf.json`: Tauri application and bundle configuration.
 - `capabilities/`: Tauri security capability declarations.
 - `icons/`: Native application icons.
-- `src/main.rs`: Native binary entry point delegating to `mrk_ragtag_app::run()`.
+- `src/main.rs`: Native binary entry point delegating to `ragtag_app::run()`.
 - `examples/local_inference_smoke.rs`: Opt-in real-engine streaming/concurrency/receiver-drop checks over retained synthetic retrieval evidence; does not launch the personal application or qualify the WebView.
-- `src/lib.rs`: Application composition, builder setup, pending data resets, and background worker initialization.
+- `examples/local_generation_probe.rs`: Opt-in app-policy/eager/paged Metal comparison over synthetic input and an already-cached GGUF, with a diagnostic deadline and no application-document access.
+- `src/lib.rs`: Application composition, builder setup, pending data resets, and background worker initialization; exports shared engine configuration/request helpers for real-model examples.
 - `src/capacity.rs`: Dual-semaphore command capacity manager prioritizing interactive cancellations and probes over ordinary operations.
 - `src/state.rs`: Central `AppState` holding pools, stores, embedders, capacity semaphores, active tracking, and worker channels.
 - `src/paths.rs`: Shared Tauri application-data and model-directory resolution with typed errors.
@@ -95,7 +97,7 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `mod.rs`: Command module exports; `src/lib.rs` registers the handlers.
   - `documents.rs`: Document uploads, library queries, preview fetching, asset path resolution, and deletion.
   - `query.rs`: RAG query orchestration and query cancellation.
-  - `models.rs`: Model status inspection, atomic lifecycle state probe, local model downloads, download cancellation, and external provider probing.
+  - `models.rs`: Model status inspection, memory-only lifecycle state probe, local model downloads, download cancellation, and external provider probing.
   - `settings.rs`: Settings retrieval and updates.
   - `keys.rs`: Keychain and fallback API key operations.
   - `maintenance.rs`: Storage diagnostics, database compaction, factory reset coordination, and safe external URL dispatch.
@@ -113,17 +115,17 @@ Use this document to locate a subsystem. It does not define runtime behavior. Fo
   - `ingestion.rs`: Dedicated worker processing document extraction, chunking, embedding, and indexing with backoff retries and active job tracking.
 - `crates/`: Domain, persistence, and document-processing libraries.
 - `.sqlx/`: Committed SQLx offline query metadata.
-- `vendor/mistralrs-core/`: Licensed upstream v0.9.4 core with Ragtag's explicit tensor-selection repair ([D007](decisions.md)).
+- `vendor/mistralrs-core/`: Licensed upstream v0.9.5 core with Ragtag's explicit tensor-selection repair ([D007](decisions.md)).
 - `vendor/toml-selectors/`: Unchanged upstream test fixtures for the vendored core.
 
 ### `src-tauri/crates/domain/`
 
-Zero-dependency shared contracts (`serde`, `thiserror`). Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`, `AppLifecycleState`, `CapacityState`, `MAX_UPLOAD_BYTES`, and `EXTRACTED_TEXT_MAX_BYTES`.
+Adapter-free shared contracts using `serde` and `thiserror`. Defines `AppError`, `TokenEvent`, `IngestionProgress`, `ModelDownloadProgress`, `Document`, `Citation`, `DocumentStatus`, `IndexProvenance`, `ApiKeyStorage`, `AppLifecycleState`, `CapacityState`, `MAX_UPLOAD_BYTES`, and `EXTRACTED_TEXT_MAX_BYTES`.
 
 ### `src-tauri/crates/persistence/`
 
 Relational, vector, and managed source storage:
-- `sqlite.rs`: SQLite connection pool configuration, migrations (`0001_initial_schema.sql`), `DocumentRepository`, and `AppSettingsRepository`.
+- `sqlite.rs`: SQLite connection pool configuration, migrations in `crates/persistence/migrations/`, `DocumentRepository`, and `AppSettingsRepository`.
 - `lancedb.rs`: Embedded `LanceDbVectorStore` with 768-d Float32 Arrow record batches and hybrid FTS search.
 - `storage/`: Managed source storage, validation, and maintenance:
   - `mod.rs`: Shared application-directory validation and storage module exports.

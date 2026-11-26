@@ -7,42 +7,42 @@ exclude = ["vendor/mistralrs-core"]
 resolver = "2"
 
 [package]
-name = "mrk-ragtag-app"
+name = "ragtag-app"
 version = "0.1.0"
 edition = "2024"
 description = "Local desktop RAG application for technical manuals and documents"
 authors = ["Michal Kups"]
 license = "MIT"
-repository = "https://github.com/MRKups/mrk-ragtag"
+repository = "https://github.com/MRKups/ragtag"
 
 [build-dependencies]
-tauri-build = { version = "2.7.2", features = [] }
+tauri-build = { version = "2.7.6", features = [] }
 
 [dependencies]
 domain = { path = "crates/domain" }
 persistence = { path = "crates/persistence" }
 rag_pipeline = { path = "crates/rag_pipeline" }
-tauri = { version = "2.12.3", features = ["protocol-asset"] }
+tauri = { version = "2.12.7", features = ["protocol-asset"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sqlx = { version = "=0.9.0", features = ["sqlite", "runtime-tokio", "migrate"] }
-tokio = { version = "1.53.3", features = ["full"] }
-sha2 = "0.11.1"
-jiff = "0.2.38"
-uuid = { version = "1.28.0", features = ["v7"] }
-fastembed = "=7.1.1"
+sqlx = { version = "=0.9.1", features = ["sqlite", "runtime-tokio", "migrate"] }
+tokio = { version = "1.54.1", features = ["full"] }
+sha2 = "0.11.2"
+jiff = "1.0.3"
+uuid = { version = "1.29.3", features = ["v7"] }
+fastembed = "=7.8.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json"] }
 keyring = "4.2.0"
 hf-hub = "1.0.0"
 futures-util = "0.3.34"
-log = "0.4.34"
-env_logger = "0.11.11"
+log = "0.4.35"
+env_logger = "0.11.12"
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", features = ["metal"] }
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", features = ["metal"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
 
 [features]
 default = []

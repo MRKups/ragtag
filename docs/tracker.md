@@ -11,11 +11,11 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 
 ## B189 — Qualify the pinned engine on Apple Silicon
 
-**Problem:** Packaged Apple Silicon application verification requires end-to-end qualification of Metal execution.
+**Problem:** The updated inference engine needs end-to-end qualification of Metal execution in the source-built desktop app.
 
-**Outcome:** The pinned inference stack is exercised on an Apple Silicon host using the existing native test, release-build, and bundle tasks.
+**Outcome:** The pinned inference stack is exercised on an Apple Silicon host using native tests, the real-engine smoke example, and the development app. Installer distribution is outside the current source-only publication scope.
 
-**Acceptance:** Launch the packaged app and verify actual Metal model loading, streamed completion with citations, cancellation and subsequent queries, concurrent queries, cached offline restart, and provider switching. Record startup, first-token latency, generation performance, and peak memory against a same-model baseline; review material regressions before accepting them.
+**Acceptance:** Launch the source-built desktop app and verify actual Metal model loading, streamed completion with citations, cancellation and subsequent queries, concurrent queries, cached offline restart, and provider switching. Record startup, first-token latency, generation performance, and peak memory against a same-model baseline; review material regressions before accepting them.
 
 **References:** [D007 and D013](decisions.md), [README build instructions](../README.md), [release gate](open-source-readiness.md).
 
@@ -60,3 +60,11 @@ Items state unresolved outcomes. Current behavior belongs in linked references.
 **Outcome:** Both entry points report a consistent notice while retaining channel progress, background-job lifecycle events, and delayed-progress suppression.
 
 **Acceptance:** Verify both delivery orders, queued notices, dismissal timing, and background-only failures. See [request-scoped events](data-schema.md#request-scoped-events).
+
+## B199 — Qualify Metal paging before retiring the compatibility workaround
+
+**Problem:** The v0.9.5 automatic paged Metal path stalled after retrieval. Isolated short and long synthetic prompts timed out at 30 seconds; eager Metal returned cited answers. The app now explicitly disables macOS paging and labels the pre-answer wait “Preparing answer”.
+
+**Outcome:** Retain eager Metal as the working macOS policy until an upstream replacement qualifies paged execution with the same cached model and synthetic context.
+
+**Acceptance:** Before removing `without_paged_attn()`, verify short and retrieval-sized contexts, cancellation followed by another query, and concurrent generation under the candidate paged backend. Keep GPU execution and engine-managed concurrency without a request semaphore or CPU fallback. Retain native regressions and B189's desktop acceptance.

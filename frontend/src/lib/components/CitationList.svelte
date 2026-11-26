@@ -7,10 +7,10 @@
   let {
     citations = [] as Citation[],
     onCitationClick = (_citation: CitationSelection) => {}
-  } = $props<{
+  }: {
     citations?: Citation[];
     onCitationClick?: (citation: CitationSelection) => void;
-  }>();
+  } = $props();
 
   function handleClick(citation: Citation) {
     onCitationClick(citationSelection(citation));

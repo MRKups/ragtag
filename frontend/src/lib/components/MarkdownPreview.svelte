@@ -2,7 +2,7 @@
   import type { MarkdownBlock, MarkdownInline } from '$lib/types';
   import { api } from '$lib/api';
 
-  let { blocks } = $props<{ blocks: MarkdownBlock[] }>();
+  let { blocks }: { blocks: MarkdownBlock[] } = $props();
 
   function headingTag(level: number) {
     return `h${Math.min(6, Math.max(1, level))}`;

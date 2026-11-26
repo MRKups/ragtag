@@ -11,16 +11,26 @@ export function releaseProblems(read) {
   const tauri = json('src-tauri/tauri.conf.json');
   const lock = json('frontend/package-lock.json');
   const inventory = json('docs/third-party-license-inventory.json');
+  const repository = root.repository?.url?.replace(/^git\+/, '').replace(/\.git$/, '');
+  if (!repository?.startsWith('https://github.com/')
+    || !repository.endsWith(`/${root.name}`)
+    || root.bugs?.url !== `${repository}/issues`
+    || root.homepage !== `${repository}#readme`) {
+    problems.push('package.json repository, project name, issues URL, and homepage must agree.');
+  }
   const manifests = ['src-tauri/Cargo.toml', ...['domain', 'persistence', 'rag_pipeline'].map((crate) => `src-tauri/crates/${crate}/Cargo.toml`)];
   const versions = [['package.json', root.version], ['frontend/package.json', frontend.version], ['Tauri bundle', tauri.version], ['frontend lockfile', lock.version], ['frontend lockfile root', lock.packages[''].version]];
   for (const file of manifests) {
     const manifest = read(file).toString();
     const pkg = manifest.split(/^\[package\]\s*$/m)[1]?.split(/^\[/m)[0] ?? '';
     const version = pkg.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+    const name = pkg.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
     versions.push([file, version]);
+    if (pkg.match(/^repository\s*=\s*"([^"]+)"/m)?.[1] !== repository) problems.push(`${file} repository differs from package.json.`);
+    if (file === 'src-tauri/Cargo.toml' && name !== `${root.name}-app`) problems.push(`${file} app name must match ${root.name}-app.`);
     if (!/^license\s*=\s*"MIT"\s*$/m.test(pkg)) problems.push(`${file} must declare MIT.`);
     const component = inventory.components.rust.find((component) => component.path === path.posix.dirname(file));
-    if (!component || component.version !== version || component.license !== 'MIT') problems.push(`${file} inventory declaration is stale.`);
+    if (!component || component.name !== name || component.version !== version || component.license !== 'MIT') problems.push(`${file} inventory declaration is stale.`);
   }
   for (const [file, version] of versions) {
     if (!version || version !== tauri.version) problems.push(`${file} version ${version} differs from Tauri ${tauri.version}.`);

@@ -1,10 +1,10 @@
-# Vendored from mistral.rs v0.9.4; workspace inheritance resolved without changing dependency requirements.
+# Vendored from mistral.rs v0.9.5; workspace inheritance resolved without changing dependency requirements.
 [package]
 name = "mistralrs-core"
 publish = false
 readme = "README.md"
 authors = ["Eric Buehler"]
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
 rust-version = "1.94"
 description = "Fast, flexible LLM inference."
@@ -23,7 +23,7 @@ serde = { version = "1.0.228" }
 serde_json = { version = "1.0.149" }
 sha2 = { version = "0.10.9" }
 tempfile = { version = "3" }
-mistralrs-flash-attn = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", optional = true }
+mistralrs-flash-attn = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", optional = true }
 dirs = { version = "6.0.0" }
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "tokio", "rustls-tls"] }
 thiserror = { version = "2.0.18" }
@@ -57,7 +57,7 @@ rand_isaac = { version = "0.4.0" }
 futures = { version = "0.3" }
 pyo3 = { version = "0.25.1", features = ["full", "extension-module", "either", "abi3-py310"], optional = true }
 indicatif = { version = "0.18.3", features = ["rayon"] }
-async-trait = { version = "0.1.89" }
+async-trait = { version = "0.1.92" }
 toml = { version = "0.9.11" }
 strum = { version = "0.27.2", features = ["derive"] }
 image = { version = "0.25.9", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
@@ -65,16 +65,15 @@ derive_more = { version = "2.1.1", default-features = false, features = ["from"]
 akin = { version = "0.4.0" }
 variantly = { version = "0.4.0" }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
-derive-new = { version = "0.7.0" }
 itertools = { version = "0.14.0" }
 sysinfo = { version = "0.36.1" }
-mistralrs-vision = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs-vision = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
 csv = { version = "1.4.0" }
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "rustls", "charset", "http2"] }
 base64 = { version = "0.22.1" }
 bytemuck_derive = { version = "1.10.2" }
-mistralrs-paged-attn = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", optional = true }
-mistralrs-quant = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs-paged-attn = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", optional = true }
+mistralrs-quant = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
 uuid = { version = "1.19.0", features = ["v4"] }
 utoipa = { version = "5.4.0", optional = true }
 schemars = { version = "1.2.0" }
@@ -107,11 +106,11 @@ rustfft = { version = "6.4.1" }
 hound = { version = "3.5.1" }
 apodize = { version = "1.0.0" }
 symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "flac", "vorbis", "wav", "isomp4", "ogg", "pcm"] }
-mistralrs-audio = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs-audio = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
 rust-mcp-schema = { version = "0.9.5", default-features = false, features = ["schema_utils", "latest"] }
-mistralrs-mcp = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c", features = ["utoipa"] }
-mistralrs-code-exec = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
-mistralrs-sandbox = { version = "0.9.4", git = "https://github.com/EricLBuehler/mistral.rs", rev = "4400935451da5e2dc7379a3f92fbbada66557f6c" }
+mistralrs-mcp = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", features = ["utoipa"] }
+mistralrs-code-exec = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
+mistralrs-sandbox = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2" }
 statrs = { version = "0.18.0" }
 openai-harmony = "0.0.8"
 
@@ -119,6 +118,8 @@ openai-harmony = "0.0.8"
 objc = { version = "0.2.7", optional = true }
 objc2-metal = { version = "0.3.2", optional = true }
 candle-metal-kernels = { git = "https://github.com/huggingface/candle.git", version = "0.11.0", rev = "66a8cf184a5a519671454066b1b9efd446ec9f5c", optional = true }
+dispatch2 = { version = "0.3.0", default-features = false, features = ["block2"], optional = true }
+mistralrs-metal-compile = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", optional = true, features = ["metal"] }
 
 [features]
 pyo3_macros = ["pyo3", "mistralrs-mcp/pyo3_macros"]
@@ -140,7 +141,9 @@ metal = [
     "dep:objc",
     "dep:mistralrs-paged-attn",
     "mistralrs-paged-attn/metal",
-    "dep:objc2-metal"
+    "dep:objc2-metal",
+    "dep:dispatch2",
+    "dep:mistralrs-metal-compile",
 ]
 flash-attn = ["cuda", "dep:mistralrs-flash-attn", "mistralrs-flash-attn/cuda"]
 flash-attn-v3 = ["cuda", "dep:candle-flash-attn-v3"]
@@ -153,9 +156,10 @@ code-execution = []
 
 [build-dependencies]
 cudaforge = { version = "=0.1.6", optional = true }
+mistralrs-metal-compile = { version = "0.9.5", git = "https://github.com/EricLBuehler/mistral.rs", rev = "465191d0b0a7e2432d327b0de06204ab3f94d3a2", optional = true }
 
 [package.metadata.ragtag]
-upstream-version = "0.9.4"
-upstream-revision = "4400935451da5e2dc7379a3f92fbbada66557f6c"
+upstream-version = "0.9.5"
+upstream-revision = "465191d0b0a7e2432d327b0de06204ab3f94d3a2"
 patch-revision = "ragtag.1"
 patch-purpose = "Contiguous batched logits selection for quantized output projection."

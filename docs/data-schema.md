@@ -109,7 +109,7 @@ Credential mutations report typed errors when cleanup is incomplete. A successfu
 
 ## Execution capacity and lifecycle state
 
-`get_app_state` returns an atomic, memory-only snapshot of current system readiness and execution permits without acquiring SQLite transaction or storage locks:
+`get_app_state` returns a memory-only snapshot of system readiness and execution permits without querying SQLite or LanceDB. Fields are read under separate locks rather than as one atomic snapshot; no fixed response latency is guaranteed:
 
 ```json
 {

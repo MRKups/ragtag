@@ -58,6 +58,8 @@ The embedding model initializes locally at startup. Ingestion becomes available 
 
 Local mode downloads and loads the configured model in-process for answer generation.
 
+On macOS, local generation explicitly uses non-paged Metal attention rather than the engine's paged default. Requests disable extended thinking through the engine's template control; the interface streams answer content, not hidden reasoning. [D007](decisions.md#d007--local-in-process-inference-by-default) records the runtime comparison and compatibility policy.
+
 External mode calls a user-selected OpenAI-compatible endpoint. Ragtag verifies the configured model before enabling queries and sends the query plus retrieved excerpts to that endpoint during inference. The endpoint URL is an SQLite setting; optional credentials are kept in the OS keychain (or SQLite as a fallback if the keychain is unavailable). Both HTTP (for local providers like Ollama or LM Studio) and HTTPS (for remote cloud providers) endpoints are supported. If no API key is specified, probing and inference proceed keyless; if provided, authentication headers are sent regardless of the endpoint scheme.
 
 Default model files are downloaded on first use rather than bundled, using configurable Hugging Face repositories and GGUF filenames.

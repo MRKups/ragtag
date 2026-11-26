@@ -146,7 +146,7 @@
         {@render questionCard()}
         <div class="loading-state">
           <div class="spinner"></div>
-          <p>Searching manuals...</p>
+          <p>Preparing answer...</p>
         </div>
       {:else if queryState.text || queryState.citations.length > 0 || queryState.retrievalWarning}
         {@render questionCard()}

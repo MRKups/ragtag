@@ -1,11 +1,13 @@
-<script lang="ts">
-  import { onMount, tick } from 'svelte';
-
+<script module lang="ts">
   export type SelectOption = {
     value: string;
     label: string;
     disabled?: boolean;
   };
+</script>
+
+<script lang="ts">
+  import { onMount, tick } from 'svelte';
 
   let {
     id,
@@ -15,7 +17,7 @@
     disabled = false,
     ariaLabel,
     onvaluechange = () => {}
-  } = $props<{
+  }: {
     id: string;
     options: SelectOption[];
     value?: string;
@@ -23,7 +25,7 @@
     disabled?: boolean;
     ariaLabel?: string;
     onvaluechange?: (value: string) => void;
-  }>();
+  } = $props();
 
   let root: HTMLDivElement;
   let trigger: HTMLButtonElement;

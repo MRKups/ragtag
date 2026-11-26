@@ -15,11 +15,12 @@ const npmLock = JSON.parse(readFileSync(path.join(root, 'frontend/package-lock.j
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
 inventory.generated_on = new Date().toISOString().slice(0, 10);
+inventory.purpose = 'Dependency license inventory for the default-feature Cargo resolution and frontend lockfile. It does not select a project license or approve a release.';
 inventory.license_data.note = 'Values are raw package declarations, not license approval. Missing declarations require review. Slash-separated values are not normalized SPDX expressions.';
 inventory.regeneration = {
   when: 'Refresh after either input lockfile or package metadata changes and before a release.',
   command: 'npm run licenses:generate',
-  rust: 'Resolve the locked package set with cargo metadata; requires cached sources or network access.',
+  rust: 'Resolve packages with locked cargo metadata using default workspace features; disabled optional-feature packages may be absent. Requires cached sources or network access.',
   npm: 'Read every resolved frontend/package-lock.json package, including optional and development dependencies.',
 };
 inventory.components.rust = metadata.packages.map((pkg) => {
@@ -47,5 +48,6 @@ for (const kind of ['rust', 'npm']) {
   source.package_count = inventory.components[kind].length;
 }
 inventory.sources.rust.resolution_command = 'cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml';
+inventory.sources.rust.scope = 'Packages returned by cargo metadata for default workspace features, including resolved platform-conditional, build-time, local-path, and vendored dependencies. Not exhaustive for disabled optional features such as CUDA.';
 writeFileSync(inventoryPath, `${JSON.stringify(inventory, null, 2)}\n`);
 console.log(`Inventoried ${inventory.sources.rust.package_count} Rust and ${inventory.sources.npm.package_count} npm packages.`);

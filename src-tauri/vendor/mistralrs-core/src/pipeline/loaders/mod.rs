@@ -1,9 +1,17 @@
+pub(crate) mod activation_memory;
 pub(crate) mod auto_device_map;
 mod checkpoint_inventory;
 mod diffusion_loaders;
 mod embedding_loaders;
 mod multimodal_loaders;
 mod normal_loaders;
+pub(crate) use activation_memory::{
+    apply_model_activation_memory, estimate_model_activation_memory,
+    reserve_model_activation_memory,
+};
+pub use activation_memory::{
+    ActivationMemoryContext, ActivationMemoryEstimate, ActivationModelConfig,
+};
 pub use auto_device_map::AutoDeviceMapParams;
 use auto_device_map::NonMappedSubModel;
 pub(crate) use checkpoint_inventory::{checkpoint_device_map_sizes, checkpoint_runtime_size};
@@ -36,7 +44,8 @@ pub use multimodal_loaders::{
     Idefics2Loader, Idefics3Loader, LLaVALoader, LLaVANextLoader, Lfm2VlLoader, MiniCpmOLoader,
     Mistral3Loader, MultimodalLoaderType, MultimodalModel, MultimodalModelLoader,
     MuseGlimmerLoader, Phi3VLoader, Phi4MMLoader, Qwen2VLLoader, Qwen2_5VLLoader, Qwen3VLLoader,
-    Qwen3VLMoELoader, Qwen3_5Loader, Qwen3_5MoeLoader, VLlama4Loader, VLlamaLoader, VoxtralLoader,
+    Qwen3VLMoELoader, Qwen3_5Loader, Qwen3_5MoeLoader, Qwen4ExpLoader, VLlama4Loader, VLlamaLoader,
+    VoxtralLoader,
 };
 
 pub use embedding_loaders::{
@@ -379,15 +388,20 @@ pub struct EmbeddingModelPaths<P: Debug> {
     pub adapter_paths: AdapterPaths,
 }
 
-impl<P: Debug> EmbeddingModelPaths<P> {
+impl<P: Debug + AsRef<std::path::Path>> EmbeddingModelPaths<P> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tokenizer_filename: P,
         config_filename: P,
-        filenames: Vec<P>,
+        mut filenames: Vec<P>,
         adapter_paths: AdapterPaths,
         modules: Vec<EmbeddingModulePaths>,
     ) -> Self {
+        filenames.retain(|filename| {
+            !modules.iter().any(|module| {
+                matches!(module, EmbeddingModulePaths::Dense { model, .. } if model == filename.as_ref())
+            })
+        });
         Self {
             tokenizer_filename,
             config_filename,
@@ -790,6 +804,8 @@ fn language_model_pack_factors_with_aliases(
 }
 
 pub trait DeviceMappedModelLoader {
+    fn activation_model_config(&self, config: &str) -> Result<ActivationModelConfig>;
+
     /// Maximum activation size of non-mapped parts of this model.
     /// Useful for the multimodal models which may prefer to keep the vison components on the GPU.
     fn non_mapped_max_act_size_elems(
@@ -830,7 +846,16 @@ pub trait DeviceMappedModelLoader {
         Ok(self.non_mapped_sub_models())
     }
     fn num_layers(&self, config: &str) -> Result<usize>;
+
+    /// Device bytes a layer holds outside its weight bindings, as `(layer, bytes)`.
+    fn unbound_layer_bytes(&self, _config: &str) -> Result<Vec<(usize, usize)>> {
+        Ok(Vec::new())
+    }
     fn model_config(&self, config: &str) -> Result<Box<dyn ModelConfigLike>>;
+
+    fn supports_checkpoint_weight_inventory(&self, _config: &str) -> Result<bool> {
+        Ok(true)
+    }
 
     fn checkpoint_layer_index(&self, _config: &str, tensor_name: &str) -> Option<usize> {
         checkpoint_inventory::standard_layer_index(tensor_name)

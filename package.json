@@ -1,8 +1,8 @@
 {
-  "name": "mrk-ragtag",
+  "name": "ragtag",
   "version": "0.1.0",
   "private": true,
-  "description": "A localized, zero-configuration desktop application for querying technical manuals and other documents. It acts as an intelligent, personalized brain for technical manuals, allowing users to ask questions in natural language and receive synthesized answers with precise page citations.",
+  "description": "Experimental local-first desktop RAG application for querying documents with source and page citations.",
   "engines": {
     "node": ">=24 <25"
   },
@@ -22,7 +22,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MRKups/mrk-ragtag.git"
+    "url": "git+https://github.com/MRKups/ragtag.git"
   },
   "keywords": [
     "rag",
@@ -35,7 +35,7 @@
   "author": "Michal Kups",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/MRKups/mrk-ragtag/issues"
+    "url": "https://github.com/MRKups/ragtag/issues"
   },
-  "homepage": "https://github.com/MRKups/mrk-ragtag#readme"
+  "homepage": "https://github.com/MRKups/ragtag#readme"
 }
